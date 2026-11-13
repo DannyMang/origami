@@ -35,10 +35,32 @@ pub const DEFS: &[Def] = &[
     global("video", "path", "Loads a video file."),
     global("sound", "path", "Loads an audio file."),
     global("image", "path", "Loads a still image."),
-    global("text", "words, { size, color, font }", "Draws text, centered."),
-    global("caption", "words, { size, color, font }", "Draws smaller text near the bottom."),
+    global(
+        "text",
+        "words, { size, color, font, background, align }",
+        "Draws text, centered. background is a colour behind the words; align is \"left\", \"center\" or \"right\".",
+    ),
+    global(
+        "caption",
+        "words, { size, color, font, background, align }",
+        "Draws smaller text near the bottom.",
+    ),
     global("captions", "path", "Loads every caption from an .srt file."),
-    global("color", "color", "Fills the frame with a color."),
+    global(
+        "color",
+        "color",
+        "Fills the frame with a color: \"#rgb\", \"#rrggbb\", or with transparency \"#rgba\", \"#rrggbbaa\".",
+    ),
+    global(
+        "rect",
+        "width, height, { color, radius }",
+        "Draws a rectangle, centered. Size and corner radius in pixels.",
+    ),
+    global(
+        "line",
+        "x1, y1, x2, y2, { color, width }",
+        "Draws a line between two points given as fractions of the frame. Width in pixels.",
+    ),
     global("cat", "...clips", "Plays clips one after another."),
     global("stack", "...clips", "Plays clips at the same time. Later clips draw on top."),
     global(
@@ -174,7 +196,7 @@ pub fn kind(lines: &[String], name: &str) -> Option<&'static str> {
     let made = |n: &str| match n {
         "video" => Some("Video"),
         "sound" => Some("Audio"),
-        "image" | "color" => Some("Shape"),
+        "image" | "color" | "rect" | "line" => Some("Shape"),
         "text" | "caption" | "captions" => Some("Text"),
         "cat" | "stack" => Some("Group"),
         _ => None,
@@ -255,6 +277,11 @@ pub fn offers(lines: &[String], (row, col): (usize, usize), dir: &Path) -> (usiz
     }
     if let Some((_, q)) = quote {
         let before = String::from_iter(&head[..q]);
+        if before.trim_end().ends_with("align:") {
+            let typed = String::from_iter(&head[q + 1..]);
+            let sides = ["left", "center", "right"].into_iter().filter(|n| starts(n, &typed));
+            return (q + 1, sides.map(|n| (n.to_string(), "", "")).collect());
+        }
         let font = before.trim_end().ends_with("font:");
         let Some(call) = before.trim_end().strip_suffix(if font { ':' } else { '(' }) else {
             return (0, vec![]);
@@ -420,6 +447,18 @@ mod tests {
             at("const clip = video()\nconst cut = c"),
             ["caption", "captions", "color", "cat", "clip", "cut"]
         );
+        assert_eq!(
+            (at("re"), at("li"), at("x.li")),
+            (vec!["rect".to_string()], vec!["line".to_string()], vec![])
+        );
+        assert_eq!(at("text(\"a\", { align: \""), ["left", "center", "right"]);
+        assert_eq!(at("text(\"a\", { align: \"ri"), ["right"]);
+        let on = |src: &str| {
+            at(src)
+                .iter()
+                .any(|n| ["trim", "speed", "volume", "mute", "shown", "each"].contains(&n.as_str()))
+        };
+        assert!(!on("rect(4, 4).") && !on("const l = line(0, 0, 1, 1)\nl.for(2).") && at("rect(4, 4).").contains(&"rotate".to_string()));
         assert_eq!(at("x.").len(), DEFS.iter().filter(|d| d.method).count());
         assert!(!at("let m = sound(\"a\")\nm.trim(0, 1).").contains(&"temperature".to_string()));
         assert!(at("let v = video(\"a\")\nv\n  .trim(0, 1)\n  .").contains(&"temperature".to_string()));

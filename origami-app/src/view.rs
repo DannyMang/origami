@@ -1,4 +1,8 @@
-use crate::{Asset, Mode, Origami, keys::stamp};
+use crate::{
+    Asset, Mode, Origami,
+    keys::stamp,
+    stage::{draw, letterbox},
+};
 use gpui::{
     App, Bounds, ClipboardItem, Context, Div, FontWeight, HighlightStyle, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, ObjectFit, ParentElement, PathBuilder, Pixels, Render, ScrollWheelEvent, Styled, StyledImage, StyledText, Window,
@@ -32,6 +36,7 @@ const HELP: &str =
 click the script to type in it, cmd+s saves and applies, esc leaves     scroll zooms the timeline     drag pane edges to resize     cmd+ cmd-  code size     cmd+0  reset layout     cmd+f  search
 Motion tab: click a clip to open its properties, drag a number sideways to change it, click a diamond to add or remove a key at the playhead
 click a key for its time, value and ease, drag it to move it, delete removes it     Graph Editor: drag keys and curve handles
+Program: click text, a shape or a placed clip to select it, drag it to move it; with keys on its position the drag sets a key at the playhead
 fold code with the gutter arrows, cmd+opt+[ and cmd+opt+], or za zM zR in vim keys     esc  vim keys, i  back
 h l  frame        H L  second       w b  clip boundary    0 $ gg G  start, end
 j k  layer        < >  shift clip   x  delete clip    space  play, pause    m' + letter  marks
@@ -89,6 +94,7 @@ pub fn tint(kind: Kind) -> u32 {
         Kind::Sound => GREEN,
         Kind::Text => PURPLE,
         Kind::Color => DIM,
+        Kind::Rect | Kind::Line => ORANGE,
     }
 }
 
@@ -980,34 +986,39 @@ impl Render for Origami {
                 .rounded(px(6.))
                 .children(HELP.lines().map(|l| div().child(l.to_string()))),
         );
-        let (w, h) = (f32::from(window.viewport_size().width), f32::from(window.viewport_size().height));
+        let h = f32::from(window.viewport_size().height);
         let rows = ((h - self.head() - 28.) / self.row()).ceil().max(0.) as usize;
-        let (w, h) = if self.full {
-            (w, h)
-        } else {
-            (w - self.side - 24., h - self.dock - 154.)
+        let (me, image, marks) = (cx.weak_entity(), self.image.clone(), self.marks());
+        let (pad, size) = (if self.full { 0. } else { 12. }, Preview::size(&tl));
+        let seen = move |b: Bounds<Pixels>, _: &mut Window, cx: &mut App| {
+            let _ = me.update(cx, |this, _| this.stage = b);
         };
-        let (iw, ih) = Preview::size(&tl);
-        let (iw, ih) = (iw.max(1) as f32, ih.max(1) as f32);
-        let fit = (w / iw).min(h / ih).max(0.);
+        let show = move |b: Bounds<Pixels>, _, window: &mut Window, _: &mut App| {
+            let sheet = letterbox(b, pad, size);
+            if let Some(image) = image {
+                let _ = window.paint_image(sheet, Default::default(), image, 0, false);
+            }
+            if let Some(marks) = &marks {
+                draw(marks, sheet, window);
+            }
+        };
         let stage = div()
             .relative()
             .flex_1()
             .min_h_0()
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
+                cx.listener(|this, e: &MouseDownEvent, _, cx| {
                     if this.mouse {
-                        this.toggle();
+                        if !this.clasp(e.position) {
+                            this.toggle();
+                        }
                         cx.notify();
                     }
                 }),
             )
-            .flex()
-            .items_center()
-            .justify_center()
             .overflow_hidden()
-            .children(self.image.clone().map(|i| img(i).w(px(iw * fit)).h(px(ih * fit))));
+            .child(canvas(seen, show).size_full());
         let root = div()
             .size_full()
             .relative()

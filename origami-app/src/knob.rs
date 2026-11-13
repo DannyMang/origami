@@ -3,6 +3,7 @@ use crate::{
     view::{BLUE, BORDER, DIM, PANEL},
 };
 use gpui::{Context, Div, MouseButton, MouseDownEvent, Pixels, Point, Window, div, img, prelude::*, px, rgb, rgba};
+use origami_engine::tone;
 use origami_lang::Clip;
 
 pub struct Knob {
@@ -45,7 +46,7 @@ fn range(call: &str, label: &str) -> Option<(f64, f64)> {
         ("opacity" | "shown", "0") => (0., 1.),
         ("rotate", "0") => (-360., 360.),
         ("pos", _) => (0., 1.),
-        ("trim" | "fade" | "for" | "at" | "shift", _) => (0., 0.),
+        ("trim" | "fade" | "for" | "at" | "shift", _) | ("rect", "0" | "1") | (_, "radius" | "width") => (0., 0.),
         ("curve", "x" | "y") | (_, "x") if CURVES.contains(&call) => (0., 1.),
         (_, "y") if CURVES.contains(&call) => (-1., 1.),
         _ => return None,
@@ -121,9 +122,16 @@ pub fn close(s: &[u8], open: usize) -> Option<usize> {
     None
 }
 
-fn scan(line: &str, call: &str, open: usize, end: usize) -> Vec<Knob> {
+fn ink(rgb: f64, strength: f64) -> String {
+    match strength < 1. {
+        true => format!("\"#{:06x}{:02x}\"", rgb as u32, (strength.max(0.) * 255.).round() as u32),
+        false => format!("\"#{:06x}\"", rgb as u32),
+    }
+}
+
+fn scan(line: &str, call: &str, from: usize, end: usize) -> Vec<Knob> {
     let s = line.as_bytes();
-    let (mut out, mut i, mut arg, mut key, mut square, mut pair) = (vec![], open + 1, 0, String::new(), 0, 0);
+    let (mut out, mut i, mut arg, mut key, mut square, mut pair) = (vec![], from, 0, String::new(), 0, 0);
     let word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
     while i < end {
         let c = s[i];
@@ -138,21 +146,18 @@ fn scan(line: &str, call: &str, open: usize, end: usize) -> Vec<Knob> {
             b'"' | b'\'' => {
                 i = line[i + 1..end].find(c as char).map_or(end, |n| i + 1 + n);
                 let text = &line[from + 1..i.min(end)];
-                let named = [("white", 0xffffff), ("black", 0)]
-                    .into_iter()
-                    .find(|n| n.0 == text && (key == "color" || call == "color"));
-                let hex = text
-                    .strip_prefix('#')
-                    .filter(|h| h.len() == 6)
-                    .and_then(|h| u32::from_str_radix(h, 16).ok());
-                if let Some(rgb) = hex.or(named.map(|n| n.1)) {
-                    out.push(Knob {
-                        label: "#".into(),
-                        span: (from, i + 1),
-                        value: rgb as f64,
-                        lo: 0.,
-                        hi: 16777215.,
-                    });
+                let named = ["white", "black"].contains(&text) && (key == "color" || key == "background" || call == "color");
+                if let Some([r, g, b, a]) = tone(text).filter(|_| named || text.starts_with('#')) {
+                    let rgb = u32::from_be_bytes([0, r, g, b]) as f64;
+                    for (label, value, hi) in [("#", rgb, 16777215.), ("strength", a as f64 / 255., 1.)] {
+                        out.push(Knob {
+                            label: label.into(),
+                            span: (from, i + 1),
+                            value,
+                            lo: 0.,
+                            hi,
+                        });
+                    }
                 }
                 found = secs(text).filter(|_| text.contains(':'));
             }
@@ -200,14 +205,26 @@ pub fn calls(line: &str) -> Vec<(String, usize, usize, Vec<Knob>)> {
     let found = (0..s.len()).filter(|i| s[*i] == b'(').filter_map(|open| {
         let name = open - s[..open].iter().rev().take_while(|c| word(c)).count();
         let end = close(s, open)?;
-        Some((line[name..open].to_string(), name, end, scan(line, &line[name..open], open, end)))
+        Some((
+            line[name..open].to_string(),
+            name,
+            end,
+            scan(line, &line[name..open], open + 1, end),
+        ))
     });
     found.collect()
 }
 
 pub fn knobs(line: &str, at: usize) -> Option<(String, usize, usize, Vec<Knob>)> {
     let on = calls(line).into_iter().filter(|c| c.1 <= at && at <= c.2 && !c.3.is_empty());
-    on.max_by_key(|c| c.1)
+    let from = line.len() - line.trim_start().len();
+    let loose = || (String::new(), from, line.len().saturating_sub(1), scan(line, "", from, line.len()));
+    let (call, name, end, mut found) = on.max_by_key(|c| c.1).unwrap_or_else(loose);
+    let dye = found.iter().find(|k| k.label == "#" && k.span.0 <= at && at < k.span.1);
+    if let Some(span) = dye.map(|k| k.span) {
+        found.retain(|k| !["#", "strength"].contains(&k.label.as_str()) || k.span == span);
+    }
+    (!found.is_empty()).then_some((call, name, end, found))
 }
 
 fn bound(found: &mut Vec<Knob>, top: Option<f64>) {
@@ -222,6 +239,15 @@ fn limit(call: &str, i: usize, found: &[Knob]) -> (f64, f64) {
         ("trim", 0, [a, b]) => (a.lo, a.hi.min(b.value - 0.04)),
         ("trim", 1, [a, b]) => (b.lo.max(a.value + 0.04), b.hi),
         _ => (found[i].lo, found[i].hi),
+    }
+}
+
+fn print(call: &str, found: &[Knob], i: usize, v: f64) -> String {
+    let (k, (lo, hi)) = (&found[i], limit(call, i, found));
+    match k.label.as_str() {
+        "#" => ink(v, found[i + 1].value),
+        "strength" => ink(found[i - 1].value, v.min(1.)),
+        _ => show(v.min(hi).max(lo), k.lo, if ["trim", "fade"].contains(&call) { k.lo } else { k.hi }),
     }
 }
 
@@ -333,15 +359,9 @@ impl Origami {
 
     fn set(&mut self, mut values: Vec<(usize, f64)>) {
         let Some((row, call, _, found)) = self.panel() else { return };
-        let timed = ["trim", "fade"].contains(&call.as_str());
         values.sort_by_key(|v| std::cmp::Reverse(v.0));
         for (i, v) in values {
-            let (k, (lo, hi)) = (&found[i], limit(&call, i, &found));
-            let text = match k.label == "#" {
-                true => format!("\"#{:06x}\"", v as u32),
-                false => show(v.min(hi).max(lo), k.lo, if timed { k.lo } else { k.hi }),
-            };
-            self.lines[row].replace_range(k.span.0..k.span.1, &text);
+            self.lines[row].replace_range(found[i].span.0..found[i].span.1, &print(&call, &found, i, v));
         }
         self.store();
     }
@@ -549,7 +569,33 @@ mod tests {
         );
         assert_eq!(labels("c.curve(\"luma\", [[0, 0], [0.5, 0.6]])", 3).len(), 4);
         assert!(labels("video(\"a2.mp4\")", 2).is_empty());
-        assert_eq!(labels("color(\"#282c33\").for(5)", 2), [("#".into(), 0x282c33 as f64)]);
+        assert_eq!(
+            labels("color(\"#282c33\").for(5)", 2),
+            [("#".into(), 0x282c33 as f64), ("strength".into(), 1.)]
+        );
+        let tag = "text(\"a\", { size: 28, color: \"white\", background: \"#0008\" })";
+        assert_eq!(labels(tag, 2).len(), 5);
+        assert_eq!(
+            labels(tag, tag.find("\"#0008").unwrap()),
+            [("size".into(), 28.), ("#".into(), 0.), ("strength".into(), 136. / 255.)]
+        );
+        let plate = slides("  background: \"#0008\",", 14, None);
+        let set = |i: usize, v: f64| print("", &plate, i, v);
+        assert_eq!(
+            (set(1, 0.25), set(1, 1.), set(1, -3.)),
+            ("\"#00000040\"".into(), "\"#000000\"".into(), "\"#00000000\"".into())
+        );
+        assert_eq!(
+            (set(0, 0xff8000 as f64), print("fade", &slides("a.fade(1, 2)", 3, Some(4.)), 1, 9.)),
+            ("\"#ff800088\"".into(), "4".into())
+        );
+        assert_eq!(labels("  background: \"#0008\",", 14)[1], ("strength".into(), 136. / 255.));
+        assert_eq!(labels("  size: 28, font: \"Menlo\"", 3), [("size".into(), 28.)]);
+        assert!(labels("  [0, 0.5], [1, 2]", 3).is_empty() && labels("", 0).is_empty() && labels("const n = 5", 3).is_empty());
+        assert_eq!(
+            (ink(255., 1.), ink(255., 0.5), ink(0., 0.)),
+            ("\"#0000ff\"".into(), "\"#0000ff80\"".into(), "\"#00000000\"".into())
+        );
         assert_eq!(
             pack(hsv(0x74ade8 as f64).0, hsv(0x74ade8 as f64).1, hsv(0x74ade8 as f64).2) as u32,
             0x74ade8

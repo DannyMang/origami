@@ -1,13 +1,14 @@
 use crate::{
     Origami,
     complete::faces,
-    motion::{ATTRS, Form, Pull, Row, hue, secs},
+    motion::{ATTRS, Form, Pull, Row, STILL, secs},
     view::{BAR, BG, BLUE, BORDER, DIM, MUTED, ORANGE, PANEL, RULER, TEXT, tint},
 };
 use gpui::{
     App, Bounds, Context, Div, MouseButton, MouseDownEvent, PathBuilder, Pixels, Point, Window, canvas, div, fill, point, prelude::*, px,
     relative, rgb, rgba, size,
 };
+use origami_engine::tone;
 use origami_lang::{Clip, Kind};
 use std::path::Path;
 
@@ -89,7 +90,9 @@ fn stem(path: &str) -> String {
 fn count(kind: Kind) -> usize {
     match kind {
         Kind::Sound => 0,
-        Kind::Text => 9,
+        Kind::Text => 10,
+        Kind::Rect => 9,
+        Kind::Line => 7,
         _ => 5,
     }
 }
@@ -120,6 +123,8 @@ impl Origami {
             Kind::Image => ("\u{25a3}", "image"),
             Kind::Text => ("T", "text"),
             Kind::Color => ("\u{25a0}", "color"),
+            Kind::Rect => ("\u{25ad}", "rect"),
+            Kind::Line => ("\u{2571}", "line"),
         };
         let slot = |w: f32| div().w(px(w)).flex_none();
         div()
@@ -197,10 +202,10 @@ impl Origami {
                 _ => div()
                     .cursor_col_resize()
                     .on_mouse_down(MouseButton::Left, Self::tap(cx, move |this, e, _| this.tug(name, e.position)))
-                    .children((a.3 == 0.).then(|| slider(row.now as f32, 64., BLUE)))
+                    .children((a.4 == 1.).then(|| slider(row.now as f32, 64., BLUE)))
                     .child(field(text)),
             };
-            let key = match row.form == Form::Code || name == "size" {
+            let key = match row.form == Form::Code || STILL.contains(&name) {
                 true => gem(false, BORDER),
                 false => gem(keyed, if keyed { BLUE } else { DIM })
                     .cursor_pointer()
@@ -209,23 +214,38 @@ impl Origami {
             self.attr(a.1, self.key.is_some_and(|k| k.1 == name), control, key)
         };
         let mut out: Vec<Div> = rows.iter().map(number).collect();
-        if c.kind == Kind::Text {
-            let color = match self.option(c, "color").and_then(|c| hue(&c)) {
-                Some(ink) => div()
+        let swatch = |name: &'static str, cx: &mut Context<Self>| {
+            let (none, set) = if name == "color" {
+                ([255; 4], &c.color)
+            } else {
+                ([0; 4], &c.background)
+            };
+            let control = match self.option(c, name).map(|v| (tone(&v), v)) {
+                Some((ink, v)) if ink.is_some() || v.is_empty() => div()
                     .cursor_pointer()
-                    .on_mouse_down(MouseButton::Left, Self::tap(cx, |this, _, _| this.dye()))
+                    .on_mouse_down(MouseButton::Left, Self::tap(cx, move |this, _, _| this.dye(name)))
                     .child(
                         div()
                             .size(px(13.))
                             .flex_none()
                             .rounded(px(3.))
-                            .bg(rgb(ink))
+                            .bg(rgba(u32::from_be_bytes(ink.unwrap_or(none))))
                             .border_1()
                             .border_color(rgb(BORDER)),
                     )
-                    .child(div().text_color(rgb(MUTED)).child(format!("#{ink:06X}"))),
-                None => code(c.color.clone()),
+                    .child(div().text_color(rgb(MUTED)).child(match (v.is_empty(), name) {
+                        (false, _) => v.to_uppercase(),
+                        (_, "color") => "#FFFFFF".into(),
+                        _ => "none".into(),
+                    })),
+                _ => code(set.clone()),
             };
+            self.attr(name, false, control, gem(false, BORDER))
+        };
+        if let Kind::Rect | Kind::Line = c.kind {
+            out.push(swatch("color", cx));
+        }
+        if c.kind == Kind::Text {
             let font = match self.option(c, "font") {
                 Some(name) => div().child(
                     field(if name.is_empty() { "default".into() } else { stem(&name) })
@@ -241,8 +261,9 @@ impl Origami {
                 ),
                 None => code(stem(&c.font)),
             };
-            out.push(self.attr("color", false, color, gem(false, BORDER)));
+            out.push(swatch("color", cx));
             out.push(self.attr("font", false, font, gem(false, BORDER)));
+            out.push(swatch("background", cx));
         }
         out
     }

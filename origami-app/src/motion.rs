@@ -1,6 +1,10 @@
-use crate::{Origami, knob::close};
+use crate::{
+    Origami,
+    knob::close,
+    stage::{drag, rest},
+};
 use gpui::{Pixels, Point};
-use origami_engine::place;
+use origami_engine::{place, tone};
 use origami_lang::{Clip, Kind, Val};
 use std::mem;
 
@@ -15,7 +19,7 @@ pub const EASES: [&str; 9] = [
     "bounceOut",
     "bezier",
 ];
-pub const ATTRS: [(&str, &str, f64, f64, f64, usize); 7] = [
+pub const ATTRS: [(&str, &str, f64, f64, f64, usize); 10] = [
     ("x", "pos x", 0.001, f64::MIN, f64::MAX, 3),
     ("y", "pos y", 0.001, f64::MIN, f64::MAX, 3),
     ("scale", "scale", 0.01, 0.01, f64::MAX, 2),
@@ -23,13 +27,19 @@ pub const ATTRS: [(&str, &str, f64, f64, f64, usize); 7] = [
     ("opacity", "opacity", 1. / 56., 0., 1., 2),
     ("shown", "shown", 1. / 56., 0., 1., 2),
     ("size", "size", 1., 8., 300., 0),
+    ("width", "width", 1., 1., f64::MAX, 0),
+    ("height", "height", 1., 1., f64::MAX, 0),
+    ("radius", "radius", 1., 0., f64::MAX, 0),
 ];
-const MAKERS: [(&str, Kind); 5] = [
+pub const STILL: [&str; 4] = ["size", "width", "height", "radius"];
+const MAKERS: [(&str, Kind); 7] = [
     ("video", Kind::Video),
     ("image", Kind::Image),
     ("text", Kind::Text),
     ("caption", Kind::Text),
     ("color", Kind::Color),
+    ("rect", Kind::Rect),
+    ("line", Kind::Line),
 ];
 const SOFT: [f64; 4] = [0.33, 0., 0.67, 1.];
 
@@ -46,6 +56,7 @@ pub enum Pull {
     Field(&'static str, f64),
     Bend(bool, f64, f64),
     Zoom(f64),
+    Place([Option<f64>; 2], [f64; 2]),
 }
 
 #[derive(Clone, Copy)]
@@ -219,14 +230,6 @@ pub fn bent(ease: &str, lead: bool, a: (f64, f64), b: (f64, f64), at: (f64, f64)
     format!("bezier({}, {}, {}, {})", v[0], v[1], v[2], v[3])
 }
 
-pub fn hue(color: &str) -> Option<u32> {
-    match color {
-        "" | "white" => Some(0xffffff),
-        "black" => Some(0),
-        c => u32::from_str_radix(c.strip_prefix('#').filter(|h| h.len() == 6)?, 16).ok(),
-    }
-}
-
 fn bounds(values: impl Iterator<Item = f64>) -> (f64, f64) {
     let (lo, hi) = values.fold((f64::MAX, f64::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)));
     if hi - lo < 1e-9 { (lo - 0.5, hi + 0.5) } else { (lo, hi) }
@@ -291,8 +294,17 @@ fn slot(s: &str, calls: &[Call], name: &str) -> Option<Slot> {
     let word = |c: &Call| &s[c.0..c.1];
     let new = |a, b, pre: String, post| Some(Slot { a, b, pre, post });
     let (maker, last) = (calls[0], calls[calls.len() - 1]);
-    if let "size" | "color" | "font" = name {
-        let Some((a, b)) = arg(s, maker.1, maker.2, 1) else {
+    if let ("width" | "height", "rect") = (name, word(&maker)) {
+        let (a, b) = arg(s, maker.1, maker.2, (name == "height") as usize)?;
+        return new(a, b, String::new(), "");
+    }
+    if let "size" | "color" | "font" | "background" | "radius" | "width" = name {
+        let at = match word(&maker) {
+            "rect" => 2,
+            "line" => 4,
+            _ => 1,
+        };
+        let Some((a, b)) = arg(s, maker.1, maker.2, at) else {
             let (p, gap) = tail(s, maker.1 + 1, maker.2);
             return new(p, p, format!("{gap}{{ {name}: "), " }");
         };
@@ -358,7 +370,7 @@ impl Origami {
         Some(self.lines[..row].iter().map(|l| l.len() + 1).sum())
     }
 
-    fn frame(&self, c: &Clip) -> f64 {
+    pub fn frame(&self, c: &Clip) -> f64 {
         ((self.t - c.start).clamp(0., c.end - c.start) * self.fps()).round()
     }
 
@@ -370,19 +382,25 @@ impl Origami {
 
     pub fn rows(&self, c: &Clip) -> Vec<Row> {
         let (text, frame) = (self.lines.join("\n"), self.frame(c) as usize);
-        let fits = |a: &&(&str, &str, f64, f64, f64, usize)| match c.kind {
-            Kind::Sound => false,
-            Kind::Text => true,
-            _ => !matches!(a.0, "shown" | "size"),
+        let fits = |a: &&(&str, &str, f64, f64, f64, usize)| match (c.kind, a.0) {
+            (Kind::Sound, _) => false,
+            (Kind::Text, "shown" | "size") | (Kind::Rect, "width" | "height" | "radius") | (Kind::Line, "width") => true,
+            (_, name) => !STILL.contains(&name) && name != "shown",
         };
         let row = |&(name, ..): &(&'static str, &str, f64, f64, f64, usize)| {
             let val = c.vals().find(|v| v.0 == name).map(|v| v.1);
-            let live = if name == "size" { c.size } else { val.map_or(0., |v| v.at(frame)) };
+            let live = match name {
+                "width" if c.kind == Kind::Rect => c.w as f64,
+                "size" | "width" => c.size,
+                "height" => c.h as f64,
+                "radius" => c.radius,
+                _ => val.map_or(0., |v| v.at(frame)),
+            };
             let site = self.offset(c).and_then(|from| read(&text, from, c.kind, name));
             let (form, now) = match site.as_ref().map(|(s, caption)| (text[s.a..s.b].trim(), *caption)) {
                 None => (Form::Code, live),
                 Some(("" | "null", caption)) => match (name, val) {
-                    ("size", _) => (Form::Plain, live),
+                    (name, _) if STILL.contains(&name) => (Form::Plain, live),
                     ("x" | "y", None) => (Form::Plain, self.centre(c, name)),
                     ("y", Some(Val::Fixed(v))) if caption && *v == 0.84 => (Form::Plain, live),
                     ("rotate", Some(Val::Fixed(v))) if *v == 0. => (Form::Plain, live),
@@ -476,7 +494,7 @@ impl Origami {
     }
 
     pub fn pin(&mut self, name: &'static str) {
-        let Some((c, row)) = self.live(name).filter(|_| name != "size") else {
+        let Some((c, row)) = self.live(name).filter(|_| !STILL.contains(&name)) else {
             return;
         };
         let (len, fps) = (c.end - c.start, self.fps());
@@ -488,15 +506,16 @@ impl Origami {
         self.key = None;
     }
 
-    pub fn dye(&mut self) {
+    pub fn dye(&mut self, name: &'static str) {
         let Some(c) = self.opened().cloned() else { return };
-        match self.option(&c, "color").map(|c| (c.is_empty(), hue(&c))) {
-            Some((true, _)) => self.change(|this| this.amend(&c, "color", |_| "\"#ffffff\"".into())),
+        let new = if name == "color" { "\"#ffffff\"" } else { "\"#00000088\"" };
+        match self.option(&c, name).map(|c| (c.is_empty(), tone(&c))) {
+            Some((true, _)) => self.change(|this| this.amend(&c, name, |_| new.into())),
             Some((_, Some(_))) => {}
             _ => return,
         }
         let text = self.lines.join("\n");
-        let Some((s, _)) = self.offset(&c).and_then(|from| read(&text, from, c.kind, "color")) else {
+        let Some((s, _)) = self.offset(&c).and_then(|from| read(&text, from, c.kind, name)) else {
             return;
         };
         let (row, col) = (
@@ -504,10 +523,9 @@ impl Origami {
             s.a - text[..s.a].rfind('\n').map_or(0, |i| i + 1),
         );
         let board = self.board(row, col).filter(|k| k.3.iter().any(|k| k.label == "#"));
-        self.knobbed = board.map(|k| (row, k.1));
-        match self.knobbed {
-            Some(_) => self.reveal(row),
-            None => self.note = "write text( ... ) on one line to pick its colour here".into(),
+        self.knobbed = board.map(|_| (row, col));
+        if self.knobbed.is_some() {
+            self.reveal(row);
         }
     }
 
@@ -532,6 +550,13 @@ impl Origami {
             (Pull::Field(name, from), _) => {
                 let (t, v) = (self.frame(&c) / fps, tidy(name, from + dx * s.gain[1]));
                 self.amend(&c, name, |old| assign(old, t, v, len, fps));
+            }
+            (Pull::Place(from, size), _) if (dx, dy) != (0., 0.) => {
+                let to = [0, 1].map(|n| from[n].map(|v| rest(v, [dx, dy][n] * s.gain[n], size[n])));
+                if let Some(at) = self.offset(&c) {
+                    let text = drag(&self.lines.join("\n"), at, c.kind, to, (self.frame(&c) / fps, len, fps));
+                    self.lines = text.split('\n').map(String::from).collect();
+                }
             }
             (Pull::Key, Some((_, name, i))) => self.shape(&c, name, |keys| {
                 let (was, by) = (keys.get(i).map_or(0., |k| k.value), dx * s.gain[1] + dy * s.gain[2]);
@@ -726,9 +751,53 @@ stack(shot, title.shift(1), tag, note, text(\"inline\").for(2))";
         assert_eq!(set("text(\"a\", {})", 0, "size", "9"), "text(\"a\", { size: 9 })");
         assert_eq!(set("text(\"a\", look)", 0, "size", "9"), "text(\"a\", look)");
         assert_eq!(
-            (hue("#ffcc00"), hue(""), hue("black"), hue("#fc0"), hue("red")),
-            (Some(0xffcc00), Some(0xffffff), Some(0), None, None)
+            row(&set(SRC, 4, "background", "\"#0008\""), 5),
+            "  font: \"Menlo\", background: \"#0008\""
         );
+        let wide = "const tag = text(\"a\", {\n  size: 28,\n  color: \"#fff\",\n  background: \"#0008\"\n})\n  .pos(0.1, 0.2)";
+        assert_eq!(row(&set(wide, 0, "color", "\"#ffcc0080\""), 2), "  color: \"#ffcc0080\",");
+        assert_eq!(row(&set(wide, 0, "background", "\"#102030\""), 3), "  background: \"#102030\"");
+        assert_eq!(
+            row(&set(wide, 0, "font", "\"Menlo\""), 3),
+            "  background: \"#0008\", font: \"Menlo\""
+        );
+        assert_eq!(row(&set(wide, 0, "y", "0.5"), 5), "  .pos(0.1, 0.5)");
+    }
+
+    #[test]
+    fn rewrites_shapes() {
+        let src =
+            "stack(\n  rect(400, 120, { color: \"#0008\" }).for(2),\n  line(0.1, 0.5, 0.9, 0.5),\n  rect(9, 9, {\n    radius: 2,\n  }))";
+        let on = |row: usize, kind, name: &str, new: &str| edit(src, row, kind, name, |_| new.into());
+        let row = |s: &str, n: usize| s.lines().nth(n).unwrap().to_string();
+        assert_eq!(
+            row(&on(1, Kind::Rect, "width", "500"), 1),
+            "  rect(500, 120, { color: \"#0008\" }).for(2),"
+        );
+        assert_eq!(
+            row(&on(1, Kind::Rect, "height", "90"), 1),
+            "  rect(400, 90, { color: \"#0008\" }).for(2),"
+        );
+        assert_eq!(
+            row(&on(1, Kind::Rect, "radius", "16"), 1),
+            "  rect(400, 120, { color: \"#0008\", radius: 16 }).for(2),"
+        );
+        assert_eq!(
+            row(&on(1, Kind::Rect, "x", "0.2"), 1),
+            "  rect(400, 120, { color: \"#0008\" }).for(2).pos(0.2),"
+        );
+        assert_eq!(
+            row(&on(2, Kind::Line, "width", "8"), 2),
+            "  line(0.1, 0.5, 0.9, 0.5, { width: 8 }),"
+        );
+        assert_eq!(
+            row(&on(2, Kind::Line, "color", "\"#ff000080\""), 2),
+            "  line(0.1, 0.5, 0.9, 0.5, { color: \"#ff000080\" }),"
+        );
+        assert_eq!(row(&on(3, Kind::Rect, "radius", "7"), 4), "    radius: 7,");
+        assert_eq!(row(&on(3, Kind::Rect, "color", "\"#fff\""), 4), "    radius: 2, color: \"#fff\"");
+        assert_eq!(on(2, Kind::Rect, "width", "8"), src);
+        assert_eq!((tidy("width", -4.), tidy("radius", -4.), tidy("height", 80.4)), (1., 0., 80.));
     }
 
     #[test]

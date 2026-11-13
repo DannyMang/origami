@@ -10,6 +10,7 @@ mod mouse;
 mod peek;
 mod scene;
 mod search;
+mod stage;
 mod view;
 
 use gpui::{
@@ -82,6 +83,7 @@ struct Origami {
     lift: f32,
     key: Option<(u32, &'static str, usize)>,
     slip: Option<motion::Slip>,
+    stage: Bounds<Pixels>,
     disc: Arc<RenderImage>,
     strips: [Arc<RenderImage>; 3],
     finding: Option<String>,
@@ -217,7 +219,9 @@ impl Origami {
                         (this.tl, this.rev) = (Arc::new(tl), this.rev + 1);
                         this.err.clear();
                         this.bad = 0;
+                        let sel = this.sel;
                         this.seek(this.t);
+                        this.sel = sel;
                         this.refresh(cx);
                     }
                     Err(e) => {
@@ -425,6 +429,7 @@ fn main() {
                     lift: 0.,
                     key: None,
                     slip: None,
+                    stage: Bounds::default(),
                     disc: bitmap(knob::disc(), 300, 300),
                     strips: [0, 1, 2].map(|kind| bitmap(knob::strip(kind), 150, 150)),
                     finding: None,
