@@ -3,8 +3,10 @@ mod export;
 mod grade;
 mod lut;
 mod preview;
+mod shape;
 mod text;
 
 pub use audio::Player;
-pub use export::{command, place, render};
+pub use export::{command, place, render, seat};
 pub use preview::{Preview, peaks, thumb};
+pub use text::tone;

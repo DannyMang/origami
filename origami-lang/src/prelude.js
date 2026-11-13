@@ -2,7 +2,7 @@
   const T = t => typeof t === 'number' ? t : String(t).split(':').reduce((a, x) => a * 60 + +x, 0)
   const S = { fps: 30, size: null }
   let L = {}, at = 0
-  const digits = /^\d+$/, named = /(?:const|let|var)\s+(\w+)\s*=/, made = /\b(video|sound|image|text|captions|caption|color|(?<!\.)keys)\(/g
+  const digits = /^\d+$/, named = /(?:const|let|var)\s+(\w+)\s*=/, made = /\b(video|sound|image|text|captions|caption|color|(?<!\.)(?:keys|rect|line))\(/g
   const line = g => new Proxy(g(0), { get: (t, n) => digits.test(String(n)) ? g(+n) : t[n] })
   const anim = (k, v) => {
     if (typeof v !== 'number' && typeof v !== 'function') throw new Error(`line ${at}: ${k} takes a number or a function of time`)
@@ -86,7 +86,16 @@
   })
   const words = (size, pos) => leaf((s, o = {}) => {
     if (typeof o !== 'object') throw new Error(`line ${at}: options are written { size: 72, color: "red" }`)
-    return { kind: 'text', src: String(s), video: true, audio: false, size: o.size ?? size, color: o.color ?? 'white', font: o.font == null ? '' : __font(o.font, 'font', at), pos, label: String(s) }
+    if (!['left', 'center', 'right'].includes(o.align ?? 'center')) throw new Error(`line ${at}: align is "left", "center" or "right"`)
+    return {
+      kind: 'text', src: String(s), video: true, audio: false, size: o.size ?? size, color: o.color ?? 'white', font: o.font == null ? '' : __font(o.font, 'font', at), pos, label: String(s),
+      background: o.background, align: o.align,
+    }
+  })
+  const shape = (kind, n, how, make) => leaf((...a) => {
+    const o = a[n] ?? {}
+    if (!(a.length >= n && a.slice(0, n).every(Number.isFinite)) || typeof o !== 'object') throw new Error(`line ${at}: ${kind} is written ${how}`)
+    return { kind, src: '', video: true, audio: false, color: o.color ?? 'white', label: kind, ...make(a, o) }
   })
   const group = cat => (...kids) => clip({ ...base, cat, kids: kids.flat() })
   const out3 = x => 1 - (1 - x) ** 3
@@ -135,6 +144,8 @@
       return a && caption[n](s.trim().replace(/\n/g, ' ')).at[n](t(a)).for[n](t(z) - t(a))
     }).filter(Boolean))),
     color: leaf(c => ({ kind: 'color', src: c, video: true, audio: false, label: c })),
+    rect: shape('rect', 2, 'rect(400, 120, { color: "#0008", radius: 12 })', ([w, h], o) => ({ w: Math.max(1, Math.round(w)), h: Math.max(1, Math.round(h)), radius: o.radius ?? 0 })),
+    line: shape('line', 4, 'line(0.1, 0.5, 0.9, 0.5, { color: "white", width: 4 })', (a, o) => ({ ends: a.slice(0, 4), size: o.width ?? 4 })),
     cat: group(true),
     stack: group(false),
   })
@@ -193,6 +204,7 @@
         kind: c.kind, src: c.src, w: c.w ?? 0, h: c.h ?? 0, start: c.start, end: c.end, src_in: c.in, speed: c.speed, z,
         scale: sample(c, c.scale), pos: (c.pos ?? [null, null]).map(v => v == null ? null : sample(c, v)), gain: c.gain, fade: c.fade, label: c.label, line: c.line, home: c.home, total: c.total ?? 0,
         video: c.video, audio: c.audio, size: c.size ?? 0, color: c.color ?? '', font: c.font ?? '', grade: c.grade,
+        radius: c.radius ?? 0, ends: c.ends ?? [0, 0, 0, 0], background: c.background ?? '', align: c.align ?? '',
         opacity: sample(c, c.opacity), rotate: sample(c, c.rotate), shown: sample(c, c.shown),
         parts: c.parts?.map(p => Object.fromEntries(Object.entries(p).map(([k, v]) => [k, sample(c, v)]))),
       })),

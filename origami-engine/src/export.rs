@@ -1,5 +1,5 @@
 use crate::preview::Preview;
-use crate::{grade, lut::Lut, text};
+use crate::{grade, lut::Lut, shape, text};
 use anyhow::{Context, Result, bail};
 use origami_lang::{Clip, Kind, Timeline, Val};
 use std::{
@@ -10,9 +10,25 @@ use std::{
 };
 
 fn spot(c: &Clip, (w, h): (f64, f64), (tw, th): (f64, f64)) -> (f64, f64, f64, f64) {
-    let at = |p: &Option<Val>, w, tw| p.as_ref().map_or((w - tw) / 2., |x| x.at(0) * w);
-    let (x, y) = (at(&c.pos.0, w, tw), at(&c.pos.1, h, th));
+    let (at, m) = (
+        |p: &Option<Val>, w, tw, m| p.as_ref().map_or(m * w - tw / 2., |x| x.at(0) * w),
+        mid(c),
+    );
+    let (x, y) = (at(&c.pos.0, w, tw, m.0), at(&c.pos.1, h, th, m.1));
     (tw.round(), th.round(), x.round(), y.round())
+}
+
+fn mid(c: &Clip) -> (f64, f64) {
+    match (c.kind, c.ends) {
+        (Kind::Line, [x1, y1, x2, y2]) => ((x1 + x2) / 2., (y1 + y2) / 2.),
+        _ => (0.5, 0.5),
+    }
+}
+
+pub fn seat(c: &Clip, (w, h): (f64, f64), (tw, th): (f64, f64), i: usize) -> (f64, f64) {
+    let (q, m) = (c.scale.at(i) / c.scale.max(), mid(c));
+    let at = |p: &Option<Val>, w: f64, tw: f64, m: f64| p.as_ref().map_or(m * w, |x| x.at(i) * w + tw * q / 2.);
+    (at(&c.pos.0, w, tw, m.0), at(&c.pos.1, h, th, m.1))
 }
 
 pub fn place(c: &Clip, (w, h): (f64, f64), k: f64) -> (f64, f64, f64, f64) {
@@ -21,6 +37,10 @@ pub fn place(c: &Clip, (w, h): (f64, f64), k: f64) -> (f64, f64, f64, f64) {
     match c.kind {
         Kind::Text => {
             let (_, tw, th) = text::raster(c, k);
+            spot(c, (w, h), (tw as f64, th as f64))
+        }
+        Kind::Rect | Kind::Line => {
+            let (tw, th) = shape::extent(c, (w, h), k);
             spot(c, (w, h), (tw as f64, th as f64))
         }
         _ if c.w > 0 => spot(c, (w, h), (c.w as f64 * r, c.h as f64 * r)),
@@ -57,11 +77,12 @@ fn graph(tl: &Timeline, video: bool, from: f64) -> (Vec<String>, String) {
         let n = ins.iter().filter(|a| *a == "-i").count();
         let (tw, th, x, y) = place(c, size, 1.);
         let own = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let solid = c.kind == Kind::Color && text::rgba(&c.src)[3] == 255;
         match c.kind {
             Kind::Image if video => ins.extend(own(&["-loop", "1", "-t", &len.to_string(), "-i", &c.src])),
-            Kind::Text if video => {
+            Kind::Text | Kind::Rect | Kind::Line | Kind::Color if video && !solid => {
                 let file = env::temp_dir().join(format!("origami-text-{i}.bgra")).to_string_lossy().to_string();
-                let _ = fs::write(&file, text::raster(c, 1.).0);
+                let _ = fs::write(&file, shape::image(c, size, 1.).0);
                 let raw = [
                     "-f",
                     "rawvideo",
@@ -111,15 +132,15 @@ fn graph(tl: &Timeline, video: bool, from: f64) -> (Vec<String>, String) {
                 ]));
                 m
             });
-            f.push(match c.kind {
-                Kind::Color => {
-                    let [r, g, b] = text::rgb(&c.src);
+            f.push(match solid {
+                true => {
+                    let [r, g, b, _] = text::rgba(&c.src);
                     let px = lut.map_or(vec![b, g, r], |l| l.apply(&[b, g, r, 255]));
                     let shade = mask.map_or(String::new(), |m| format!("[d{i}];[d{i}][{m}:v]overlay={on}"));
                     let fill = format!("color=0x{:02x}{:02x}{:02x}", px[2], px[1], px[0]);
                     format!("[b{b0}]drawbox=w=iw:h=ih:{fill}:t=fill:{on}{shade}[b{}]", b0 + 1)
                 }
-                _ => {
+                false => {
                     let mut s = format!("[{n}:v]setpts=(PTS-STARTPTS)/{}+{}/TB,scale={tw}:{th}", c.speed, c.start);
                     if lut.is_some() || mask.is_some() {
                         s += ",format=bgra";

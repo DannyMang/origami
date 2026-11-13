@@ -25,6 +25,8 @@ pub enum Kind {
     Image,
     Text,
     Color,
+    Rect,
+    Line,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -88,6 +90,14 @@ pub struct Clip {
     pub color: String,
     #[serde(default)]
     pub font: String,
+    #[serde(default)]
+    pub radius: f64,
+    #[serde(default)]
+    pub ends: [f64; 4],
+    #[serde(default)]
+    pub background: String,
+    #[serde(default)]
+    pub align: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grade: Option<Grade>,
     pub opacity: Val,
@@ -411,6 +421,10 @@ stack(
             ("const k =\n  keys([0, 0], [1, 1, 'slow'])\ntext('a')", 2),
             ("color('red')\n  .shown(1)", 2),
             ("text('a')\n\n  .opacity(t => 'x')", 3),
+            ("color('red')\n\n\n  .for(1)\nrect(10)", 5),
+            ("stack(\n  line(0, 0, 1, '1'))", 2),
+            ("text('a', {\n  align: 'middle' })", 1),
+            ("rect(10, 10)\n  .shown(1)", 2),
         ] {
             let dir = std::env::temp_dir().join(format!("origami-motion-{line}-{}", src.len()));
             fs::create_dir_all(&dir).unwrap();
@@ -418,6 +432,39 @@ stack(
             let e = eval(&dir.join("edit.js"), true).unwrap_err().to_string();
             assert!(e.contains(&format!("line {line}: ")), "{e}");
         }
+    }
+
+    #[test]
+    fn shapes_and_plates() {
+        let t = tl("stack(
+  rect(400.4, 120, { color: '#0008', radius: 12 }).for(2).pos(0.1, 0.2),
+  line(0.1, 0.5, 0.9, 0.5),
+  line(0, 0, 1, 1, { color: '#f00', width: 9 }).rotate(keys([0, 0], [1, 90])),
+  text('a', { background: '#00000080', align: 'left' }),
+  caption('b'),
+)");
+        let c = &t.clips;
+        assert_eq!(
+            (c[0].kind, c[0].w, c[0].h, c[0].radius, c[0].color.as_str()),
+            (Kind::Rect, 400, 120, 12., "#0008")
+        );
+        assert_eq!(
+            (c[1].kind, c[1].ends, c[1].size, c[1].color.as_str()),
+            (Kind::Line, [0.1, 0.5, 0.9, 0.5], 4., "white")
+        );
+        assert!(matches!((c[2].size, &c[2].rotate), (9., Val::Frames(4, _))));
+        assert_eq!((c[3].background.as_str(), c[3].align.as_str()), ("#00000080", "left"));
+        assert_eq!((c[4].background.as_str(), c[4].align.as_str(), c[4].end), ("", "", 2.));
+        let json = serde_json::to_value(&t).unwrap();
+        let mut old = json.clone();
+        for c in old["clips"].as_array_mut().unwrap() {
+            for k in ["radius", "ends", "background", "align"] {
+                c.as_object_mut().unwrap().remove(k);
+            }
+        }
+        let old: Timeline = serde_json::from_value(old).unwrap();
+        assert_eq!((old.clips[4].clone(), old.clips[0].radius), (c[4].clone(), 0.));
+        assert_eq!(serde_json::from_value::<Timeline>(json).unwrap(), t);
     }
 
     #[test]

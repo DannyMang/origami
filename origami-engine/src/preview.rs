@@ -1,6 +1,6 @@
 use crate::{
-    export::{alpha, place, plain},
-    grade,
+    export::{alpha, place, plain, seat},
+    grade, shape,
     text::{self, Glyph},
 };
 use lru::LruCache;
@@ -237,15 +237,14 @@ impl Preview {
                 .entry(format!("{}|{tw}x{th}", c.src))
                 .or_insert_with(|| still(&c.src, 0., tw, th).map(Arc::new))
                 .clone()?,
-            Kind::Text => self
+            _ => self
                 .stills
-                .entry(format!("{}|{}|{}|{th}", c.src, c.color, c.font))
-                .or_insert_with(|| Some(Arc::new(text::raster(c, k).0)))
+                .entry(format!(
+                    "{}|{}|{}|{}|{}|{}|{:?}|{tw}x{th}",
+                    c.src, c.color, c.font, c.background, c.align, c.radius, c.ends
+                ))
+                .or_insert_with(|| Some(Arc::new(shape::image(c, (size.0 as f64, size.1 as f64), k).0)))
                 .clone()?,
-            _ => {
-                let [r, g, b] = text::rgb(&c.src);
-                Arc::new([b, g, r, 255].repeat(tw * th))
-            }
         };
         let px = c.grade.as_ref().map_or(px.clone(), |g| grade::paint(g, px, (tw, th)));
         Some((px, (tw, th), (x as i64, y as i64)))
@@ -253,15 +252,23 @@ impl Preview {
 
     fn moved(&mut self, out: &mut [u8], c: &Clip, t: f64, fps: u32, (pw, ph): (usize, usize), k: f64, i: usize, a: f64) {
         let ((w, h), q, turn) = ((pw as f64, ph as f64), c.scale.at(i) / c.scale.max(), c.rotate.at(i));
-        let at = |p: &Option<Val>, w: f64, tw: usize| p.as_ref().map_or(w / 2., |x| x.at(i) * w + tw as f64 * q / 2.);
-        let mid = |tw, th| (at(&c.pos.0, w, tw), at(&c.pos.1, h, th));
+        let mid = |tw, th| seat(c, (w, h), (tw as f64, th as f64), i);
         if c.parts.is_empty() && c.shown == Val::Fixed(1.) {
             if let Some((px, (sw, sh), _)) = self.layer(c, t, fps, (pw, ph), k) {
                 blit(out, (pw, ph), &px, (sw, sh), q, turn, mid(sw, sh), a);
             }
             return;
         }
-        let key = format!("{}|{}|{}|{}|{:?}", c.src, c.color, c.font, c.size * c.scale.max() * k, c.grade);
+        let key = format!(
+            "{}|{}|{}|{}|{}|{}|{:?}",
+            c.src,
+            c.color,
+            c.font,
+            c.background,
+            c.align,
+            c.size * c.scale.max() * k,
+            c.grade
+        );
         let tint = |mut g: Glyph| {
             g.px = c.grade.as_ref().map_or(g.px.clone(), |x| grade::paint(x, g.px, (g.w, g.h)));
             g
@@ -280,6 +287,11 @@ impl Preview {
             });
             ((b.0 + b.2) as f64 / 2., (b.1 + b.3) as f64 / 2.)
         };
+        if !c.background.is_empty() {
+            let plate = Arc::new(text::flat(&c.background, tw * th));
+            let plate = c.grade.as_ref().map_or(plate.clone(), |g| grade::paint(g, plate, (*tw, *th)));
+            blit(out, (pw, ph), &plate, (*tw, *th), q, turn, mid, a);
+        }
         for g in glyphs.iter().filter(|g| g.i < n && g.w > 0) {
             let (ps, pr, pa, (dx, dy), pc) = match c.parts.iter().find(|p| (p.from..p.to).contains(&g.i)) {
                 Some(p) => (

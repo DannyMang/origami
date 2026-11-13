@@ -111,7 +111,7 @@ fn pipe(g: &Grade) -> impl Fn(Rgb) -> Rgb + '_ {
     let key = g
         .hsl_secondary
         .as_ref()
-        .map(|s| (s, hsv(text::rgb(&s.color).map(|v| v as f64 / 255.))));
+        .map(|s| (s, hsv([0, 1, 2].map(|i| text::rgba(&s.color)[i] as f64 / 255.))));
     move |mut c| {
         if let Some(lut) = &input {
             c = lut.sample(c);
