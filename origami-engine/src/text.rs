@@ -1,9 +1,12 @@
 use fontdue::{
     Font, FontSettings,
-    layout::{CoordinateSystem, Layout, TextStyle},
+    layout::{CoordinateSystem, GlyphPosition, Layout, TextStyle},
 };
 use origami_lang::Clip;
-use std::{fs, sync::LazyLock};
+use std::{
+    fs,
+    sync::{Arc, LazyLock},
+};
 
 static FONT: LazyLock<Font> =
     LazyLock::new(|| Font::from_bytes(fs::read("/System/Library/Fonts/Helvetica.ttc").unwrap(), FontSettings::default()).unwrap());
@@ -18,19 +21,40 @@ pub fn rgb(s: &str) -> [u8; 3] {
     [v[1], v[2], v[3]]
 }
 
-pub fn raster(c: &Clip, k: f64) -> (Vec<u8>, usize, usize) {
+pub struct Glyph {
+    pub i: usize,
+    pub x: usize,
+    pub y: usize,
+    pub w: usize,
+    pub h: usize,
+    pub px: Arc<Vec<u8>>,
+}
+
+pub fn glyphs(c: &Clip, k: f64) -> (Vec<Glyph>, usize, usize) {
     let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
-    layout.append(&[&*FONT], &TextStyle::new(&c.src, (c.size * c.scale * k) as f32, 0));
+    layout.append(&[&*FONT], &TextStyle::new(&c.src, (c.size * c.scale.max() * k) as f32, 0));
     let w = layout.glyphs().iter().map(|g| g.x as usize + g.width).max().unwrap_or(0);
-    let h = layout.height().ceil() as usize;
+    let [r, g, b] = rgb(&c.color);
+    let glyph = |p: &GlyphPosition| Glyph {
+        i: c.src[..p.byte_offset].chars().count(),
+        x: p.x as usize,
+        y: p.y as usize,
+        w: p.width,
+        h: p.height,
+        px: Arc::new(FONT.rasterize_config(p.key).1.into_iter().flat_map(|a| [b, g, r, a]).collect()),
+    };
+    (layout.glyphs().iter().map(glyph).collect(), w, layout.height().ceil() as usize)
+}
+
+pub fn raster(c: &Clip, k: f64) -> (Vec<u8>, usize, usize) {
+    let (glyphs, w, h) = glyphs(c, k);
     let [r, g, b] = rgb(&c.color);
     let mut px = [b, g, r, 0].repeat(w * h);
-    for g in layout.glyphs() {
-        let (m, cover) = FONT.rasterize_config(g.key);
-        for (i, a) in cover.iter().enumerate() {
-            let (x, y) = (g.x as usize + i % m.width, g.y as usize + i / m.width);
+    for g in glyphs {
+        for (i, a) in g.px.chunks_exact(4).enumerate() {
+            let (x, y) = (g.x + i % g.w, g.y + i / g.w);
             if x < w && y < h {
-                px[(y * w + x) * 4 + 3] = *a;
+                px[(y * w + x) * 4 + 3] = a[3];
             }
         }
     }

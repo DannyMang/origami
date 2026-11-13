@@ -230,7 +230,7 @@ impl Origami {
             let (w, h) = Preview::size(&tl);
             let px = cx
                 .background_executor()
-                .spawn(async move { preview.lock().unwrap().frame(&tl, t) })
+                .spawn(async move { preview.lock().unwrap().frame(&tl, t, (w, h)) })
                 .await;
             this.update(cx, |this, cx| {
                 if let Some(old) = this.image.replace(bitmap(px, w, h)) {

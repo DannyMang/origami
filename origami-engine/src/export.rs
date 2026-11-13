@@ -1,19 +1,22 @@
+use crate::preview::Preview;
 use crate::{grade, lut::Lut, text};
 use anyhow::{Context, Result, bail};
-use origami_lang::{Clip, Kind, Timeline};
+use origami_lang::{Clip, Kind, Timeline, Val};
 use std::{
     env, fs,
-    io::{BufRead, BufReader, Read},
+    io::{BufRead, BufReader, Read, Write},
     process::{Command, Stdio},
+    thread,
 };
 
 fn spot(c: &Clip, (w, h): (f64, f64), (tw, th): (f64, f64)) -> (f64, f64, f64, f64) {
-    let (x, y) = (c.pos.0.map_or((w - tw) / 2., |x| x * w), c.pos.1.map_or((h - th) / 2., |y| y * h));
+    let at = |p: &Option<Val>, w, tw| p.as_ref().map_or((w - tw) / 2., |x| x.at(0) * w);
+    let (x, y) = (at(&c.pos.0, w, tw), at(&c.pos.1, h, th));
     (tw.round(), th.round(), x.round(), y.round())
 }
 
 pub fn place(c: &Clip, (w, h): (f64, f64), k: f64) -> (f64, f64, f64, f64) {
-    let (bw, bh) = (w * c.scale, h * c.scale);
+    let (bw, bh) = (w * c.scale.max(), h * c.scale.max());
     let r = (bw / c.w as f64).min(bh / c.h as f64);
     match c.kind {
         Kind::Text => {
@@ -23,6 +26,15 @@ pub fn place(c: &Clip, (w, h): (f64, f64), k: f64) -> (f64, f64, f64, f64) {
         _ if c.w > 0 => spot(c, (w, h), (c.w as f64 * r, c.h as f64 * r)),
         _ => (w, h, 0., 0.),
     }
+}
+
+pub fn plain(c: &Clip) -> bool {
+    let fixed = |(n, v): (&str, &Val)| n == "opacity" || matches!(v, Val::Fixed(_));
+    c.parts.is_empty() && c.rotate == Val::Fixed(0.) && c.shown == Val::Fixed(1.) && c.vals().all(fixed)
+}
+
+fn piped(tl: &Timeline) -> bool {
+    !tl.clips.iter().all(|c| plain(c) && c.opacity == Val::Fixed(1.))
 }
 
 pub fn alpha(c: &Clip, t: f64) -> f64 {
@@ -162,7 +174,26 @@ fn graph(tl: &Timeline, video: bool, from: f64) -> (Vec<String>, String) {
 }
 
 pub fn command(tl: &Timeline, out: &str) -> Vec<String> {
-    let (mut a, f) = graph(tl, true, 0.);
+    let (mut a, mut f) = graph(tl, !piped(tl), 0.);
+    if piped(tl) {
+        let n = a.iter().filter(|a| *a == "-i").count();
+        f += &format!(";[{n}:v]scale=out_color_matrix=bt709:out_range=tv,format=yuv420p[v]");
+        let raw = [
+            "-f",
+            "rawvideo",
+            "-pixel_format",
+            "bgra",
+            "-video_size",
+            &format!("{}x{}", tl.size.0, tl.size.1),
+            "-framerate",
+            &tl.fps.to_string(),
+            "-i",
+            "-",
+            "-colorspace",
+            "bt709",
+        ];
+        a.extend(raw.map(String::from));
+    }
     let tail = [
         "-filter_complex",
         &f,
@@ -217,16 +248,24 @@ pub fn render(tl: &Timeline, out: &str, mut progress: impl FnMut(f64)) -> Result
     let mut child = Command::new("ffmpeg")
         .args(["-v", "error", "-nostats", "-progress", "pipe:1"])
         .args(command(tl, out))
-        .stdin(Stdio::null())
+        .stdin(if piped(tl) { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .context("ffmpeg not found")?;
-    for line in BufReader::new(child.stdout.take().unwrap()).lines().map_while(Result::ok) {
-        if let Some(us) = line.strip_prefix("out_time_us=").and_then(|v| v.parse::<f64>().ok()) {
-            progress((us / 1e6 / tl.duration).clamp(0., 1.));
+    let (pipe, size) = (child.stdin.take(), (tl.size.0 as usize, tl.size.1 as usize));
+    thread::scope(|s| {
+        s.spawn(move || {
+            let (mut pv, mut pipe) = (Preview::default(), pipe?);
+            (0..(tl.duration * tl.fps as f64).round() as u32)
+                .try_for_each(|k| pipe.write_all(&pv.frame(tl, k as f64 / tl.fps as f64, size)).ok())
+        });
+        for line in BufReader::new(child.stdout.take().unwrap()).lines().map_while(Result::ok) {
+            if let Some(us) = line.strip_prefix("out_time_us=").and_then(|v| v.parse::<f64>().ok()) {
+                progress((us / 1e6 / tl.duration).clamp(0., 1.));
+            }
         }
-    }
+    });
     let mut err = String::new();
     child.stderr.take().unwrap().read_to_string(&mut err)?;
     if !child.wait()?.success() {

@@ -1,5 +1,10 @@
 use anyhow::{Result, bail};
-use std::env;
+use origami_engine::Preview;
+use std::{
+    env,
+    io::Write,
+    process::{Command, Stdio},
+};
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -24,7 +29,33 @@ fn main() -> Result<()> {
                 eprintln!();
             }
         }
-        _ => bail!("usage: origami render <script> <out.mp4> [--dry-run] [--relock] | origami ir <script>"),
+        ["frame", script, t, out] => {
+            let tl = origami_lang::eval(script.as_ref(), flag("--relock"))?;
+            let size = format!("{}x{}", tl.size.0, tl.size.1);
+            let px = Preview::default().frame(&tl, t.parse()?, (tl.size.0 as usize, tl.size.1 as usize));
+            let mut child = Command::new("ffmpeg")
+                .args([
+                    "-v",
+                    "error",
+                    "-f",
+                    "rawvideo",
+                    "-pixel_format",
+                    "bgra",
+                    "-video_size",
+                    &size,
+                    "-i",
+                    "-",
+                    "-y",
+                    out,
+                ])
+                .stdin(Stdio::piped())
+                .spawn()?;
+            child.stdin.take().unwrap().write_all(&px)?;
+            child.wait()?;
+        }
+        _ => bail!(
+            "usage: origami render <script> <out.mp4> [--dry-run] [--relock] | origami frame <script> <seconds> <out.png> | origami ir <script>"
+        ),
     }
     Ok(())
 }
