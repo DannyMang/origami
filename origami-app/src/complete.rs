@@ -142,6 +142,23 @@ fn names(dir: &Path) -> Vec<(String, bool)> {
     out
 }
 
+fn typeface(name: &str) -> bool {
+    [".ttf", ".otf", ".ttc"].iter().any(|e| name.to_lowercase().ends_with(e))
+}
+
+pub fn faces(dir: &Path) -> Vec<String> {
+    let found = ["", "fonts"].into_iter().flat_map(|sub| {
+        let files = names(&dir.join(sub)).into_iter().filter(|(n, d)| !d && typeface(n));
+        files.map(move |(n, _)| match &n[..n.len() - 4] {
+            stem if stem.contains('.') => Path::new(sub).join(&n).to_string_lossy().to_string(),
+            stem => stem.to_string(),
+        })
+    });
+    let mut out: Vec<String> = found.collect();
+    out.dedup();
+    out
+}
+
 fn premiere() -> Vec<String> {
     let adobe = |dir: &Path| names(dir).into_iter().filter(|(n, _)| n.starts_with("Adobe Premiere Pro "));
     let apps = adobe(Path::new("/Applications")).flat_map(|(year, _)| {
@@ -251,8 +268,7 @@ pub fn offers(lines: &[String], (row, col): (usize, usize), dir: &Path) -> (usiz
         let start = head.iter().rposition(|c| *c == '/').filter(|s| *s > q).unwrap_or(q) + 1;
         let (folder, typed) = (String::from_iter(&head[q + 1..start]), String::from_iter(&head[start..]));
         let found = names(&dir.join(&folder)).into_iter();
-        let faces = |n: &str| [".ttf", ".otf", ".ttc"].iter().any(|e| n.to_lowercase().ends_with(e));
-        let files = found.filter(|(n, d)| *d || if font { faces(n) } else { !look || n.ends_with(".cube") });
+        let files = found.filter(|(n, d)| *d || if font { typeface(n) } else { !look || n.ends_with(".cube") });
         let files = files.map(|(n, d)| if d { n + "/" } else { n });
         let builtin = if look && folder.is_empty() { premiere() } else { vec![] };
         let fit = files.chain(builtin).filter(|n| starts(n, &typed));

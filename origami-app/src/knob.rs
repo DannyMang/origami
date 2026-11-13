@@ -265,7 +265,7 @@ pub fn rail(label: String, start: f32, text: String) -> Div {
 }
 
 impl Origami {
-    fn board(&self, row: usize, at: usize) -> Option<(String, usize, usize, Vec<Knob>)> {
+    pub fn board(&self, row: usize, at: usize) -> Option<(String, usize, usize, Vec<Knob>)> {
         let (call, name, end, mut found) = knobs(self.lines.get(row)?, at)?;
         let linked = |c: &&Clip| {
             let last = (c.line as usize).saturating_sub(1);

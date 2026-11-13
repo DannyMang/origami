@@ -1,4 +1,8 @@
-use crate::{Origami, motion::LEAD, view::HEAD};
+use crate::{
+    Origami,
+    scene::{FOOT, LEAD, sink},
+    view::{HEAD, RULER},
+};
 use gpui::{Context, Pixels, PromptLevel, ScrollWheelEvent, Window, px};
 use origami_lang::{Clip, Kind};
 use std::{env, fs, mem, path::PathBuf};
@@ -35,6 +39,10 @@ impl Origami {
 
     pub fn lead(&self) -> f32 {
         if self.motion { LEAD } else { HEAD }
+    }
+
+    pub fn depth(&self) -> f64 {
+        deep(f64::MAX, self.tl.duration, self.fps()).ln().max(1e-9)
     }
 
     pub fn per_px(&self, window: &Window) -> f64 {
@@ -209,6 +217,7 @@ impl Origami {
         let (w, h) = (f32::from(window.viewport_size().width), f32::from(window.viewport_size().height));
         (self.side, self.dock) = (pane(self.side, w - 420., 260.), pane(self.dock, h - 260., 70.));
         self.fit = ((h - self.head() - 28.) / self.row()).max(1.) as usize;
+        self.lift = sink(self.lift, self.tall(), self.dock - RULER - FOOT);
         self.roll(0.);
         self.sway(0.);
         if self.held.is_none() {
@@ -247,6 +256,9 @@ impl Origami {
             return;
         }
         let (d, t, per) = (e.delta.pixel_delta(px(16.)), self.at(e.position.x, window), self.per_px(window));
+        if self.motion && t < self.pan {
+            return self.lift -= f32::from(d.y);
+        }
         let k = (t - self.pan) / self.span();
         self.zoom = deep(self.zoom * (f64::from(d.y) / 200.).exp(), self.tl.duration, self.fps());
         self.pan = within(t - k * self.span() - f64::from(d.x) * per, self.tl.duration, self.span());

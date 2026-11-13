@@ -1,12 +1,14 @@
 mod complete;
 mod edit;
 mod fold;
+mod graph;
 mod keys;
 mod knob;
 mod lint;
 mod motion;
 mod mouse;
 mod peek;
+mod scene;
 mod search;
 mod view;
 
@@ -76,6 +78,8 @@ struct Origami {
     kept: Option<(usize, usize)>,
     turning: Option<knob::Turn>,
     motion: bool,
+    graph: bool,
+    lift: f32,
     key: Option<(u32, &'static str, usize)>,
     slip: Option<motion::Slip>,
     disc: Arc<RenderImage>,
@@ -152,10 +156,13 @@ impl Origami {
         self.tl.clips.iter().filter(|c| c.start <= self.t && self.t < c.end).collect()
     }
 
+    fn opened(&self) -> Option<&Clip> {
+        self.tl.clips.iter().find(|c| Some(c.z) == self.sel)
+    }
+
     fn focused(&self) -> Option<&Clip> {
         let under = self.under();
-        let picked = self.tl.clips.iter().find(|c| Some(c.z) == self.sel);
-        picked.or(under.get(self.layer.min(under.len().saturating_sub(1))).copied())
+        self.opened().or(under.get(self.layer.min(under.len().saturating_sub(1))).copied())
     }
 
     fn seek(&mut self, t: f64) {
@@ -414,6 +421,8 @@ fn main() {
                     kept: None,
                     turning: None,
                     motion: false,
+                    graph: false,
+                    lift: 0.,
                     key: None,
                     slip: None,
                     disc: bitmap(knob::disc(), 300, 300),

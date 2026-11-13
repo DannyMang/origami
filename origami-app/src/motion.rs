@@ -1,19 +1,10 @@
-use crate::{
-    Origami,
-    keys::link,
-    knob::{TRACK, close, rail},
-    view::{BAR, BLUE, BORDER, DIM, INK, PANEL, RULER, TEXT, tint},
-};
-use gpui::{
-    App, Bounds, Context, Div, MouseButton, MouseDownEvent, PathBuilder, Pixels, Point, Window, canvas, div, point, prelude::*, px,
-    relative, rgb, rgba,
-};
-use origami_lang::{Clip, Kind, Part, Val};
+use crate::{Origami, knob::close};
+use gpui::{Pixels, Point};
+use origami_engine::place;
+use origami_lang::{Clip, Kind, Val};
+use std::mem;
 
-pub const LEAD: f32 = 140.;
-const STRIP: f32 = 22.;
-const CARD: f32 = 182.;
-const EASES: [&str; 8] = [
+pub const EASES: [&str; 9] = [
     "linear",
     "step",
     "slowIn",
@@ -22,7 +13,25 @@ const EASES: [&str; 8] = [
     "springOut",
     "overshootOut",
     "bounceOut",
+    "bezier",
 ];
+pub const ATTRS: [(&str, &str, f64, f64, f64, usize); 7] = [
+    ("x", "pos x", 0.001, f64::MIN, f64::MAX, 3),
+    ("y", "pos y", 0.001, f64::MIN, f64::MAX, 3),
+    ("scale", "scale", 0.01, 0.01, f64::MAX, 2),
+    ("rotate", "rotate", 1., f64::MIN, f64::MAX, 0),
+    ("opacity", "opacity", 1. / 56., 0., 1., 2),
+    ("shown", "shown", 1. / 56., 0., 1., 2),
+    ("size", "size", 1., 8., 300., 0),
+];
+const MAKERS: [(&str, Kind); 5] = [
+    ("video", Kind::Video),
+    ("image", Kind::Image),
+    ("text", Kind::Text),
+    ("caption", Kind::Text),
+    ("color", Kind::Color),
+];
+const SOFT: [f64; 4] = [0.33, 0., 0.67, 1.];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Key {
@@ -32,21 +41,42 @@ pub struct Key {
 }
 
 #[derive(Clone, Copy)]
+pub enum Pull {
+    Key,
+    Field(&'static str, f64),
+    Bend(bool, f64, f64),
+    Zoom(f64),
+}
+
+#[derive(Clone, Copy)]
 pub struct Slip {
     from: Point<Pixels>,
     gain: [f64; 3],
     lo: f64,
     hi: f64,
+    pull: Pull,
 }
 
-pub struct Track {
-    name: &'static str,
-    label: String,
-    row: usize,
-    curves: Vec<Vec<f32>>,
-    keys: Option<Vec<Key>>,
-    lo: f64,
-    hi: f64,
+#[derive(PartialEq)]
+pub enum Form {
+    Plain,
+    Keyed(Vec<Key>),
+    Code,
+}
+
+pub struct Row {
+    pub name: &'static str,
+    pub form: Form,
+    pub now: f64,
+}
+
+type Call = (usize, usize, usize);
+
+struct Slot {
+    a: usize,
+    b: usize,
+    pre: String,
+    post: &'static str,
 }
 
 fn split(s: &str) -> Vec<&str> {
@@ -112,21 +142,6 @@ fn stamp(old: &str, t: f64, len: f64) -> String {
     }
 }
 
-pub fn spot(line: &str, op: &str, n: usize) -> Option<(usize, usize)> {
-    let open = line.find(&format!(".{op}("))? + op.len() + 1;
-    let args = split(&line[open + 1..close(line.as_bytes(), open)?]);
-    let (arg, a) = (args.get(n)?, open + 1 + args[..n].iter().map(|s| s.len() + 1).sum::<usize>());
-    let pad = arg.len() - arg.trim_start().len();
-    Some((a + pad, a + pad + arg.trim().len()))
-}
-
-fn rekey(line: &mut String, (a, b): (usize, usize), f: impl FnOnce(&mut Vec<Key>)) {
-    if let Some(mut keys) = parse(&line[a..b]) {
-        f(&mut keys);
-        line.replace_range(a..b, &print(&keys));
-    }
-}
-
 pub fn nudge(keys: &mut [Key], i: usize, frames: f64, value: f64, len: f64, fps: f64) {
     let at = |k: Option<&Key>| k.map(|k| secs(&k.time, len));
     let (lo, hi) = (
@@ -147,18 +162,82 @@ pub fn plant(keys: &mut Vec<Key>, t: f64, value: f64, len: f64) -> usize {
     i
 }
 
-pub fn grow(old: &str, n: usize, now: f64) -> String {
-    let mut args: Vec<String> = split(old).into_iter().map(|a| a.trim().to_string()).collect();
-    args.retain(|a| !a.is_empty());
-    args.resize(args.len().max(n + 1), "null".into());
-    let v = if args[n] == "null" { now.to_string() } else { args[n].clone() };
-    args[n] = format!("keys([0, {v}])");
-    args.join(", ")
+fn here(keys: &[Key], t: f64, len: f64, fps: f64) -> Option<usize> {
+    keys.iter().position(|k| (secs(&k.time, len) - t).abs() < 0.5 / fps)
 }
 
-fn limit(name: &str, v: f64, lo: f64, hi: f64) -> f64 {
-    let v = round(v, if hi - lo >= 50. { 0 } else { 2 });
-    if matches!(name, "opacity" | "shown") { v.clamp(0., 1.) } else { v }
+fn without(mut keys: Vec<Key>, i: usize) -> String {
+    let k = keys.remove(i);
+    if keys.is_empty() { k.value.to_string() } else { print(&keys) }
+}
+
+pub fn toggle(old: &str, t: f64, now: f64, len: f64, fps: f64) -> String {
+    let Some(mut keys) = parse(old) else {
+        return format!("keys([{}, {now}])", round(t, 3));
+    };
+    match here(&keys, t, len, fps) {
+        Some(i) => return without(keys, i),
+        None => plant(&mut keys, t, now, len),
+    };
+    print(&keys)
+}
+
+pub fn assign(old: &str, t: f64, v: f64, len: f64, fps: f64) -> String {
+    let Some(mut keys) = parse(old) else { return v.to_string() };
+    match here(&keys, t, len, fps) {
+        Some(i) => keys[i].value = v,
+        None => drop(plant(&mut keys, t, v, len)),
+    }
+    print(&keys)
+}
+
+pub fn tidy(name: &str, v: f64) -> f64 {
+    let fit = |a: &(&str, &str, f64, f64, f64, usize)| round(v.clamp(a.3, a.4), a.5 as i32);
+    ATTRS.iter().find(|a| a.0 == name).map_or(v, fit)
+}
+
+pub fn bend(ease: &str) -> Option<[f64; 4]> {
+    if ease.is_empty() || ease.trim_matches(['"', '\'']) == "linear" {
+        return Some([0.33, 0.33, 0.67, 0.67]);
+    }
+    let args = split(ease.strip_prefix("bezier(")?.strip_suffix(')')?);
+    let v: Option<Vec<f64>> = args.into_iter().map(|x| x.trim().parse().ok()).collect();
+    v?.try_into().ok()
+}
+
+pub fn handle(a: (f64, f64), b: (f64, f64), v: [f64; 4], lead: bool) -> (f64, f64) {
+    let i = if lead { 0 } else { 2 };
+    (a.0 + v[i] * (b.0 - a.0), a.1 + v[i + 1] * (b.1 - a.1))
+}
+
+pub fn bent(ease: &str, lead: bool, a: (f64, f64), b: (f64, f64), at: (f64, f64)) -> String {
+    let (mut v, i) = (bend(ease).unwrap_or(SOFT), if lead { 0 } else { 2 });
+    v[i] = round(((at.0 - a.0) / (b.0 - a.0).max(1e-9)).clamp(0., 1.), 2);
+    if b.1 != a.1 {
+        v[i + 1] = round((at.1 - a.1) / (b.1 - a.1), 2);
+    }
+    format!("bezier({}, {}, {}, {})", v[0], v[1], v[2], v[3])
+}
+
+pub fn hue(color: &str) -> Option<u32> {
+    match color {
+        "" | "white" => Some(0xffffff),
+        "black" => Some(0),
+        c => u32::from_str_radix(c.strip_prefix('#').filter(|h| h.len() == 6)?, 16).ok(),
+    }
+}
+
+fn bounds(values: impl Iterator<Item = f64>) -> (f64, f64) {
+    let (lo, hi) = values.fold((f64::MAX, f64::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)));
+    if hi - lo < 1e-9 { (lo - 0.5, hi + 0.5) } else { (lo, hi) }
+}
+
+pub fn curve(c: &Clip, name: &str) -> Vec<f32> {
+    match c.vals().find(|v| v.0 == name).map(|v| v.1) {
+        Some(Val::Frames(_, s)) => s.clone(),
+        Some(Val::Fixed(v)) => vec![*v as f32],
+        None => vec![],
+    }
 }
 
 fn op(name: &str) -> (&str, usize) {
@@ -168,169 +247,328 @@ fn op(name: &str) -> (&str, usize) {
     }
 }
 
-fn part<'a>(p: &'a Part, name: &str) -> &'a Val {
-    match name {
-        "opacity" => &p.opacity,
-        "x" => &p.x,
-        "y" => &p.y,
-        "scale" => &p.scale,
-        _ => &p.rotate,
+fn chain(s: &str, from: usize, kind: Kind) -> Option<Vec<Call>> {
+    let (b, word) = (s.as_bytes(), |c: &u8| c.is_ascii_alphanumeric() || *c == b'_');
+    let row = from + s.get(from..)?.find('\n').unwrap_or(s.len() - from);
+    let name = |open: usize| open - b[..open].iter().rev().take_while(|c| word(c)).count();
+    let made = |open: &usize| b[*open] == b'(' && MAKERS.contains(&(&s[name(*open)..*open], kind));
+    let mut opens = (from..row).filter(made);
+    let (open, None) = (opens.next()?, opens.next()) else {
+        return None;
+    };
+    let mut out = vec![(name(open), open, close(b, open)?)];
+    loop {
+        let tail = s[out[out.len() - 1].2 + 1..].trim_start();
+        let (at, n) = (
+            s.len() - tail.len() + 1,
+            tail.strip_prefix('.').map_or(0, |t| t.bytes().take_while(word).count()),
+        );
+        if n == 0 || b.get(at + n) != Some(&b'(') {
+            return Some(out);
+        }
+        out.push((at, at + n, close(b, at + n)?));
     }
 }
 
-impl Origami {
-    fn site(&self, c: &Clip, name: &str) -> Option<(usize, (usize, usize))> {
-        let (op, n) = op(name);
-        let row = match c.vals().find(|v| v.0 == name)?.1 {
-            Val::Frames(line, _) => (*line as usize).checked_sub(1)?,
-            Val::Fixed(_) => link(&self.lines, c.line, op)?,
-        };
-        Some((row, spot(self.lines.get(row)?, op, n)?))
-    }
+fn arg(s: &str, open: usize, end: usize, n: usize) -> Option<(usize, usize)> {
+    let args = split(&s[open + 1..end]);
+    let (arg, a) = (args.get(n)?, open + 1 + args[..n].iter().map(|s| s.len() + 1).sum::<usize>());
+    let a = a + arg.len() - arg.trim_start().len();
+    (!arg.trim().is_empty()).then_some((a, a + arg.trim().len()))
+}
 
-    pub fn tracks(&self, c: &Clip) -> Vec<Track> {
-        let track = |name, label, row, curves, keys| Track {
-            name,
-            label,
-            row,
-            curves,
-            keys,
-            lo: 0.,
-            hi: 0.,
+fn tail(s: &str, a: usize, b: usize) -> (usize, &'static str) {
+    let kept = s[a..b].trim_end();
+    let gap = match kept {
+        "" => "",
+        k if k.ends_with(',') => " ",
+        _ => ", ",
+    };
+    (a + kept.len(), gap)
+}
+
+fn slot(s: &str, calls: &[Call], name: &str) -> Option<Slot> {
+    let word = |c: &Call| &s[c.0..c.1];
+    let new = |a, b, pre: String, post| Some(Slot { a, b, pre, post });
+    let (maker, last) = (calls[0], calls[calls.len() - 1]);
+    if let "size" | "color" | "font" = name {
+        let Some((a, b)) = arg(s, maker.1, maker.2, 1) else {
+            let (p, gap) = tail(s, maker.1 + 1, maker.2);
+            return new(p, p, format!("{gap}{{ {name}: "), " }");
         };
-        let own = c.vals().filter_map(|(name, val)| {
-            let site = self.site(c, name);
-            let keys = site.and_then(|(row, (a, b))| parse(&self.lines[row][a..b]));
-            let (row, curve) = match val {
-                Val::Frames(line, s) => (*line as usize, s.clone()),
-                Val::Fixed(v) => (keys.as_ref().and(site)?.0 + 1, vec![*v as f32]),
-            };
-            let label = if op(name).0 == "pos" { format!("pos {name}") } else { name.into() };
-            Some(track(name, label, row, vec![curve], keys))
-        });
-        let each = ["opacity", "x", "y", "scale", "rotate"].into_iter().filter_map(|name| {
-            let moving = c.parts.iter().filter_map(|p| match part(p, name) {
-                Val::Frames(line, s) => Some((*line as usize, s.clone())),
-                Val::Fixed(_) => None,
-            });
-            let moving: Vec<_> = moving.collect();
-            let row = link(&self.lines, c.line, "each").map_or(moving.first()?.0, |r| r + 1);
-            let by = ["char", "word", "line"].into_iter().find(|by| {
-                let call = format!(".each(\"{by}\"");
-                self.lines.get(row.wrapping_sub(1)).is_some_and(|l| l.contains(&call))
-            });
-            let label = format!("{name} \u{b7} per {}", by.unwrap_or("part"));
-            Some(track("", label, row, moving.into_iter().map(|m| m.1).collect(), None))
-        });
-        let mut out: Vec<Track> = own.chain(each).collect();
-        for t in &mut out {
-            let keyed = t.keys.iter().flatten().map(|k| k.value);
-            let all = t.curves.iter().flatten().map(|v| *v as f64).chain(keyed);
-            let (lo, hi) = all.fold((f64::MAX, f64::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)));
-            let held = self.slip.zip(self.key).filter(|(_, k)| k.0 == c.z && k.1 == t.name);
-            (t.lo, t.hi) = match held {
-                Some((s, _)) => (s.lo, s.hi),
-                _ if t.name == "shown" || t.label.starts_with("opacity") => (0., 1.),
-                _ if hi - lo < 1e-9 => (lo - 0.5, hi + 0.5),
-                _ => (lo, hi),
-            };
+        if !s[a..b].starts_with('{') || !s[a..b].ends_with('}') {
+            return None;
         }
-        out
+        let mut at = a + 1;
+        for e in split(&s[a + 1..b - 1]) {
+            if let Some((k, v)) = e.split_once(':').filter(|(k, _)| k.trim().trim_matches(['"', '\'']) == name) {
+                let from = at + k.len() + 1 + v.len() - v.trim_start().len();
+                return new(from, from + v.trim().len(), String::new(), "");
+            }
+            at += e.len() + 1;
+        }
+        let (p, gap) = tail(s, a + 1, b - 1);
+        let (gap, post) = (if gap.is_empty() { " " } else { gap }, if b - a == 2 { " " } else { "" });
+        return new(p, p, format!("{gap}{name}: "), post);
+    }
+    let (op, n) = op(name);
+    let mut found = calls[1..].iter().filter(|c| word(c) == op);
+    match (found.next(), found.next()) {
+        (Some(_), Some(_)) => None,
+        (Some(&(_, open, end)), _) => match arg(s, open, end, n) {
+            Some((a, b)) => new(a, b, String::new(), ""),
+            None => {
+                let (p, gap) = tail(s, open + 1, end);
+                new(p, p, if n == 1 && gap.is_empty() { "null, " } else { gap }.into(), "")
+            }
+        },
+        (None, _) => {
+            let line = s[..last.0].rfind('\n').map_or(0, |i| i + 1);
+            let pad = Some(&s[line..last.0.saturating_sub(1)]).filter(|p| calls.len() > 1 && p.trim().is_empty());
+            let (call, post) = match (name, word(&maker)) {
+                ("y", _) => ("pos(null, ".into(), ")"),
+                ("x", "caption") => ("pos(".into(), ", 0.84)"),
+                _ => (format!("{op}("), ")"),
+            };
+            new(
+                last.2 + 1,
+                last.2 + 1,
+                format!("{}.{call}", pad.map_or(String::new(), |p| format!("\n{p}"))),
+                post,
+            )
+        }
+    }
+}
+
+fn read(s: &str, from: usize, kind: Kind, name: &str) -> Option<(Slot, bool)> {
+    let calls = chain(s, from, kind)?;
+    Some((slot(s, &calls, name)?, &s[calls[0].0..calls[0].1] == "caption"))
+}
+
+pub fn amend(s: &str, from: usize, kind: Kind, name: &str, f: impl FnOnce(&str) -> String) -> Option<String> {
+    let (slot, _) = read(s, from, kind, name)?;
+    let old = s[slot.a..slot.b].trim();
+    let new = Some(f(old)).filter(|new| new != old)?;
+    Some(format!("{}{}{new}{}{}", &s[..slot.a], slot.pre, slot.post, &s[slot.b..]))
+}
+
+impl Origami {
+    fn offset(&self, c: &Clip) -> Option<usize> {
+        let row = (c.home as usize).checked_sub(1).filter(|r| *r < self.lines.len())?;
+        Some(self.lines[..row].iter().map(|l| l.len() + 1).sum())
     }
 
-    pub fn growable(&self, focus: Option<&Clip>) -> Vec<&'static str> {
-        let Some(c) = focus.filter(|c| self.motion && c.kind != Kind::Sound) else {
-            return vec![];
-        };
-        let (tracks, text) = (self.tracks(c), c.kind == Kind::Text);
-        let all = ["opacity", "scale", "pos x", "pos y", "rotate", "shown"].into_iter();
-        let free = |p: &&str| (*p != "shown" || text) && tracks.iter().all(|t| t.name != p.trim_start_matches("pos "));
-        all.filter(free).collect()
+    fn frame(&self, c: &Clip) -> f64 {
+        ((self.t - c.start).clamp(0., c.end - c.start) * self.fps()).round()
     }
 
-    pub fn animate(&mut self, label: &str) {
-        let Some(c) = self.focused().cloned() else { return };
-        let name = label.trim_start_matches("pos ");
-        let now = match c.vals().find(|v| v.0 == name) {
-            Some((_, Val::Fixed(v))) if !matches!(name, "opacity" | "scale") => *v,
-            Some(_) => 1.,
-            None => 0.,
-        };
-        let (op, n) = op(name);
-        let was = self.past.len();
-        self.patch(c.line, op, |old| grow(old, n, now));
-        self.note = match self.past.len() == was {
-            true => format!("line {} has no room for {label}, edit the script", c.line),
-            false => String::new(),
-        };
-        self.sel = Some(c.z);
+    fn centre(&self, c: &Clip, name: &str) -> f64 {
+        let (w, h) = (self.tl.size.0 as f64, self.tl.size.1 as f64);
+        let (.., x, y) = place(c, (w, h), 1.);
+        round(if name == "x" { x / w } else { y / h }, 3)
     }
 
-    fn held(&self) -> Option<(Clip, &'static str, usize)> {
-        let (z, name, i) = self.key.filter(|_| self.motion)?;
-        Some((self.tl.clips.iter().find(|c| c.z == z)?.clone(), name, i))
+    pub fn rows(&self, c: &Clip) -> Vec<Row> {
+        let (text, frame) = (self.lines.join("\n"), self.frame(c) as usize);
+        let fits = |a: &&(&str, &str, f64, f64, f64, usize)| match c.kind {
+            Kind::Sound => false,
+            Kind::Text => true,
+            _ => !matches!(a.0, "shown" | "size"),
+        };
+        let row = |&(name, ..): &(&'static str, &str, f64, f64, f64, usize)| {
+            let val = c.vals().find(|v| v.0 == name).map(|v| v.1);
+            let live = if name == "size" { c.size } else { val.map_or(0., |v| v.at(frame)) };
+            let site = self.offset(c).and_then(|from| read(&text, from, c.kind, name));
+            let (form, now) = match site.as_ref().map(|(s, caption)| (text[s.a..s.b].trim(), *caption)) {
+                None => (Form::Code, live),
+                Some(("" | "null", caption)) => match (name, val) {
+                    ("size", _) => (Form::Plain, live),
+                    ("x" | "y", None) => (Form::Plain, self.centre(c, name)),
+                    ("y", Some(Val::Fixed(v))) if caption && *v == 0.84 => (Form::Plain, live),
+                    ("rotate", Some(Val::Fixed(v))) if *v == 0. => (Form::Plain, live),
+                    ("scale" | "opacity" | "shown", Some(Val::Fixed(v))) if *v == 1. => (Form::Plain, live),
+                    _ => (Form::Code, live),
+                },
+                Some((old, _)) => match (old.parse(), parse(old)) {
+                    (Ok(v), _) => (Form::Plain, v),
+                    (_, Some(keys)) => (Form::Keyed(keys), live),
+                    _ => (Form::Code, live),
+                },
+            };
+            Row { name, form, now }
+        };
+        ATTRS.iter().filter(fits).map(row).collect()
+    }
+
+    pub fn option(&self, c: &Clip, name: &str) -> Option<String> {
+        let text = self.lines.join("\n");
+        let (s, _) = read(&text, self.offset(c)?, c.kind, name)?;
+        let old = text[s.a..s.b].trim();
+        let quoted = |q: char| old.len() > 1 && old.starts_with(q) && old.ends_with(q) && old.matches(q).count() == 2;
+        match old {
+            "" => Some(String::new()),
+            _ if quoted('"') || quoted('\'') => Some(old[1..old.len() - 1].into()),
+            _ => None,
+        }
+    }
+
+    pub fn swing(&self, c: &Clip, row: &Row) -> (f64, f64) {
+        match &row.form {
+            Form::Keyed(keys) if !matches!(row.name, "opacity" | "shown") => {
+                bounds(keys.iter().map(|k| k.value).chain(curve(c, row.name).into_iter().map(f64::from)))
+            }
+            _ => (0., 1.),
+        }
+    }
+
+    pub fn reach(&self, c: &Clip, rows: &[Row]) -> (f64, f64) {
+        let keyed = rows.iter().filter(|r| matches!(r.form, Form::Keyed(_)));
+        let ends: Vec<f64> = keyed.flat_map(|r| <[f64; 2]>::from(self.swing(c, r))).collect();
+        match self.slip {
+            Some(s) => (s.lo, s.hi),
+            None if ends.is_empty() => (0., 1.),
+            None => bounds(ends.into_iter()),
+        }
+    }
+
+    fn amend(&mut self, c: &Clip, name: &str, f: impl FnOnce(&str) -> String) {
+        let text = self.offset(c).and_then(|from| amend(&self.lines.join("\n"), from, c.kind, name, f));
+        if let Some(text) = text {
+            self.lines = text.split('\n').map(String::from).collect();
+        }
     }
 
     fn shape(&mut self, c: &Clip, name: &str, f: impl FnOnce(&mut Vec<Key>)) {
-        if let Some((row, span)) = self.site(c, name) {
-            rekey(&mut self.lines[row], span, f);
+        let rekey = |mut keys: Vec<Key>| {
+            f(&mut keys);
+            print(&keys)
+        };
+        self.amend(c, name, |old| parse(old).map_or(old.into(), rekey));
+    }
+
+    fn held(&self) -> Option<(Clip, &'static str, usize)> {
+        let (_, name, i) = self.key.filter(|_| self.motion)?;
+        Some((self.opened()?.clone(), name, i))
+    }
+
+    pub fn pick(&mut self, z: u32) {
+        (self.sel, self.key) = (Some(z).filter(|z| self.sel != Some(*z)), None);
+        if let Some(row) = self.opened().map(|c| (c.home as usize).saturating_sub(1)) {
+            self.reveal(row);
         }
     }
 
-    fn seize(&mut self, key: (u32, &'static str, usize), slip: Slip) {
-        (self.key, self.sel, self.slip, self.base) = (Some(key), Some(key.0), Some(slip), self.lines.clone());
+    pub fn seize(&mut self, from: Point<Pixels>, gain: [f64; 3], pull: Pull) {
+        let (lo, hi) = self.opened().map_or((0., 1.), |c| self.reach(c, &self.rows(c)));
+        (self.slip, self.base) = (Some(Slip { from, gain, lo, hi, pull }), self.lines.clone());
+    }
+
+    fn live(&self, name: &str) -> Option<(Clip, Row)> {
+        let c = self.opened()?.clone();
+        let row = self.rows(&c).into_iter().find(|r| r.name == name && r.form != Form::Code)?;
+        Some((c, row))
+    }
+
+    pub fn tug(&mut self, name: &'static str, from: Point<Pixels>) {
+        if let (Some((_, row)), Some(a)) = (self.live(name), ATTRS.iter().find(|a| a.0 == name)) {
+            self.seize(from, [0., a.2, 0.], Pull::Field(name, row.now));
+        }
+    }
+
+    pub fn pin(&mut self, name: &'static str) {
+        let Some((c, row)) = self.live(name).filter(|_| name != "size") else {
+            return;
+        };
+        let (len, fps) = (c.end - c.start, self.fps());
+        let (t, now) = (
+            self.frame(&c) / fps,
+            if row.form == Form::Plain { row.now } else { tidy(name, row.now) },
+        );
+        self.change(|this| this.amend(&c, name, |old| toggle(old, t, now, len, fps)));
+        self.key = None;
+    }
+
+    pub fn dye(&mut self) {
+        let Some(c) = self.opened().cloned() else { return };
+        match self.option(&c, "color").map(|c| (c.is_empty(), hue(&c))) {
+            Some((true, _)) => self.change(|this| this.amend(&c, "color", |_| "\"#ffffff\"".into())),
+            Some((_, Some(_))) => {}
+            _ => return,
+        }
+        let text = self.lines.join("\n");
+        let Some((s, _)) = self.offset(&c).and_then(|from| read(&text, from, c.kind, "color")) else {
+            return;
+        };
+        let (row, col) = (
+            text[..s.a].matches('\n').count(),
+            s.a - text[..s.a].rfind('\n').map_or(0, |i| i + 1),
+        );
+        let board = self.board(row, col).filter(|k| k.3.iter().any(|k| k.label == "#"));
+        self.knobbed = board.map(|k| (row, k.1));
+        match self.knobbed {
+            Some(_) => self.reveal(row),
+            None => self.note = "write text( ... ) on one line to pick its colour here".into(),
+        }
+    }
+
+    pub fn face(&mut self, name: &str) {
+        if let Some(c) = self.opened().cloned().filter(|c| self.option(c, "font").is_some()) {
+            self.change(|this| this.amend(&c, "font", |_| format!("\"{name}\"")));
+        }
     }
 
     pub fn slide(&mut self, at: Point<Pixels>) {
-        let (Some(s), Some((c, name, i))) = (self.slip, self.held()) else {
-            return;
-        };
+        let Some(s) = self.slip else { return };
         let (dx, dy) = (f32::from(at.x - s.from.x) as f64, f32::from(at.y - s.from.y) as f64);
+        if let Pull::Zoom(from) = s.pull {
+            self.zoom = (from.ln() + dx * s.gain[0]).exp();
+            return self.magnify(1.);
+        }
+        let Some(c) = self.opened().cloned() else { return };
         let (len, fps) = (c.end - c.start, self.fps());
-        let old = std::mem::replace(&mut self.lines, self.base.clone());
-        self.shape(&c, name, |keys| {
-            let v = keys.get(i).map_or(0., |k| k.value) + dx * s.gain[1] + dy * s.gain[2];
-            nudge(keys, i, (dx * s.gain[0] * fps).round(), limit(name, v, s.lo, s.hi), len, fps);
-        });
+        let old = mem::replace(&mut self.lines, self.base.clone());
+        let spot = |k: &Key| (secs(&k.time, len), k.value);
+        match (s.pull, self.key) {
+            (Pull::Field(name, from), _) => {
+                let (t, v) = (self.frame(&c) / fps, tidy(name, from + dx * s.gain[1]));
+                self.amend(&c, name, |old| assign(old, t, v, len, fps));
+            }
+            (Pull::Key, Some((_, name, i))) => self.shape(&c, name, |keys| {
+                let (was, by) = (keys.get(i).map_or(0., |k| k.value), dx * s.gain[1] + dy * s.gain[2]);
+                let v = if by == 0. { was } else { tidy(name, was + by) };
+                nudge(keys, i, (dx * s.gain[0] * fps).round(), v, len, fps);
+            }),
+            (Pull::Bend(lead, t, v), Some((_, name, i))) => self.shape(&c, name, |keys| {
+                let j = i + lead as usize;
+                if (1..keys.len()).contains(&j) {
+                    let to = (t + dx * s.gain[0], v + dy * s.gain[2]);
+                    keys[j].ease = bent(&keys[j].ease, lead, spot(&keys[j - 1]), spot(&keys[j]), to);
+                }
+            }),
+            _ => {}
+        }
         if self.lines != old {
             self.store();
         }
-    }
-
-    fn sow(&mut self, name: &'static str, t: f64) {
-        let Some(c) = self.focused().cloned() else { return };
-        let Some((_, val)) = c.vals().find(|v| v.0 == name) else {
-            return;
-        };
-        let (len, fps) = (c.end - c.start, self.fps());
-        let frame = ((t - c.start).clamp(0., len) * fps).round();
-        let mut at = 0;
-        self.change(|this| {
-            this.shape(&c, name, |keys| {
-                at = plant(keys, frame / fps, round(val.at(frame as usize), 2), len)
-            })
-        });
-        (self.key, self.sel) = (Some((c.z, name, at)), Some(c.z));
     }
 
     pub fn cull(&mut self) -> bool {
         let Some((c, name, i)) = self.held() else {
             return self.motion;
         };
-        self.change(|this| {
-            this.shape(&c, name, |keys| {
-                if keys.len() > 1 && i < keys.len() {
-                    keys.remove(i);
-                }
-            })
-        });
+        let cut = |old: &str| parse(old).filter(|k| i < k.len()).map_or(old.into(), |k| without(k, i));
+        self.change(|this| this.amend(&c, name, cut));
         self.key = None;
         true
     }
 
-    fn ease(&mut self, ease: &str) {
+    pub fn ease(&mut self, ease: &str) {
         let Some((c, name, i)) = self.held() else { return };
-        let ease = if ease == "linear" { String::new() } else { format!("\"{ease}\"") };
+        let ease = match ease {
+            "linear" => String::new(),
+            "bezier" => format!("bezier({}, {}, {}, {})", SOFT[0], SOFT[1], SOFT[2], SOFT[3]),
+            e => format!("\"{e}\""),
+        };
         self.change(|this| {
             this.shape(&c, name, |keys| {
                 if let Some(k) = keys.get_mut(i) {
@@ -339,275 +577,34 @@ impl Origami {
             })
         });
     }
-
-    fn tall(&self, rows: usize) -> f32 {
-        ((self.dock - RULER - STRIP) / rows.max(1) as f32).clamp(26., 44.)
-    }
-
-    pub fn curves(&self, focus: Option<&Clip>, cx: &mut Context<Self>) -> Vec<Div> {
-        let hint = |s: String| div().pl_3().pt_3().text_size(px(11.)).text_color(rgb(DIM)).child(s);
-        let Some(c) = focus else {
-            return vec![hint("put the playhead on a clip, or select one in Timeline".into())];
-        };
-        let (d, pan, fps, z) = (self.span(), self.pan, self.fps(), c.z);
-        let (start, end, tracks) = (c.start, c.end, self.tracks(c));
-        let tall = self.tall(tracks.len());
-        let x = move |t: f64| relative(((t - pan) / d) as f32);
-        let span = move || {
-            div()
-                .absolute()
-                .top_0()
-                .bottom_0()
-                .left(x(start))
-                .w(relative(((end - start) / d) as f32))
-        };
-        let label = |name: String, note: String| {
-            div()
-                .w(px(LEAD))
-                .flex_none()
-                .pl_3()
-                .flex()
-                .flex_col()
-                .justify_center()
-                .text_size(px(11.))
-                .whitespace_nowrap()
-                .child(name)
-                .child(div().text_color(rgb(DIM)).child(note))
-        };
-        let name = div()
-            .px_1()
-            .text_size(px(11.))
-            .whitespace_nowrap()
-            .child(format!("{}  line {}", c.label, c.line));
-        let bar = span()
-            .top(px(3.))
-            .bottom(px(3.))
-            .rounded(px(3.))
-            .border_1()
-            .border_color(rgb(TEXT))
-            .bg(rgba(tint(c.kind) << 8 | 0x55))
-            .overflow_hidden()
-            .child(name);
-        let strip = div()
-            .h(px(STRIP))
-            .flex_none()
-            .flex()
-            .pr_3()
-            .child(div().w(px(LEAD)).flex_none())
-            .child(div().relative().flex_1().overflow_hidden().child(bar));
-        let empty = tracks.is_empty().then(|| match c.kind {
-            Kind::Sound => hint(format!("{} is sound, it has nothing to animate here", c.label)),
-            _ => hint(format!(
-                "nothing on {} is animated yet: pick a property under + add, or write .opacity(keys([0, 0], [1, 1])) on line {}",
-                c.label, c.line
-            )),
-        });
-        let rows = tracks.into_iter().map(|t| {
-            let picked = self.key.filter(|k| k.0 == z && k.1 == t.name && t.keys.is_some()).map(|k| k.2);
-            let (lo, hi, name) = (t.lo, t.hi, t.name);
-            let y = move |v: f64| 6. + (1. - (v - lo) / (hi - lo)) as f32 * (tall - 13.);
-            let spots = t.keys.iter().flatten().map(|k| (start + secs(&k.time, end - start), k.value));
-            let spots: Vec<(f64, f64)> = spots.collect();
-            let hits = spots.iter().enumerate().map(|(i, &(t, v))| {
-                div()
-                    .absolute()
-                    .left(x(t))
-                    .top(px(y(v) - 7.))
-                    .ml(px(-7.))
-                    .size(px(14.))
-                    .cursor_pointer()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, e: &MouseDownEvent, window, cx| {
-                            if !this.mouse {
-                                return;
-                            }
-                            let gain = [this.per_px(window), 0., (lo - hi) / (tall - 13.) as f64];
-                            this.seek(t);
-                            this.seize(
-                                (z, name, i),
-                                Slip {
-                                    from: e.position,
-                                    gain,
-                                    lo,
-                                    hi,
-                                },
-                            );
-                            cx.stop_propagation();
-                            cx.notify();
-                        }),
-                    )
-            });
-            let hits: Vec<Div> = hits.collect();
-            let (curves, keyed) = (t.curves, t.keys.is_some());
-            let draw = move |b: Bounds<Pixels>, _, window: &mut Window, _: &mut App| {
-                let at = |t: f64, v: f64| point(b.origin.x + b.size.width * ((t - pan) / d) as f32, b.origin.y + px(y(v)));
-                for (n, s) in curves.iter().enumerate().take(12).rev() {
-                    let mut line = PathBuilder::stroke(px(1.5));
-                    line.move_to(at(start, s[0] as f64));
-                    for (i, v) in s.iter().enumerate() {
-                        line.line_to(at(start + i as f64 / fps, *v as f64));
-                    }
-                    line.line_to(at(end, s[s.len() - 1] as f64));
-                    if let Ok(line) = line.build() {
-                        window.paint_path(line, rgba(BLUE << 8 | if n == 0 { 0xd0 } else { 0x38 }));
-                    }
-                }
-                for (i, &(t, v)) in spots.iter().enumerate() {
-                    let ink = if picked == Some(i) { TEXT } else { BLUE };
-                    for (r, color) in [(px(6.5), INK), (px(4.5), ink)] {
-                        let (p, mut gem) = (at(t, v), PathBuilder::fill());
-                        gem.add_polygon(
-                            &[point(p.x, p.y - r), point(p.x + r, p.y), point(p.x, p.y + r), point(p.x - r, p.y)],
-                            true,
-                        );
-                        if let Ok(gem) = gem.build() {
-                            window.paint_path(gem, rgb(color));
-                        }
-                    }
-                }
-            };
-            let plot = div()
-                .absolute()
-                .top_0()
-                .bottom_0()
-                .left(px(7.))
-                .right(px(7.))
-                .child(span().bg(rgba(BAR << 8 | 0x70)))
-                .child(canvas(|_, _, _| (), draw).absolute().size_full())
-                .children(hits);
-            let lane = div()
-                .relative()
-                .flex_1()
-                .child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .left(px(-7.))
-                        .right(px(-7.))
-                        .overflow_hidden()
-                        .child(plot),
-                )
-                .when(keyed, |lane| {
-                    lane.on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, e: &MouseDownEvent, window, cx| {
-                            this.key = None;
-                            if e.click_count == 2 && this.mouse {
-                                this.sow(name, this.at(e.position.x, window));
-                            }
-                            cx.notify();
-                        }),
-                    )
-                });
-            let note = format!("line {}{}", t.row, if keyed { "" } else { " \u{b7} code" });
-            div()
-                .h(px(tall))
-                .flex_none()
-                .flex()
-                .pr_3()
-                .border_t_1()
-                .border_color(rgba(BORDER << 8 | 0x80))
-                .child(label(t.label, note))
-                .child(lane)
-        });
-        let rows: Vec<Div> = rows.collect();
-        [strip].into_iter().chain(empty).chain(rows).collect()
-    }
-
-    pub fn keyed(&self, window: &Window, cx: &mut Context<Self>) -> Option<Div> {
-        let (c, name, i) = self.held().filter(|h| !self.full && self.focused().is_some_and(|f| f.z == h.0.z))?;
-        let tracks = self.tracks(&c);
-        let row = tracks.iter().position(|t| t.name == name)?;
-        let (t, keys) = (&tracks[row], tracks[row].keys.as_ref()?);
-        let (k, len, z) = (keys.get(i)?, c.end - c.start, c.z);
-        let (w, h) = (f32::from(window.viewport_size().width), f32::from(window.viewport_size().height));
-        let at = secs(&k.time, len);
-        let x = LEAD + ((c.start + at - self.pan) / self.per_px(window)) as f32 - 24.;
-        let y = h - self.dock - 66. - CARD;
-        let (lo, hi) = (t.lo, t.hi);
-        let slider = |label: &str, part: f64, text: String, gain: [f64; 3]| {
-            rail(label.into(), part.clamp(0., 1.) as f32, text).on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, e: &MouseDownEvent, _, cx| {
-                    let from = e.position;
-                    this.seize((z, name, i), Slip { from, gain, lo, hi });
-                    cx.stop_propagation();
-                    cx.notify();
-                }),
-            )
-        };
-        let eases = EASES.iter().map(|&e| {
-            let on = k.ease.trim_matches(['"', '\'']) == e || k.ease.is_empty() && e == "linear";
-            div()
-                .w(relative(0.5))
-                .h(px(22.))
-                .px_2()
-                .flex()
-                .items_center()
-                .rounded(px(3.))
-                .cursor_pointer()
-                .hover(|s| s.bg(rgb(BAR)))
-                .when(on, |d| d.bg(rgba(BLUE << 8 | 0x40)))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| {
-                        this.ease(e);
-                        cx.stop_propagation();
-                        cx.notify();
-                    }),
-                )
-                .child(e)
-        });
-        let eases: Vec<Div> = eases.collect();
-        Some(
-            div()
-                .absolute()
-                .left(px(x.min(w - self.side - 344.).max(8.)))
-                .top(px(y))
-                .h(px(CARD))
-                .p(px(10.))
-                .flex()
-                .flex_col()
-                .bg(rgb(PANEL))
-                .border_1()
-                .border_color(rgb(BORDER))
-                .rounded(px(6.))
-                .text_size(px(12.))
-                .occlude()
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(
-                    div()
-                        .h(px(18.))
-                        .text_color(rgb(DIM))
-                        .child(format!("{name}  key {} of {}", i + 1, keys.len())),
-                )
-                .child(slider(
-                    "time",
-                    at / len,
-                    k.time.trim_matches(['"', '\'']).into(),
-                    [len / TRACK as f64, 0., 0.],
-                ))
-                .child(slider(
-                    "value",
-                    (k.value - lo) / (hi - lo),
-                    k.value.to_string(),
-                    [0., (hi - lo) / TRACK as f64, 0.],
-                ))
-                .child(div().pt_1().w(px(314.)).flex().flex_wrap().children(eases)),
-        )
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keys::rewrite;
-    use std::{fs, path::Path};
+    use std::fs;
+
+    const SRC: &str = "const shot = color(\"#203040\").for(6)
+const title = text(\"ORIGAMI\", { size: 180 }).at(0.4).for(4.6)
+  .pos(null, keys([0, 0.36], [0.9, 0.3, \"slowOut\"]))
+  .opacity(keys([0, 0], [0.9, 1], [-0.6, 1], [\"100%\", 0]))
+const tag = text(\"holger\", {
+  font: \"Menlo\",
+}).for(6).scale(1.5)
+const note = caption(\"typed\").for(4)
+stack(shot, title.shift(1), tag, note, text(\"inline\").for(2))";
 
     fn keys(s: &str) -> Vec<Key> {
         parse(s).unwrap()
+    }
+
+    fn edit(src: &str, row: usize, kind: Kind, name: &str, f: impl FnOnce(&str) -> String) -> String {
+        let from = src.lines().take(row).map(|l| l.len() + 1).sum();
+        amend(src, from, kind, name, f).unwrap_or(src.into())
+    }
+
+    fn set(src: &str, row: usize, name: &str, new: &str) -> String {
+        edit(src, row, Kind::Text, name, |_| new.into())
     }
 
     #[test]
@@ -635,16 +632,6 @@ mod tests {
     }
 
     #[test]
-    fn finds_the_argument() {
-        let line = "  .pos(null, keys([0, 0.36], [0.9, 0.3, \"slowOut\"])).scale(1.5)";
-        let (a, b) = spot(line, "pos", 1).unwrap();
-        assert_eq!(&line[a..b], "keys([0, 0.36], [0.9, 0.3, \"slowOut\"])");
-        assert_eq!(spot(line, "pos", 0).map(|(a, b)| &line[a..b]), Some("null"));
-        assert_eq!(spot(line, "scale", 0).map(|(a, b)| &line[a..b]), Some("1.5"));
-        assert_eq!((spot(line, "pos", 2), spot(line, "opacity", 0)), (None, None));
-    }
-
-    #[test]
     fn moves_a_key() {
         let mut k = keys("keys([0, 0], [0.9, 1, \"slowOut\"], [-0.6, 1], [\"100%\", 0])");
         nudge(&mut k, 1, 3., 0.5, 4., 30.);
@@ -663,64 +650,153 @@ mod tests {
         assert_eq!(k[2].time, "-0.233");
         assert_eq!(
             (
-                limit("opacity", 1.234, 0., 1.),
-                limit("rotate", 91.6, 0., 180.),
-                limit("scale", 1.234, 1., 2.)
+                tidy("opacity", 1.234),
+                tidy("rotate", 91.6),
+                tidy("scale", -3.),
+                tidy("size", 900.),
+                tidy("x", -0.12345)
             ),
-            (1., 92., 1.23)
+            (1., 92., 0.01, 300., -0.123)
         );
     }
 
     #[test]
-    fn adds_and_removes() {
-        let mut k = keys("keys([0, 0], [\"50%\", 1], [-0.5, 0])");
-        assert_eq!(plant(&mut k, 1., 0.5, 4.), 1);
-        assert_eq!(plant(&mut k, 3.9, 0.2, 4.), 4);
-        assert_eq!(print(&k), "keys([0, 0], [1, 0.5], [\"50%\", 1], [-0.5, 0], [3.9, 0.2])");
-        assert_eq!(grow("", 0, 1.), "keys([0, 1])");
-        assert_eq!(grow("0.5", 0, 1.), "keys([0, 0.5])");
-        assert_eq!(grow("null, 0.56", 0, 0.), "keys([0, 0]), 0.56");
-        assert_eq!(grow("0.3", 1, 0.84), "0.3, keys([0, 0.84])");
-        assert_eq!(grow("", 1, 0.84), "null, keys([0, 0.84])");
+    fn toggles_a_key_at_the_playhead() {
+        assert_eq!(toggle("", 1.5, 0.5, 4., 30.), "keys([1.5, 0.5])");
+        assert_eq!(toggle("0.8", 0., 0.8, 4., 30.), "keys([0, 0.8])");
+        let two = "keys([0, 0], [\"50%\", 1])";
+        assert_eq!(toggle(two, 1., 0.5, 4., 30.), "keys([0, 0], [1, 0.5], [\"50%\", 1])");
+        assert_eq!(toggle(two, 2.01, 0.5, 4., 30.), "keys([0, 0])");
+        assert_eq!(toggle("keys([0, 0.25])", 0., 9., 4., 30.), "0.25");
+        assert_eq!(assign(two, 2., 0.7, 4., 30.), "keys([0, 0], [\"50%\", 0.7])");
+        assert_eq!(assign(two, 3.9, 0.2, 4., 30.), "keys([0, 0], [\"50%\", 1], [3.9, 0.2])");
+        assert_eq!(assign("null", 3.9, 0.2, 4., 30.), "0.2");
+    }
+
+    #[test]
+    fn patches_the_chain() {
+        let row = |s: &str, n: usize| s.lines().nth(n).unwrap().to_string();
+        let on = |row: usize, kind, name: &str, new: &str| edit(SRC, row, kind, name, |_| new.into());
+        assert_eq!(
+            row(&on(0, Kind::Color, "opacity", "0.5"), 0),
+            "const shot = color(\"#203040\").for(6).opacity(0.5)"
+        );
+        assert_eq!(row(&on(1, Kind::Text, "scale", "2"), 4), "  .scale(2)");
+        assert_eq!(
+            row(&on(1, Kind::Text, "x", "0.1"), 2),
+            "  .pos(0.1, keys([0, 0.36], [0.9, 0.3, \"slowOut\"]))"
+        );
+        let moved = edit(SRC, 1, Kind::Text, "y", |old| assign(old, 0.9, 0.5, 4.6, 30.));
+        assert_eq!(row(&moved, 2), "  .pos(null, keys([0, 0.36], [0.9, 0.5, \"slowOut\"]))");
+        assert_eq!(row(&on(4, Kind::Text, "scale", "2"), 6), "}).for(6).scale(2)");
+        assert_eq!(row(&on(4, Kind::Text, "y", "0.2"), 6), "}).for(6).scale(1.5).pos(null, 0.2)");
+        assert_eq!(
+            row(&on(7, Kind::Text, "x", "0.3"), 7),
+            "const note = caption(\"typed\").for(4).pos(0.3, 0.84)"
+        );
+        assert_eq!(
+            row(&on(8, Kind::Text, "rotate", "9"), 8),
+            "stack(shot, title.shift(1), tag, note, text(\"inline\").for(2).rotate(9))"
+        );
+        assert_eq!(on(8, Kind::Video, "rotate", "9"), SRC);
+        assert_eq!(on(1, Kind::Text, "scale", ""), SRC);
+        let twice = "text(\"a\").scale(2).scale(3)";
+        assert_eq!(edit(twice, 0, Kind::Text, "scale", |_| "4".into()), twice);
+        assert_eq!(set("text(\"a\").pos(0.3)", 0, "y", "0.6"), "text(\"a\").pos(0.3, 0.6)");
+        assert_eq!(set("text(\"a\").pos()", 0, "y", "0.6"), "text(\"a\").pos(null, 0.6)");
+    }
+
+    #[test]
+    fn rewrites_text_options() {
+        let row = |s: &str, n: usize| s.lines().nth(n).unwrap().to_string();
+        assert_eq!(
+            row(&set(SRC, 1, "size", "96"), 1),
+            "const title = text(\"ORIGAMI\", { size: 96 }).at(0.4).for(4.6)"
+        );
+        assert_eq!(
+            row(&set(SRC, 1, "color", "\"#ffcc00\""), 1),
+            "const title = text(\"ORIGAMI\", { size: 180, color: \"#ffcc00\" }).at(0.4).for(4.6)"
+        );
+        assert_eq!(row(&set(SRC, 4, "font", "\"Minecraft\""), 5), "  font: \"Minecraft\",");
+        assert_eq!(row(&set(SRC, 4, "size", "28"), 5), "  font: \"Menlo\", size: 28");
+        assert_eq!(
+            row(&set(SRC, 7, "font", "\"Minecraft\""), 7),
+            "const note = caption(\"typed\", { font: \"Minecraft\" }).for(4)"
+        );
+        assert_eq!(set("text(\"a\", {})", 0, "size", "9"), "text(\"a\", { size: 9 })");
+        assert_eq!(set("text(\"a\", look)", 0, "size", "9"), "text(\"a\", look)");
+        assert_eq!(
+            (hue("#ffcc00"), hue(""), hue("black"), hue("#fc0"), hue("red")),
+            (Some(0xffcc00), Some(0xffffff), Some(0), None, None)
+        );
+    }
+
+    #[test]
+    fn handles_round_trip() {
+        let (a, b) = ((1., 0.2), (3., 0.6));
+        assert_eq!(bend(""), bend("\"linear\""));
+        assert_eq!(
+            (bend("\"slowOut\""), bend("bezier(0.3, 0, 0.6, 1)")),
+            (None, Some([0.3, 0., 0.6, 1.]))
+        );
+        let lead = handle(a, b, [0.25, 0.5, 0.75, 1.5], true);
+        let last = handle(a, b, [0.25, 0.5, 0.75, 1.5], false);
+        assert_eq!((lead, last), ((1.5, 0.4), (2.5, 0.8)));
+        let ease = bent(&bent("\"slowOut\"", true, a, b, lead), false, a, b, last);
+        assert_eq!(ease, "bezier(0.25, 0.5, 0.75, 1.5)");
+        assert_eq!(handle(a, b, bend(&ease).unwrap(), false), last);
+        assert_eq!(bent("", true, a, b, (9., 0.3)), "bezier(1, 0.25, 0.67, 0.67)");
+        assert_eq!(bent("", false, a, (3., 0.2), (0., 5.)), "bezier(0.33, 0.33, 0, 0.67)");
     }
 
     #[test]
     fn rewrites_still_evaluate() {
-        let demo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../demo");
-        let Ok(src) = fs::read_to_string(demo.join("motion.js")) else {
-            return;
+        let mut src = SRC.to_string();
+        let bend = |old: &str| {
+            let ease = bent("", false, (0., 0.36), (0.9, 0.3), (0.6, 0.3));
+            print(&[Key {
+                ease,
+                ..keys(old)[1].clone()
+            }])
         };
-        let mut lines: Vec<String> = src.lines().map(String::from).collect();
-        let edit = |lines: &mut Vec<String>, row: usize, op: &str, n: usize, f: &dyn Fn(&mut Vec<Key>)| {
-            let span = spot(&lines[row], op, n).unwrap();
-            rekey(&mut lines[row], span, f);
-        };
-        edit(&mut lines, 8, "opacity", 0, &|k| nudge(k, 1, 6., 0.8, 4.6, 30.));
-        edit(&mut lines, 8, "opacity", 0, &|k| nudge(k, 2, -3., 1., 4.6, 30.));
-        edit(&mut lines, 7, "pos", 1, &|k| k[1].ease = "\"bounceOut\"".into());
-        edit(&mut lines, 3, "scale", 0, &|k| {
-            plant(k, 2., 1.1, 6.);
-        });
-        edit(&mut lines, 4, "opacity", 0, &|k| drop(k.remove(0)));
-        rewrite(&mut lines, 5, "rotate", |old| grow(old, 0, 0.));
-        rewrite(&mut lines, 9, "pos", |old| grow(old, 0, 0.));
-        rewrite(&mut lines, 12, "pos", |old| grow(old, 1, 0.84));
-        rewrite(&mut lines, 16, "pos", |old| grow(old, 1, 0.));
-        assert_eq!(lines[8], "  .opacity(keys([0, 0], [1.1, 0.8], [-0.7, 1], [\"100%\", 0]))");
-        assert_eq!(lines[7], "  .pos(keys([0, 0]), keys([0, 0.36], [0.9, 0.3, \"bounceOut\"]))");
-        assert_eq!(lines[3], "  .scale(keys([0, 1], [2, 1.1], [\"100%\", 1.2, \"slowInSlowOut\"]))");
-        assert_eq!(lines[4], "  .opacity(keys([\"100%\", 0])).rotate(keys([0, 0]))");
-        assert_eq!(lines[11], "  .shown(keys([0, 0], [1.6, 1])).pos(null, keys([0, 0.84]))");
-        assert_eq!(lines[14], "  .pos(null, keys([0, 0.56]))");
-        let path = demo.join("motion.rewritten.js");
-        fs::write(&path, lines.join("\n")).unwrap();
-        let tl = origami_lang::eval(&path, false);
-        fs::remove_file(&path).unwrap();
-        let tl = tl.unwrap();
-        assert!(matches!(tl.clips[1].opacity, Val::Frames(9, _)));
-        assert_eq!(
-            (tl.clips[0].opacity.clone(), tl.clips[0].rotate.clone()),
-            (Val::Fixed(0.), Val::Fixed(0.))
+        let edits: [(usize, &str, &dyn Fn(&str) -> String); 12] = [
+            (7, "y", &|_| "0.7".into()),
+            (7, "size", &|_| "60".into()),
+            (4, "size", &|_| "28".into()),
+            (4, "shown", &|old| toggle(old, 0.5, 1., 6., 30.)),
+            (1, "opacity", &|old| toggle(old, 2., 0.8, 4.6, 30.)),
+            (1, "opacity", &|old| assign(old, 0.9, 0.5, 4.6, 30.)),
+            (1, "y", &bend),
+            (1, "rotate", &|old| toggle(old, 0., 0., 4.6, 30.)),
+            (1, "rotate", &|old| toggle(old, 0., 0., 4.6, 30.)),
+            (1, "scale", &|old| toggle(old, 1., 1., 4.6, 30.)),
+            (1, "x", &|_| "0.25".into()),
+            (1, "color", &|_| "\"#ffcc00\"".into()),
+        ];
+        for (row, name, f) in edits {
+            src = edit(&src, row, Kind::Text, name, f);
+        }
+        let dir = std::env::temp_dir().join("origami-motion-rewrites");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("edit.js"), &src).unwrap();
+        let tl = origami_lang::eval(&dir.join("edit.js"), true).unwrap();
+        let (title, tag, note) = (&tl.clips[1], &tl.clips[2], &tl.clips[3]);
+        assert!(src.contains("  .pos(0.25, keys([0.9, 0.3, bezier(0.33, 0.33, 0.67, 1)]))"), "{src}");
+        assert!(
+            src.contains("  .opacity(keys([0, 0], [0.9, 0.5], [2, 0.8], [-0.6, 1], [\"100%\", 0]))\n  .rotate(0)\n  .scale(keys([1, 1]))")
         );
+        assert_eq!(
+            (title.home, title.line, title.color.as_str(), title.rotate.clone()),
+            (2, 11, "#ffcc00", Val::Fixed(0.))
+        );
+        assert_eq!(
+            (title.pos.clone(), title.opacity.at(27)),
+            ((Some(Val::Fixed(0.25)), Some(Val::Fixed(0.3))), 0.5)
+        );
+        assert_eq!(
+            (tag.size, tag.shown.clone(), tag.scale.clone()),
+            (28., Val::Fixed(1.), Val::Fixed(1.5))
+        );
+        assert_eq!((note.size, note.pos.1.clone(), note.home), (60., Some(Val::Fixed(0.7)), 10));
     }
 }
