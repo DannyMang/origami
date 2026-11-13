@@ -290,6 +290,9 @@ impl Origami {
     }
 
     pub fn delete(&mut self) {
+        if self.cull() {
+            return;
+        }
         let Some(c) = self.focused().cloned() else { return };
         let i = (c.line as usize).saturating_sub(1);
         let shared = self.tl.clips.iter().filter(|o| o.line == c.line).count() > 1;

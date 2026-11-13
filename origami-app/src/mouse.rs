@@ -1,4 +1,4 @@
-use crate::{Origami, view::HEAD};
+use crate::{Origami, motion::LEAD, view::HEAD};
 use gpui::{Context, Pixels, PromptLevel, ScrollWheelEvent, Window, px};
 use origami_lang::{Clip, Kind};
 use std::{env, fs, mem, path::PathBuf};
@@ -21,12 +21,16 @@ impl Origami {
         self.held.unwrap_or(self.tl.duration).max(1e-3) / self.zoom
     }
 
-    pub fn per_px(&self, window: &Window) -> f64 {
-        self.span() / (f32::from(window.viewport_size().width) - self.side - HEAD - 12.).max(1.) as f64
+    pub fn lead(&self) -> f32 {
+        if self.motion { LEAD } else { HEAD }
     }
 
-    fn at(&self, x: Pixels, window: &Window) -> f64 {
-        self.pan + (f32::from(x) - HEAD) as f64 * self.per_px(window)
+    pub fn per_px(&self, window: &Window) -> f64 {
+        self.span() / (f32::from(window.viewport_size().width) - self.side - self.lead() - 12.).max(1.) as f64
+    }
+
+    pub fn at(&self, x: Pixels, window: &Window) -> f64 {
+        self.pan + (f32::from(x) - self.lead()) as f64 * self.per_px(window)
     }
 
     pub fn toggle(&mut self) {
@@ -192,6 +196,10 @@ impl Origami {
             self.play();
         }
         (self.scrubbing, self.pull, self.picking, self.turning, self.held, self.push) = (false, None, false, None, None, None);
+        if self.slip.take().is_some() && self.lines != self.base {
+            self.past.push(mem::take(&mut self.base));
+            self.future.clear();
+        }
         let Some((_, c, _, dt)) = self.drag.take() else {
             return;
         };

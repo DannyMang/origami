@@ -4,6 +4,7 @@ mod fold;
 mod keys;
 mod knob;
 mod lint;
+mod motion;
 mod mouse;
 mod search;
 mod view;
@@ -73,6 +74,9 @@ struct Origami {
     knobbed: Option<(usize, usize)>,
     kept: Option<(usize, usize)>,
     turning: Option<knob::Turn>,
+    motion: bool,
+    key: Option<(u32, &'static str, usize)>,
+    slip: Option<motion::Slip>,
     disc: Arc<RenderImage>,
     strips: [Arc<RenderImage>; 3],
     finding: Option<String>,
@@ -148,7 +152,7 @@ impl Origami {
 
     fn seek(&mut self, t: f64) {
         self.t = (t.clamp(0., self.end()) * self.fps()).round() / self.fps();
-        self.sel = None;
+        self.sel = self.sel.filter(|_| self.motion);
         match self.scrubbing {
             _ if self.player.is_none() => {}
             true => self.player = Some((Instant::now(), self.t, None)),
@@ -392,6 +396,9 @@ fn main() {
                     knobbed: None,
                     kept: None,
                     turning: None,
+                    motion: false,
+                    key: None,
+                    slip: None,
                     disc: bitmap(knob::disc(), 300, 300),
                     strips: [0, 1, 2].map(|kind| bitmap(knob::strip(kind), 150, 150)),
                     finding: None,

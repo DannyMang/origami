@@ -21,7 +21,7 @@ pub enum Turn {
 }
 
 const PAD: f32 = 150.;
-const TRACK: f32 = 160.;
+pub const TRACK: f32 = 160.;
 const CURVES: [&str; 6] = ["curve", "hueVsSat", "hueVsHue", "hueVsLuma", "lumaVsSat", "satVsSat"];
 
 fn range(call: &str, label: &str, value: f64) -> Option<(f64, f64)> {
@@ -42,6 +42,8 @@ fn range(call: &str, label: &str, value: f64) -> Option<(f64, f64)> {
         ("speed", "0") => (0.1, 4.),
         ("volume", "0") => (0., 2.),
         ("scale", "0") => (0.1, 2.),
+        ("opacity" | "shown", "0") => (0., 1.),
+        ("rotate", "0") => (-180., 180.),
         ("loop", "0") => (1., 10.),
         ("pos", _) => (0., 1.),
         ("fade", _) => (0., 5.),
@@ -106,7 +108,7 @@ fn secs(s: &str) -> Option<f64> {
     s.split(':').try_fold(0., |a, x| x.parse::<f64>().ok().map(|x| a * 60. + x))
 }
 
-fn close(s: &[u8], open: usize) -> Option<usize> {
+pub fn close(s: &[u8], open: usize) -> Option<usize> {
     let (mut depth, mut quote, mut i) = (0, 0u8, open);
     while i < s.len() {
         match s[i] {
@@ -216,6 +218,34 @@ fn show(v: f64, lo: f64, hi: f64) -> String {
         true => format!("{}", v.round()),
         false => format!("{:.2}", v).trim_end_matches('0').trim_end_matches('.').to_string(),
     }
+}
+
+pub fn rail(label: String, start: f32, text: String) -> Div {
+    div()
+        .h(px(24.))
+        .flex()
+        .items_center()
+        .cursor_pointer()
+        .child(div().w(px(84.)).text_color(rgb(DIM)).child(label))
+        .child(
+            div()
+                .relative()
+                .w(px(TRACK))
+                .h(px(4.))
+                .rounded(px(2.))
+                .bg(rgb(BORDER))
+                .child(div().h_full().w(px(start * TRACK)).rounded(px(2.)).bg(rgba(BLUE << 8 | 0xa0)))
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(-4.))
+                        .left(px(start * TRACK - 6.))
+                        .size(px(12.))
+                        .rounded_full()
+                        .bg(rgb(BLUE)),
+                ),
+        )
+        .child(div().w(px(70.)).pl_3().child(text))
 }
 
 impl Origami {
@@ -441,39 +471,14 @@ impl Origami {
                 false => (k.value, part(k), k.label.clone(), show(k.value, k.lo, k.hi)),
             };
             let wide = k.hi - k.lo;
-            div()
-                .h(px(24.))
-                .flex()
-                .items_center()
-                .cursor_pointer()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, e: &MouseDownEvent, _, cx| {
-                        this.hold(Turn::Slide(i, f32::from(e.position.x), value, wide));
-                        cx.stop_propagation();
-                        cx.notify();
-                    }),
-                )
-                .child(div().w(px(84.)).text_color(rgb(DIM)).child(label))
-                .child(
-                    div()
-                        .relative()
-                        .w(px(TRACK))
-                        .h(px(4.))
-                        .rounded(px(2.))
-                        .bg(rgb(BORDER))
-                        .child(div().h_full().w(px(start * TRACK)).rounded(px(2.)).bg(rgba(BLUE << 8 | 0xa0)))
-                        .child(
-                            div()
-                                .absolute()
-                                .top(px(-4.))
-                                .left(px(start * TRACK - 6.))
-                                .size(px(12.))
-                                .rounded_full()
-                                .bg(rgb(BLUE)),
-                        ),
-                )
-                .child(div().w(px(70.)).pl_3().child(text))
+            rail(label, start, text).on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                    this.hold(Turn::Slide(i, f32::from(e.position.x), value, wide));
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            )
         });
         let rows: Vec<Div> = rows.collect();
         Some(
@@ -527,5 +532,9 @@ mod tests {
             0x74ade8
         );
         assert!(labels("clip.speed(rate)", 7).is_empty());
+        assert_eq!(labels("a.opacity(0.5).rotate(-90)", 3), [("0".into(), 0.5)]);
+        assert_eq!(labels("a.opacity(0.5).rotate(-90)", 16), [("0".into(), -90.)]);
+        let keyed = "  .pos(null, keys([0, 0.36], [0.9, 0.3, \"slowOut\"])).scale(keys([0, 1], [\"100%\", 1.2, bezier(0.3, 0, 0.6, 1)]))";
+        assert!((0..keyed.len()).all(|at| labels(keyed, at).is_empty()));
     }
 }

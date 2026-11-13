@@ -10,9 +10,9 @@ use std::{mem, ops::Range, time::Instant};
 
 const BG: u32 = 0x282c33;
 pub const PANEL: u32 = 0x2f343e;
-const BAR: u32 = 0x3b414d;
+pub const BAR: u32 = 0x3b414d;
 pub const BORDER: u32 = 0x464b57;
-const TEXT: u32 = 0xdce0e5;
+pub const TEXT: u32 = 0xdce0e5;
 const MUTED: u32 = 0xa9afbc;
 pub const DIM: u32 = 0x878a98;
 pub const BLUE: u32 = 0x74ade8;
@@ -23,19 +23,21 @@ const RED: u32 = 0xd07277;
 const CODE: u32 = 0xacb2be;
 const COMMENT: u32 = 0x5d636f;
 const GUTTER: u32 = 0x4e5a5f;
-const INK: u32 = 0x1b1f25;
+pub const INK: u32 = 0x1b1f25;
 const DOCS: &str = "https://example.com/origami/docs";
 pub const HEAD: f32 = 48.;
+pub const RULER: f32 = 22.;
 const HELP: &str =
     "mouse: drag the ruler to move the playhead, click a clip to select, drag to move, drag edges to trim, delete removes it, cmd+z undo, cmd+shift+z redo, f full screen
 click the script to type in it, cmd+s saves and applies, esc leaves     scroll zooms the timeline     drag pane edges to resize     cmd+ cmd-  code size     cmd+0  reset layout     cmd+f  search
+Motion tab: click a key to select it, drag it to change time and value, double-click a curve to add a key, delete removes it, + add animates a property
 fold code with the gutter arrows, cmd+opt+[ and cmd+opt+], or za zM zR in vim keys     esc  vim keys, i  back
 h l  frame        H L  second       w b  clip boundary    0 $ gg G  start, end
 j k  layer        < >  shift clip   x  delete clip    space  play, pause    m' + letter  marks
 v    select       y    yank code    gd  open in editor    / n N  search    .  repeat
 :1:05  :goto 1:05  :f 1800  :export out.mp4 [--dry-run]  :e file.js  :set loop  :ir  :q";
 
-fn tab(label: String) -> Div {
+fn tab(label: impl IntoElement) -> Div {
     div()
         .h(px(34.))
         .flex_none()
@@ -80,6 +82,15 @@ fn tokens(s: &str) -> Vec<(Range<usize>, HighlightStyle)> {
     out
 }
 
+pub fn tint(kind: Kind) -> u32 {
+    match kind {
+        Kind::Video | Kind::Image => BLUE,
+        Kind::Sound => GREEN,
+        Kind::Text => PURPLE,
+        Kind::Color => DIM,
+    }
+}
+
 impl Origami {
     fn timecode(&self) -> String {
         let (f, s) = ((self.t * self.fps()).round() as u64, self.t as u64);
@@ -97,12 +108,7 @@ impl Origami {
         let wide = len / per;
         let (a, b) = (c.start, c.end);
         let edge = || div().absolute().top_0().bottom_0().w(px(8.)).cursor_col_resize();
-        let color = match c.kind {
-            Kind::Video | Kind::Image => BLUE,
-            Kind::Sound => GREEN,
-            Kind::Text => PURPLE,
-            Kind::Color => DIM,
-        };
+        let color = tint(c.kind);
         let rim = if focused { rgb(TEXT) } else { rgba(color << 8 | 0x80) };
         let body = match c.kind {
             Kind::Video | Kind::Image => {
@@ -248,7 +254,7 @@ impl Origami {
             .children((self.menu == label).then(|| deferred(list)))
     }
 
-    fn tools(&self, tl: &Timeline, cx: &mut Context<Self>) -> Div {
+    fn tools(&self, tl: &Timeline, focus: Option<&Clip>, cx: &mut Context<Self>) -> Div {
         let pace = match self.rate {
             0.5 => "0.5x",
             2. => "2x",
@@ -268,7 +274,26 @@ impl Origami {
             self.tool("export", cx, |t, _, cx| t.run("export out.mp4", cx)),
         ];
         let side = || div().flex_1().flex().items_center().text_size(px(20.));
-        tab("Timeline".into())
+        let grow = self
+            .growable(focus)
+            .into_iter()
+            .map(|p| self.tool(p, cx, move |t, _, _| t.animate(p)));
+        let grow = grow.collect();
+        let page = |label: &'static str, motion: bool| {
+            div()
+                .cursor_pointer()
+                .text_color(rgb(if self.motion == motion { TEXT } else { DIM }))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        this.motion = motion;
+                        cx.stop_propagation();
+                        cx.notify();
+                    }),
+                )
+                .child(label)
+        };
+        tab(div().flex().gap_4().child(page("Timeline", false)).child(page("Motion", true)))
             .relative()
             .child(
                 side()
@@ -293,7 +318,10 @@ impl Origami {
                 side()
                     .justify_end()
                     .child(self.tool(pace, cx, |t, _, _| t.pace()).text_size(px(13.)))
-                    .child(self.menu("+", add, cx))
+                    .child(match self.motion {
+                        true => self.menu("+ add", grow, cx).text_size(px(13.)),
+                        false => self.menu("+", add, cx),
+                    })
                     .child(self.menu("\u{22ef}", more, cx))
                     .child(div().pl_3().text_size(px(13.)).text_color(rgb(MUTED)).child(format!(
                         "{} / {}",
@@ -332,9 +360,10 @@ impl Origami {
             .find(|s| d / s <= 10.)
             .unwrap_or(1800.);
         let ticks = ((pan / step).ceil() as usize..=((pan + d) / step) as usize).map(|i| i as f64 * step);
+        let lead = self.lead();
         let label = |s: String| {
             div()
-                .w(px(HEAD))
+                .w(px(lead))
                 .flex_none()
                 .pl_3()
                 .flex()
@@ -354,29 +383,32 @@ impl Origami {
                 .text_color(rgb(DIM))
                 .child(s)
         };
-        let rows: Vec<Div> = rows
-            .into_iter()
-            .enumerate()
-            .map(|(i, (video, clips))| {
-                let name = if video {
-                    format!("V{}", videos - i)
-                } else {
-                    format!("A{}", i - videos + 1)
-                };
-                let clips: Vec<Div> = clips
-                    .into_iter()
-                    .filter(|c| c.end > pan && c.start < pan + d)
-                    .map(|c| self.clip(c, focus.is_some_and(|f| f.z == c.z), per, cx))
-                    .collect();
-                div()
-                    .h(px(tall(video) * fit))
-                    .flex_none()
-                    .flex()
-                    .pr_3()
-                    .child(label(name))
-                    .child(div().relative().flex_1().overflow_hidden().children(clips))
-            })
-            .collect();
+        let rows: Vec<Div> = match self.motion {
+            true => self.curves(focus, cx),
+            false => rows
+                .into_iter()
+                .enumerate()
+                .map(|(i, (video, clips))| {
+                    let name = if video {
+                        format!("V{}", videos - i)
+                    } else {
+                        format!("A{}", i - videos + 1)
+                    };
+                    let clips: Vec<Div> = clips
+                        .into_iter()
+                        .filter(|c| c.end > pan && c.start < pan + d)
+                        .map(|c| self.clip(c, focus.is_some_and(|f| f.z == c.z), per, cx))
+                        .collect();
+                    div()
+                        .h(px(tall(video) * fit))
+                        .flex_none()
+                        .flex()
+                        .pr_3()
+                        .child(label(name))
+                        .child(div().relative().flex_1().overflow_hidden().children(clips))
+                })
+                .collect(),
+        };
         let k = ((self.t - pan) / d) as f32;
         let wedge = |w: f32| div().w(px(w)).h(px(3.)).bg(rgb(TEXT));
         let head = (0. ..=1.).contains(&k).then(|| {
@@ -414,7 +446,7 @@ impl Origami {
             .bg(rgb(PANEL))
             .border_t_1()
             .border_color(rgb(BORDER))
-            .child(self.tools(tl, cx))
+            .child(self.tools(tl, focus, cx))
             .child(
                 div()
                     .relative()
@@ -428,7 +460,8 @@ impl Origami {
                     }))
                     .child(
                         div()
-                            .h(px(22.))
+                            .h(px(RULER))
+                            .flex_none()
                             .flex()
                             .pr_3()
                             .cursor_pointer()
@@ -459,13 +492,13 @@ impl Origami {
                             .absolute()
                             .top_0()
                             .bottom_0()
-                            .left(px(HEAD))
+                            .left(px(self.lead()))
                             .right_3()
                             .overflow_hidden()
                             .children(select)
                             .child(div().absolute().top_0().bottom_0().left(x(self.t)).w(px(1.)).bg(rgb(TEXT))),
                     )
-                    .child(div().absolute().top_0().left(px(HEAD)).right_3().children(head)),
+                    .child(div().absolute().top_0().left(px(self.lead())).right_3().children(head)),
             )
             .child(self.grip(false, cx))
     }
@@ -915,6 +948,9 @@ impl Render for Origami {
                 } else if this.turning.is_some() {
                     this.turn(e.position, window);
                     cx.notify();
+                } else if this.slip.is_some() {
+                    this.slide(e.position);
+                    cx.notify();
                 } else if this.picking {
                     this.place(e.position, window);
                     cx.notify();
@@ -958,7 +994,7 @@ impl Render for Origami {
                         .flex_col()
                         .flex_1()
                         .min_w_0()
-                        .child(tab("Program".into()))
+                        .child(tab("Program"))
                         .child(stage)
                         .child(self.timeline(&tl, focus.as_ref(), self.per_px(window), cx)),
                 )
@@ -972,6 +1008,7 @@ impl Render for Origami {
             }))
         }))
         .children(self.knobs(window, cx))
+        .children(self.keyed(window, cx))
         .children(self.tip(window).map(|(tip, text)| {
             tip.occlude().cursor_pointer().on_mouse_down(
                 MouseButton::Left,

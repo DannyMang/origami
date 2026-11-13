@@ -1,4 +1,4 @@
-use crate::{Mode, Origami};
+use crate::{Mode, Origami, knob::close};
 use gpui::{ClipboardItem, Context, KeyDownEvent, Window};
 use origami_engine::{command, render};
 use origami_lang::Clip;
@@ -14,6 +14,27 @@ pub fn stamp(t: f64) -> String {
 
 fn secs(s: &str) -> Option<f64> {
     s.split(':').try_fold(0., |a, x| x.parse::<f64>().ok().map(|x| a * 60. + x))
+}
+
+pub fn link(lines: &[String], line: u32, op: &str) -> Option<usize> {
+    let (key, last) = (format!(".{op}("), (line as usize).checked_sub(1).filter(|i| *i < lines.len())?);
+    let linked = |i: &usize| lines[*i..=last].iter().skip(1).all(|l| l.trim_start().starts_with('.'));
+    (0..=last).rev().take_while(linked).find(|i| lines[*i].contains(&key))
+}
+
+pub fn rewrite(lines: &mut [String], line: u32, op: &str, arg: impl Fn(&str) -> String) {
+    let key = format!(".{op}(");
+    let Some(last) = (line as usize).checked_sub(1).filter(|i| *i < lines.len()) else {
+        return;
+    };
+    let s = &mut lines[link(lines, line, op).unwrap_or(last)];
+    if let Some(a) = s.find(&key).map(|a| a + key.len()) {
+        let b = close(s.as_bytes(), a - 1).unwrap_or(a);
+        let new = arg(&s[a..b]);
+        s.replace_range(a..b, &new);
+    } else if let Some(a) = s.rfind(')') {
+        s.insert_str(a + 1, &format!("{key}{})", arg("")));
+    }
 }
 
 impl Origami {
@@ -37,6 +58,9 @@ impl Origami {
             return cx.notify();
         }
         if self.knobbed.take().is_some() && k == "escape" {
+            return cx.notify();
+        }
+        if k == "escape" && self.key.take().is_some() {
             return cx.notify();
         }
         if self.finding.is_some() && !(key.modifiers.platform || save) {
@@ -218,20 +242,7 @@ impl Origami {
     }
 
     pub fn rewrite(&mut self, line: u32, op: &str, arg: impl Fn(&str) -> String) {
-        let key = format!(".{op}(");
-        let Some(last) = (line as usize).checked_sub(1).filter(|i| *i < self.lines.len()) else {
-            return;
-        };
-        let linked = |i: &usize| self.lines[*i..=last].iter().skip(1).all(|l| l.trim_start().starts_with('.'));
-        let at = (0..=last).rev().take_while(linked).find(|i| self.lines[*i].contains(&key));
-        let s = &mut self.lines[at.unwrap_or(last)];
-        if let Some(a) = s.find(&key).map(|a| a + key.len()) {
-            let b = a + s[a..].find(')').unwrap_or(0);
-            let new = arg(&s[a..b]);
-            s.replace_range(a..b, &new);
-        } else if let Some(a) = s.rfind(')') {
-            s.insert_str(a + 1, &format!("{key}{})", arg("")));
-        }
+        rewrite(&mut self.lines, line, op, arg);
     }
 
     pub fn patch(&mut self, line: u32, op: &str, arg: impl Fn(&str) -> String) {
