@@ -48,6 +48,11 @@ pub fn place(c: &Clip, (w, h): (f64, f64), k: f64) -> (f64, f64, f64, f64) {
     }
 }
 
+pub fn footprint(c: &Clip, size: (f64, f64)) -> (f64, f64) {
+    let (w, h, ..) = place(c, size, 1.);
+    (w, h)
+}
+
 pub fn plain(c: &Clip) -> bool {
     let fixed = |(n, v): (&str, &Val)| n == "opacity" || matches!(v, Val::Fixed(_));
     c.parts.is_empty() && c.rotate == Val::Fixed(0.) && c.shown == Val::Fixed(1.) && c.vals().all(fixed)

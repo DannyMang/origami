@@ -848,7 +848,7 @@ stack(shot, title.shift(1), tag, note, text(\"inline\").for(2))";
         let dir = std::env::temp_dir().join("origami-motion-rewrites");
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("edit.js"), &src).unwrap();
-        let tl = origami_lang::eval(&dir.join("edit.js"), true).unwrap();
+        let tl = origami_lang::eval(&dir.join("edit.js"), true, origami_engine::footprint).unwrap();
         let (title, tag, note) = (&tl.clips[1], &tl.clips[2], &tl.clips[3]);
         assert!(src.contains("  .pos(0.25, keys([0.9, 0.3, bezier(0.33, 0.33, 0.67, 1)]))"), "{src}");
         assert!(

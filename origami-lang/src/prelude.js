@@ -1,15 +1,24 @@
 (() => {
   const T = t => typeof t === 'number' ? t : String(t).split(':').reduce((a, x) => a * 60 + +x, 0)
   const S = { fps: 30, size: null }
-  let L = {}, at = 0
-  const digits = /^\d+$/, named = /(?:const|let|var)\s+(\w+)\s*=/, made = /\b(video|sound|image|text|captions|caption|color|(?<!\.)(?:keys|rect|line))\(/g
+  let L = {}, at = 0, N = 0, P = [], D = 0, W = [1, 1]
+  const M = new Map(), reads = ['x', 'y', 'scale', 'rotate', 'opacity']
+  const digits = /^\d+$/, named = /(?:const|let|var)\s+(\w+)\s*=/, made = /\b(video|sound|image|text|captions|caption|color|(?<!\.)(?:keys|rect|line|add|mul))\(/g
   const line = g => new Proxy(g(0), { get: (t, n) => digits.test(String(n)) ? g(+n) : t[n] })
   const anim = (k, v) => {
+    if (v?.of) {
+      const { of, k: p } = v, name = `${of.label ?? 'a group'}.${p === 'x' || p === 'y' ? 'pos.' : ''}${p}`
+      if (of.kids || !reads.includes(p) || k.startsWith('each')) throw new Error(`line ${at}: ${k} cannot follow ${name} (pos.x, pos.y, scale, rotate and opacity of one clip can be followed, outside each)`)
+      v = (t, d, T) => read(of, p, T)
+    }
     if (typeof v !== 'number' && typeof v !== 'function') throw new Error(`line ${at}: ${k} takes a number or a function of time`)
-    return typeof v === 'number' ? v : Object.assign((t, d) => v(t, d), { line: at })
+    return typeof v === 'number' ? v : Object.assign((t, d, T) => v(t, d, T), { line: at })
   }
-  const num = (v, t, d) => typeof v === 'number' ? v : v(t, d)
-  const mul = (k, a, b) => typeof a === 'number' && typeof anim(k, b) === 'number' ? a * b : anim(k, (t, d) => num(a, t, d) * num(b, t, d))
+  const num = (v, t, d, T) => typeof v === 'number' ? v : v(t, d, T)
+  const times = (k, a, x) => {
+    const b = anim(k, x)
+    return typeof a === 'number' && typeof b === 'number' ? a * b : anim(k, (t, d, T) => num(a, t, d, T) * num(b, t, d, T))
+  }
   const split = { char: /\S/gu, word: /\S+/gu, line: /.+/gu }
   const ops = {
     trim: (d, a, b) => ({ ...d, in: T(a), out: Math.max(b == null ? d.out : T(b), T(a) + 0.04) }),
@@ -20,9 +29,9 @@
     volume: (d, x) => ({ ...d, gain: d.gain * x }),
     mute: d => ({ ...d, gain: 0 }),
     fade: (d, a, b = a) => ({ ...d, fade: [a, b] }),
-    scale: (d, x) => ({ ...d, scale: mul('scale', d.scale, x) }),
-    pos: (d, x, y) => ({ ...d, pos: [x, y].map(v => v == null ? null : anim('pos', v)) }),
-    opacity: (d, x) => ({ ...d, opacity: mul('opacity', d.opacity, x) }),
+    scale: (d, x) => ({ ...d, scale: times('scale', d.scale, x) }),
+    pos: (d, x, y) => ({ ...d, pos: (x?.k === 'pos' && y === undefined ? [x.x, x.y] : [x, y]).map(v => v == null ? null : anim('pos', v)) }),
+    opacity: (d, x) => ({ ...d, opacity: times('opacity', d.opacity, x) }),
     rotate: (d, x) => ({ ...d, rotate: anim('rotate', x) }),
     shown: (d, x) => ({ ...d, shown: anim('shown', x) }),
     each: (d, by, f) => {
@@ -67,7 +76,7 @@
   const nums = ['speed', 'volume', 'loop', 'temperature', 'tint', 'saturation', 'exposure', 'contrast', 'highlights', 'shadows', 'whites', 'blacks', 'fadedFilm', 'vibrance', 'tintBalance']
   const called = new RegExp(`\\.(${Object.keys(ops).join('|')})\\(`, 'g')
   const clip = d => new Proxy(d, {
-    get: (d, k) => k === '$' ? d : k in ops ? line(n => (...a) => {
+    get: (d, k) => k === '$' ? d : k in ops ? line(n => Object.assign((...a) => {
       at = n || at
       if (nums.includes(k) && typeof a[0] !== 'number') throw new Error(`line ${at}: ${k} takes a number`)
       if (!d.kids && d.kind !== 'text' && (k === 'shown' || k === 'each')) throw new Error(`line ${at}: ${k} is for text and caption`)
@@ -75,10 +84,10 @@
         ...(d.kids && deep.includes(k) ? { ...d, kids: d.kids.map(c => c[k](...a)) } : ops[k](d, ...a)),
         line: n || d.line,
       })
-    }) : d[k],
+    }, { of: d, k }, k === 'pos' && { x: { of: d, k: 'x' }, y: { of: d, k: 'y' } })) : d[k],
   })
   const base = { in: 0, out: null, speed: 1, gain: 1, fade: [0, 0], scale: 1, opacity: 1, rotate: 0, shown: 1, shift: 0, loop: 1 }
-  const leaf = f => line(n => (...a) => { at = n; const d = f(...a); return clip({ ...base, ...d, line: n, home: n, label: L[n] ?? d.label }) })
+  const leaf = f => line(n => (...a) => { at = n; const d = f(...a); return clip({ ...base, ...d, line: n, home: n, label: L[n] ?? d.label, id: ++N }) })
   const stem = p => p.split('/').pop().replace(/\.\w+$/, '')
   const file = (kind, pick) => leaf(p => {
     const m = JSON.parse(__probe(p, kind, at))
@@ -112,7 +121,15 @@
       return 7.5625 * (x - c / 2.75) ** 2 + b
     },
   }
+  const wire = (k, f) => line(n => (v, x) => {
+    at = n
+    if (typeof x !== 'number') throw new Error(`line ${at}: ${k} is written ${k}(title.pos.y, 0.5)`)
+    const g = anim(k, v)
+    return typeof g === 'number' ? f(g, x) : (t, d, T) => f(g(t, d, T), x)
+  })
   Object.assign(globalThis, {
+    add: wire('add', (a, b) => a + b),
+    mul: wire('mul', (a, b) => a * b),
     keys: line(n => (...k) => {
       at = n
       const time = s => typeof s === 'number' || /^[\d.]+%$/.test(s)
@@ -132,7 +149,7 @@
       for (let i = 0; i < 24; i++) B(x1, x2, (lo + hi) / 2) < x ? lo = (lo + hi) / 2 : hi = (lo + hi) / 2
       return B(y1, y2, (lo + hi) / 2)
     },
-    delay: (v, s) => (t, d) => v(t - s, d),
+    delay: (v, s) => (t, d, T) => v(t - s, d, T - s),
     settings: o => { Object.assign(S, o) },
     video: file('video', m => ({ video: m.video, audio: m.audio, out: m.dur, total: m.dur })),
     sound: file('sound', m => ({ video: false, audio: m.audio, out: m.dur, total: m.dur })),
@@ -184,30 +201,46 @@
         .replace(called, `.$1[${i + 1}](`)
     }).join('\n')
   }
+  globalThis.__late = m => {
+    const [, name, n] = m.match(/(\w+) is not defined.*?:(\d+):/) ?? [], below = Object.keys(L).find(l => L[l] === name && +l > +n)
+    return below ? `line ${n}: ${name} is defined below, on line ${below}; a clip can only follow one defined above it` : m
+  }
+  const frames = d => Math.max(1, Math.ceil(d * S.fps - 1e-6))
   const sample = (c, v) => {
     if (typeof v !== 'function') return v
-    const d = c.end - c.start, s = Array.from({ length: Math.max(1, Math.ceil(d * S.fps - 1e-6)) }, (_, i) => v(i / S.fps, d))
+    const d = c.end - c.start, s = Array.from({ length: frames(d) }, (_, i) => v(i / S.fps, d, c.start + i / S.fps))
     if (!s.every(Number.isFinite)) throw new Error(`line ${v.line}: a function of time must return a number`)
     return s.every(x => x === s[0]) ? s[0] : [v.line, s]
   }
+  const ir = (c, z) => ({
+    kind: c.kind, src: c.src, w: c.w ?? 0, h: c.h ?? 0, start: c.start, end: c.end, src_in: c.in, speed: c.speed, z,
+    scale: sample(c, c.scale), pos: (c.pos ?? [null, null]).map(v => v == null ? null : sample(c, v)), gain: c.gain, fade: c.fade, label: c.label, line: c.line, home: c.home, total: c.total ?? 0,
+    video: c.video, audio: c.audio, size: c.size ?? 0, color: c.color ?? '', font: c.font ?? '', grade: c.grade,
+    radius: c.radius ?? 0, ends: c.ends ?? [0, 0, 0, 0], background: c.background ?? '', align: c.align ?? '',
+    opacity: sample(c, c.opacity), rotate: sample(c, c.rotate), shown: sample(c, c.shown),
+    parts: c.parts?.map(p => Object.fromEntries(Object.entries(p).map(([k, v]) => [k, sample(c, v)]))),
+  })
+  const read = (d, k, T) => {
+    const s = P.find(c => c.id === d.id) ?? { start: 0, end: own(d) ?? D }, n = s.end - s.start
+    const j = Math.min(Math.max(Math.round((T - s.start) * S.fps), 0), frames(n) - 1)
+    const get = (v, j) => num(v, j / S.fps, n, s.start + j / S.fps)
+    const i = ['x', 'y'].indexOf(k), v = i < 0 ? d[k] : d.pos?.[i]
+    if (v != null) return get(v, j)
+    if (!M.has(d)) {
+      const top = Math.max(...Array.from({ length: frames(n) }, (_, j) => get(d.scale, j)))
+      const still = JSON.stringify(ir({ ...d, start: 0, end: n, scale: top, pos: null, opacity: 1, rotate: 0, shown: 1, parts: null }, 0))
+      M.set(d, [top, [0, 1].map(a => __measure(still, ...W, a))])
+    }
+    const [top, box] = M.get(d), mid = d.kind === 'line' ? (d.ends[i] + d.ends[i + 2]) / 2 : 0.5
+    return mid - box[i] * get(d.scale, j) / top / 2 / W[i]
+  }
   globalThis.__out = r => {
     if (!r || !r.$) throw new Error('script must end with a clip')
-    const out = [], root = r.$
-    place(root, 0, len(root) ?? 5, out)
-    const first = out.find(c => c.kind === 'video' && c.w)
-    const even = n => Math.round(n / 2) * 2
-    return JSON.stringify({
-      fps: S.fps,
-      size: (S.size ?? (first ? [first.w, first.h] : [1920, 1080])).map(even),
-      duration: Math.max(0, ...out.map(c => c.end)),
-      clips: out.map((c, z) => ({
-        kind: c.kind, src: c.src, w: c.w ?? 0, h: c.h ?? 0, start: c.start, end: c.end, src_in: c.in, speed: c.speed, z,
-        scale: sample(c, c.scale), pos: (c.pos ?? [null, null]).map(v => v == null ? null : sample(c, v)), gain: c.gain, fade: c.fade, label: c.label, line: c.line, home: c.home, total: c.total ?? 0,
-        video: c.video, audio: c.audio, size: c.size ?? 0, color: c.color ?? '', font: c.font ?? '', grade: c.grade,
-        radius: c.radius ?? 0, ends: c.ends ?? [0, 0, 0, 0], background: c.background ?? '', align: c.align ?? '',
-        opacity: sample(c, c.opacity), rotate: sample(c, c.rotate), shown: sample(c, c.shown),
-        parts: c.parts?.map(p => Object.fromEntries(Object.entries(p).map(([k, v]) => [k, sample(c, v)]))),
-      })),
-    })
+    const root = r.$, even = n => Math.round(n / 2) * 2
+    place(root, 0, len(root) ?? 5, P)
+    const first = P.find(c => c.kind === 'video' && c.w)
+    W = (S.size ?? (first ? [first.w, first.h] : [1920, 1080])).map(even)
+    D = Math.max(0, ...P.map(c => c.end))
+    return JSON.stringify({ fps: S.fps, size: W, duration: D, clips: P.map(ir) })
   }
 })()

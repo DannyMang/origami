@@ -1,5 +1,5 @@
 use anyhow::{Result, bail};
-use origami_engine::Preview;
+use origami_engine::{Preview, footprint};
 use std::{
     env,
     io::Write,
@@ -11,9 +11,12 @@ fn main() -> Result<()> {
     let flag = |f: &str| args.iter().any(|a| a == f);
     let pos: Vec<&str> = args.iter().map(String::as_str).filter(|a| !a.starts_with("--")).collect();
     match pos[..] {
-        ["ir", script] => println!("{}", serde_json::to_string_pretty(&origami_lang::eval(script.as_ref(), true)?)?),
+        ["ir", script] => println!(
+            "{}",
+            serde_json::to_string_pretty(&origami_lang::eval(script.as_ref(), true, footprint)?)?
+        ),
         ["render", script, out] => {
-            let tl = origami_lang::eval(script.as_ref(), flag("--relock"))?;
+            let tl = origami_lang::eval(script.as_ref(), flag("--relock"), footprint)?;
             if flag("--dry-run") {
                 let quote = |a: String| format!("'{}'", a.replace('\'', "'\\''"));
                 println!(
@@ -30,7 +33,7 @@ fn main() -> Result<()> {
             }
         }
         ["frame", script, t, out] => {
-            let tl = origami_lang::eval(script.as_ref(), flag("--relock"))?;
+            let tl = origami_lang::eval(script.as_ref(), flag("--relock"), footprint)?;
             let size = format!("{}x{}", tl.size.0, tl.size.1);
             let px = Preview::default().frame(&tl, t.parse()?, (tl.size.0 as usize, tl.size.1 as usize));
             let mut child = Command::new("ffmpeg")

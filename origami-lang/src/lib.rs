@@ -144,8 +144,10 @@ struct Media {
 
 type Lock = BTreeMap<String, Media>;
 
+pub type Measure = fn(&Clip, (f64, f64)) -> (f64, f64);
+
 thread_local! {
-    static ST: RefCell<(PathBuf, Lock, Lock, bool)> = RefCell::default();
+    static ST: RefCell<(PathBuf, Lock, Lock, bool, Option<Measure>)> = RefCell::default();
     static FAIL: RefCell<Option<Error>> = RefCell::default();
 }
 
@@ -260,7 +262,7 @@ fn host(args: &[JsValue], cx: &mut Context, find: Find, f: impl FnOnce(&str, &Pa
 
 fn probe(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
     host(args, cx, find, |rel, path| {
-        ST.with_borrow_mut(|(_, old, new, relock)| media(path, old, new, *relock, rel))
+        ST.with_borrow_mut(|(_, old, new, relock, _)| media(path, old, new, *relock, rel))
     })
 }
 
@@ -276,16 +278,24 @@ fn font(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
     host(args, cx, face, |_, path| Ok(path.to_string_lossy().into()))
 }
 
-pub fn eval(script: &Path, relock: bool) -> Result<Timeline> {
+fn extent(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
+    let text = args.first().cloned().unwrap_or_default().to_string(cx)?.to_std_string_escaped();
+    let num = |i: usize| args.get(i).and_then(JsValue::as_number).unwrap_or(0.);
+    let clip: Clip = serde_json::from_str(&text).map_err(|e| JsNativeError::error().with_message(e.to_string()))?;
+    let (w, h) = ST.with_borrow(|st| st.4).map_or((0., 0.), |f| f(&clip, (num(1), num(2))));
+    Ok(if num(3) == 0. { w } else { h }.into())
+}
+
+pub fn eval(script: &Path, relock: bool, measure: Measure) -> Result<Timeline> {
     FAIL.take();
-    build(script, relock, None).map_err(|e| FAIL.take().map_or(e, Into::into))
+    build(script, relock, None, measure).map_err(|e| FAIL.take().map_or(e, Into::into))
 }
 
-pub fn peek(script: &Path, src: &str) -> Result<Timeline> {
-    build(script, false, Some(src))
+pub fn peek(script: &Path, src: &str, measure: Measure) -> Result<Timeline> {
+    build(script, false, Some(src), measure)
 }
 
-fn build(script: &Path, relock: bool, src: Option<&str>) -> Result<Timeline> {
+fn build(script: &Path, relock: bool, src: Option<&str>, measure: Measure) -> Result<Timeline> {
     let script = script
         .canonicalize()
         .with_context(|| format!("missing script: {}", script.display()))?;
@@ -295,7 +305,7 @@ fn build(script: &Path, relock: bool, src: Option<&str>) -> Result<Timeline> {
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default();
-    ST.set((dir, old.clone(), Lock::new(), relock));
+    ST.set((dir, old.clone(), Lock::new(), relock, Some(measure)));
     let js = |e: JsError| anyhow!("{e}");
     let cx = &mut Context::default();
     let run = |cx: &mut Context, code: &str| cx.eval(Source::from_bytes(code)).map_err(js);
@@ -308,6 +318,7 @@ fn build(script: &Path, relock: bool, src: Option<&str>) -> Result<Timeline> {
         (js_string!("__read"), read),
         (js_string!("__lut"), lut),
         (js_string!("__font"), font),
+        (js_string!("__measure"), extent),
     ] {
         cx.register_global_builtin_callable(name, 1, NativeFunction::from_fn_ptr(f))
             .map_err(js)?;
@@ -319,7 +330,13 @@ fn build(script: &Path, relock: bool, src: Option<&str>) -> Result<Timeline> {
         JsString::from(src.map_or_else(|| fs::read_to_string(&script), |s| Ok(s.into()))?).into(),
     )?;
     let code = run(cx, "__prep(__src)")?.to_string(cx).map_err(js)?.to_std_string_escaped();
-    let root = run(cx, &code)?;
+    let root = match run(cx, &code) {
+        Ok(root) => root,
+        Err(e) => {
+            set(cx, js_string!("__err"), JsString::from(e.to_string()).into())?;
+            bail!("{}", run(cx, "__late(__err)")?.to_string(cx).map_err(js)?.to_std_string_escaped());
+        }
+    };
     set(cx, js_string!("__root"), root)?;
     let out = run(cx, "__out(__root)")?.to_string(cx).map_err(js)?.to_std_string_escaped();
     let new = ST.take().2;
@@ -333,11 +350,15 @@ fn build(script: &Path, relock: bool, src: Option<&str>) -> Result<Timeline> {
 mod tests {
     use super::*;
 
+    fn size(c: &Clip, _: (f64, f64)) -> (f64, f64) {
+        (c.size * c.scale.max(), c.size * c.scale.max() / 2.)
+    }
+
     fn tl(src: &str) -> Timeline {
         let dir = std::env::temp_dir().join(format!("origami-{}", src.len()));
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("edit.js"), src).unwrap();
-        eval(&dir.join("edit.js"), true).unwrap()
+        eval(&dir.join("edit.js"), true, size).unwrap()
     }
 
     #[test]
@@ -363,7 +384,7 @@ mod tests {
         let dir = std::env::temp_dir().join("origami-look");
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("edit.js"), "color('red')\n  .look('none')").unwrap();
-        let e = eval(&dir.join("edit.js"), true).unwrap_err();
+        let e = eval(&dir.join("edit.js"), true, size).unwrap_err();
         assert_eq!(e.downcast_ref::<Error>().map(Error::line), Some(2));
     }
 
@@ -429,8 +450,114 @@ stack(
             let dir = std::env::temp_dir().join(format!("origami-motion-{line}-{}", src.len()));
             fs::create_dir_all(&dir).unwrap();
             fs::write(dir.join("edit.js"), src).unwrap();
-            let e = eval(&dir.join("edit.js"), true).unwrap_err().to_string();
+            let e = eval(&dir.join("edit.js"), true, size).unwrap_err().to_string();
             assert!(e.contains(&format!("line {line}: ")), "{e}");
+        }
+    }
+
+    #[test]
+    fn follows_on_the_timeline_clock() {
+        let t = tl("settings({ fps: 10 })
+const title = text('t').for(2).pos(0.5, keys([0, 0], [1, 1])).opacity(keys([0, 0], [2, 1]))
+const tag = text('g').for(4).pos(title.pos.x, add(title.pos.y, -0.25)).opacity(mul(title.opacity, 0.5))
+const both = text('b').for(1).pos(title.pos).scale(title.scale).rotate(tag.pos.y)
+const far = text('f').for(1).opacity(tag.opacity)
+stack(title.at(1), tag, both.at(1.5), far.at(2), title.at(9))");
+        let c = &t.clips;
+        let near = |v: f64| (v * 1e4).round() / 1e4;
+        let y = |n: usize, i| near(c[n].pos.1.as_ref().unwrap().at(i));
+        assert_eq!((c[0].start, y(0, 5), y(0, 15)), (1., 0.5, 1.));
+        assert_eq!((y(1, 0), y(1, 10), y(1, 15), y(1, 20), y(1, 39)), (-0.25, -0.25, 0.25, 0.75, 0.75));
+        assert_eq!(
+            (c[1].pos.0.clone(), c[2].pos.0.clone(), c[2].scale.clone()),
+            (Some(Val::Fixed(0.5)), Some(Val::Fixed(0.5)), Val::Fixed(1.))
+        );
+        let dim = |n: usize, i| near(c[n].opacity.at(i));
+        assert_eq!((dim(1, 5), dim(1, 20), dim(1, 39)), (0., 0.25, 0.475));
+        assert_eq!(
+            (y(2, 0), y(2, 5), near(c[2].rotate.at(0)), near(c[2].rotate.at(9))),
+            (0.5, 1., 0.25, 0.75)
+        );
+        assert_eq!((dim(3, 0), dim(3, 5)), (0.25, 0.375));
+        assert!(matches!((&c[1].pos.1, &c[3].opacity), (Some(Val::Frames(3, _)), Val::Frames(5, _))));
+    }
+
+    #[test]
+    fn follows_defaults_and_unplaced_clips() {
+        let t = tl("settings({ fps: 10 })
+const a = text('a', { size: 100 }).for(1).scale(keys([0, 1], [1, 2]))
+const l = line(0.2, 0.4, 0.6, 0.4, { width: 10 })
+let c = text('c')
+const d = text('d').opacity(c.opacity)
+c = c.opacity(mul(d.opacity, 0.5))
+stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.scale), color('red').pos(l.pos.x, l.pos.y), c, d)");
+        let (b, near) = (&t.clips[0], |v: f64| (v * 1e6).round() / 1e6);
+        let at = |v: &Option<Val>, i| near(v.as_ref().unwrap().at(i));
+        assert_eq!(
+            (at(&b.pos.0, 0), at(&b.pos.1, 0)),
+            (near(0.5 - 50. / 1920.), near(0.5 - 25. / 1080.))
+        );
+        assert_eq!(
+            (at(&b.pos.0, 5), at(&b.pos.0, 15)),
+            (near(0.5 - 75. / 1920.), near(0.5 - 95. / 1920.))
+        );
+        assert_eq!(
+            (b.rotate.clone(), b.opacity.clone(), near(b.shown.at(19))),
+            (Val::Fixed(0.), Val::Fixed(1.), 1.9)
+        );
+
+        assert_eq!(
+            t.clips[1].pos,
+            (Some(Val::Fixed(0.4 - 5. / 1920.)), Some(Val::Fixed(0.4 - 2.5 / 1080.)))
+        );
+        assert_eq!(
+            (t.clips[2].opacity.clone(), t.clips[3].opacity.clone()),
+            (Val::Fixed(0.5), Val::Fixed(1.))
+        );
+    }
+
+    #[test]
+    fn follow_errors_name_the_line() {
+        for (src, line, says) in [
+            (
+                "const a = text('a')\ntext('b')\n  .opacity(a.pos)",
+                3,
+                "opacity cannot follow a.pos ",
+            ),
+            ("const a = text('a')\ntext('b')\n  .pos(a.pos, 0.5)", 3, "pos cannot follow a.pos "),
+            ("const a = text('a')\ntext('b').rotate(a.for)", 2, "rotate cannot follow a.for "),
+            (
+                "const a = text('a')\n\ntext('b').scale(stack(a).scale)",
+                3,
+                "scale cannot follow a group.scale ",
+            ),
+            (
+                "const a = text('a')\ntext('b')\n  .each('char', () => ({ x: a.pos.x }))",
+                3,
+                "each x cannot follow a.pos.x ",
+            ),
+            (
+                "const a = text('a')\ntext('b').pos(\n  add(a.pos, 0.1))",
+                3,
+                "add cannot follow a.pos ",
+            ),
+            (
+                "const a = text('a')\ntext('b').pos(\n  mul(a.pos.x, a.pos.y))",
+                3,
+                "mul is written mul(",
+            ),
+            ("const a = text('a')\ntext('b').opacity('a.opacity')", 2, "opacity takes a number"),
+            (
+                "const b = text('b')\n  .pos(a.pos)\n\nconst a = text('a')",
+                2,
+                "a is defined below, on line 4",
+            ),
+        ] {
+            let dir = std::env::temp_dir().join(format!("origami-follow-{line}-{}", src.len()));
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("edit.js"), src).unwrap();
+            let e = eval(&dir.join("edit.js"), true, size).unwrap_err().to_string();
+            assert!(e.contains(&format!("line {line}: {says}")), "{e}");
         }
     }
 

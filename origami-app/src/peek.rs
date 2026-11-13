@@ -7,7 +7,7 @@ use gpui::{
     App, Bounds, Context, Div, MouseButton, MouseDownEvent, ObjectFit, PathBuilder, Pixels, RenderImage, StyledImage, Window, canvas, div,
     img, point, prelude::*, px, rgb, rgba,
 };
-use origami_engine::{Player, Preview};
+use origami_engine::{Player, Preview, footprint};
 use origami_lang::{Clip, Kind, Timeline};
 use std::{sync::Arc, time::Instant};
 
@@ -73,7 +73,7 @@ impl Origami {
         cx.spawn(async move |this, cx| {
             let tl = cx
                 .background_executor()
-                .spawn(async move { origami_lang::peek(&script, &src) })
+                .spawn(async move { origami_lang::peek(&script, &src, footprint) })
                 .await;
             this.update(cx, |this, cx| {
                 this.peek = tl.ok().filter(|tl| tl.duration > 0.).map(|tl| Peek::new(row, tl));

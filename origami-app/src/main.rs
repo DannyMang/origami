@@ -18,7 +18,7 @@ use gpui::{
 };
 use image::{Frame, RgbaImage};
 use mouse::Grab;
-use origami_engine::{Player, Preview, peaks, thumb};
+use origami_engine::{Player, Preview, footprint, peaks, thumb};
 use origami_lang::{Clip, Timeline};
 use std::{
     collections::HashMap,
@@ -210,7 +210,7 @@ impl Origami {
         cx.spawn(async move |this, cx| {
             let tl = cx
                 .background_executor()
-                .spawn(async move { origami_lang::eval(&script, true) })
+                .spawn(async move { origami_lang::eval(&script, true, footprint) })
                 .await;
             this.update(cx, |this, cx| {
                 this.reading = false;

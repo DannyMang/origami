@@ -7,6 +7,6 @@ mod shape;
 mod text;
 
 pub use audio::Player;
-pub use export::{command, place, render, seat};
+pub use export::{command, footprint, place, render, seat};
 pub use preview::{Preview, peaks, thumb};
 pub use text::tone;
