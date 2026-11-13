@@ -1,0 +1,94 @@
+use std::{array, fs, thread};
+
+pub type Rgb = [f64; 3];
+
+#[derive(Debug, PartialEq)]
+pub struct Lut {
+    pub n: usize,
+    pub cube: bool,
+    pub t: Vec<[f32; 3]>,
+}
+
+fn mix(a: [f32; 3], b: [f32; 3], f: f32) -> [f32; 3] {
+    array::from_fn(|i| a[i] + (b[i] - a[i]) * f)
+}
+
+impl Lut {
+    pub fn bake(n: usize, f: impl Fn(Rgb) -> Rgb) -> Self {
+        let at = |i: usize| (i % n) as f64 / (n - 1) as f64;
+        let t = (0..n * n * n)
+            .map(|i| f([at(i), at(i / n), at(i / n / n)]).map(|v| v as f32))
+            .collect();
+        Self { n, cube: true, t }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        let (mut n, mut cube, mut t) = (0, true, vec![]);
+        for line in text.lines().map(str::trim) {
+            let mut words = line.split_whitespace();
+            let (Some(head), rest) = (words.next(), words.flat_map(str::parse::<f32>).collect::<Vec<_>>()) else {
+                continue;
+            };
+            match (head, &rest[..]) {
+                ("LUT_3D_SIZE", [size]) => n = *size as usize,
+                ("LUT_1D_SIZE", [size]) => (n, cube) = (*size as usize, false),
+                ("DOMAIN_MIN", lo) if lo != [0.; 3] => return None,
+                ("DOMAIN_MAX", hi) if hi != [1.; 3] => return None,
+                (r, [g, b]) => t.extend(r.parse().ok().map(|r| [r, *g, *b])),
+                _ => {}
+            }
+        }
+        (n > 1 && t.len() == if cube { n * n * n } else { n }).then_some(Self { n, cube, t })
+    }
+
+    pub fn read(path: &str) -> Option<Self> {
+        Self::parse(&fs::read_to_string(path).ok()?)
+    }
+
+    pub fn text(&self) -> String {
+        let head = format!("LUT_{}D_SIZE {}\n", if self.cube { 3 } else { 1 }, self.n);
+        self.t.iter().fold(head, |s, [r, g, b]| s + &format!("{r:.6} {g:.6} {b:.6}\n"))
+    }
+
+    fn cell(&self, v: f64) -> (usize, f32) {
+        let x = v.clamp(0., 1.) * (self.n - 1) as f64;
+        let i = (x as usize).min(self.n - 2);
+        (i, (x - i as f64) as f32)
+    }
+
+    fn blend(&self, [(r, fr), (g, fg), (b, fb)]: [(usize, f32); 3]) -> [f32; 3] {
+        let (n, t) = (self.n, &self.t);
+        let row = |i: usize| mix(t[i], t[i + 1], fr);
+        let face = |i: usize| mix(row(i), row(i + n), fg);
+        let i = r + (g + b * n) * n;
+        mix(face(i), face(i + n * n), fb)
+    }
+
+    pub fn sample(&self, c: Rgb) -> Rgb {
+        let at = c.map(|v| self.cell(v));
+        if self.cube {
+            return self.blend(at).map(f64::from);
+        }
+        array::from_fn(|k| {
+            let (i, f) = at[k];
+            (self.t[i][k] + (self.t[i + 1][k] - self.t[i][k]) * f) as f64
+        })
+    }
+
+    pub fn apply(&self, px: &[u8]) -> Vec<u8> {
+        let cells: [(usize, f32); 256] = array::from_fn(|v| self.cell(v as f64 / 255.));
+        let mut out = px.to_vec();
+        let band = (out.len() / 4).div_ceil(8).max(1) * 4;
+        thread::scope(|s| {
+            for part in out.chunks_mut(band) {
+                s.spawn(|| {
+                    for p in part.chunks_exact_mut(4) {
+                        let [r, g, b] = self.blend([cells[p[2] as usize], cells[p[1] as usize], cells[p[0] as usize]]);
+                        (p[0], p[1], p[2]) = ((b * 255.) as u8, (g * 255.) as u8, (r * 255.) as u8);
+                    }
+                });
+            }
+        });
+        out
+    }
+}
