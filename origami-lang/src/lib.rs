@@ -28,6 +28,40 @@ pub enum Kind {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Val {
+    Fixed(f64),
+    Frames(u32, Vec<f32>),
+}
+
+impl Val {
+    pub fn at(&self, i: usize) -> f64 {
+        match self {
+            Self::Fixed(v) => *v,
+            Self::Frames(_, s) => s[i.min(s.len() - 1)] as f64,
+        }
+    }
+
+    pub fn max(&self) -> f64 {
+        match self {
+            Self::Fixed(v) => *v,
+            Self::Frames(_, s) => s.iter().fold(f32::MIN, |a, b| a.max(*b)) as f64,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Part {
+    pub from: usize,
+    pub to: usize,
+    pub opacity: Val,
+    pub x: Val,
+    pub y: Val,
+    pub scale: Val,
+    pub rotate: Val,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Clip {
     pub kind: Kind,
     pub src: String,
@@ -38,8 +72,8 @@ pub struct Clip {
     pub src_in: f64,
     pub speed: f64,
     pub z: u32,
-    pub scale: f64,
-    pub pos: (Option<f64>, Option<f64>),
+    pub scale: Val,
+    pub pos: (Option<Val>, Option<Val>),
     pub gain: f64,
     pub fade: (f64, f64),
     pub label: String,
@@ -52,6 +86,26 @@ pub struct Clip {
     pub color: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grade: Option<Grade>,
+    pub opacity: Val,
+    pub rotate: Val,
+    pub shown: Val,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<Part>,
+}
+
+impl Clip {
+    pub fn vals(&self) -> impl Iterator<Item = (&'static str, &Val)> {
+        [
+            ("scale", Some(&self.scale)),
+            ("x", self.pos.0.as_ref()),
+            ("y", self.pos.1.as_ref()),
+            ("opacity", Some(&self.opacity)),
+            ("rotate", Some(&self.rotate)),
+            ("shown", Some(&self.shown)),
+        ]
+        .into_iter()
+        .filter_map(|(n, v)| Some((n, v?)))
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -273,6 +327,69 @@ mod tests {
         fs::write(dir.join("edit.js"), "color('red')\n  .look('none')").unwrap();
         let e = eval(&dir.join("edit.js"), true).unwrap_err();
         assert_eq!(e.downcast_ref::<Error>().map(Error::line), Some(2));
+    }
+
+    #[test]
+    fn keys_sample_per_frame() {
+        let t = tl("settings({ fps: 10 })
+const k = (...a) => text('a').for(1).opacity(keys(...a))
+const e = n => k([0, 0], [1, 1, n])
+stack(
+  k([0.2, 1], [0.6, 3]),
+  k([0, 0], [-0.5, 1]),
+  k(['20%', 0], ['60%', 4]),
+  k([0, 0], [0.5, 8, 'step']),
+  e('slowIn'), e('slowOut'), e('slowInSlowOut'), e(bezier(0.3, 0.3, 0.6, 0.6)),
+  e('overshootOut'), e('bounceOut'), e('springOut'),
+  text('a').for(1).rotate(delay(keys([0, 0], [0.4, 4]), 0.2)).opacity((t, d) => d),
+)");
+        let at = |c: usize, i| (t.clips[c].opacity.at(i) * 1e4).round() / 1e4;
+        assert_eq!((at(0, 0), at(0, 4), at(0, 6), at(0, 9), at(0, 99)), (1., 2., 3., 3., 3.));
+        assert_eq!((at(1, 0), at(1, 2), at(1, 5), at(1, 8)), (0., 0.4, 1., 1.));
+        assert_eq!((at(2, 1), at(2, 4), at(2, 7)), (0., 2., 4.));
+        assert_eq!((at(3, 4), at(3, 5)), (0., 8.));
+        assert_eq!((at(4, 5), at(5, 5), at(6, 5), at(6, 2), at(7, 3)), (0.125, 0.875, 0.5, 0.032, 0.3));
+        assert!(at(8, 6) > 1. && at(9, 4) > at(9, 5) && at(10, 2) > 1.);
+        let turn = |i| t.clips[11].rotate.at(i);
+        assert_eq!((turn(1), turn(4), turn(8), &t.clips[11].opacity), (0., 2., 4., &Val::Fixed(1.)));
+        assert!(matches!(t.clips[0].opacity, Val::Frames(2, ref s) if s.len() == 10));
+    }
+
+    #[test]
+    fn motion_round_trip() {
+        let t = tl("text('ab cd\\nef').for(1).pos(null, t => t)
+  .each('word', (i, n) => ({ opacity: delay(t => t, i), x: n }))
+  .shown(0.5).scale(2).scale(t => t).rotate(90)");
+        let c = &t.clips[0];
+        let names: Vec<_> = c.vals().map(|v| v.0).collect();
+        assert_eq!(names, ["scale", "y", "opacity", "rotate", "shown"]);
+        assert!(matches!((&c.scale, &c.pos.1), (Val::Frames(3, s), Some(Val::Frames(1, _))) if s[15] == 1.));
+        let span: Vec<_> = c.parts.iter().map(|p| (p.from, p.to, p.x.at(0))).collect();
+        assert_eq!(span, [(0, 2, 3.), (3, 5, 3.), (6, 8, 3.)]);
+        assert!(matches!(c.parts[1].opacity, Val::Frames(2, _)));
+        let json = serde_json::to_string(&t).unwrap();
+        assert!(json.contains("\"rotate\":90.0,\"shown\":0.5,\"parts\":[{\"from\":0,\"to\":2,\"opacity\":[2,["));
+        assert_eq!(serde_json::from_str::<Timeline>(&json).unwrap(), t);
+        let plain = serde_json::to_value(tl("color('red').scale(0.5).pos(0.1)")).unwrap();
+        assert_eq!(plain["clips"][0]["scale"], 0.5);
+        assert_eq!(plain["clips"][0]["pos"], serde_json::json!([0.1, null]));
+        assert!(plain["clips"][0].get("parts").is_none());
+    }
+
+    #[test]
+    fn motion_errors_name_the_line() {
+        for (src, line) in [
+            ("text('a')\n  .scale('big')", 2),
+            ("const k =\n  keys([0, 0], [1, 1, 'slow'])\ntext('a')", 2),
+            ("color('red')\n  .shown(1)", 2),
+            ("text('a')\n\n  .opacity(t => 'x')", 3),
+        ] {
+            let dir = std::env::temp_dir().join(format!("origami-motion-{line}-{}", src.len()));
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("edit.js"), src).unwrap();
+            let e = eval(&dir.join("edit.js"), true).unwrap_err().to_string();
+            assert!(e.contains(&format!("line {line}: ")), "{e}");
+        }
     }
 
     #[test]
