@@ -3,6 +3,7 @@ use crate::{
     view::{BLUE, BORDER, DIM, PANEL},
 };
 use gpui::{Context, Div, MouseButton, MouseDownEvent, Pixels, Point, Window, div, img, prelude::*, px, rgb, rgba};
+use origami_lang::Clip;
 
 pub struct Knob {
     pub label: String,
@@ -14,7 +15,7 @@ pub struct Knob {
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Turn {
-    Slide(usize, f32, f64),
+    Slide(usize, f32, f64, f64),
     Wheel,
     Point(usize),
 }
@@ -220,7 +221,24 @@ fn show(v: f64, lo: f64, hi: f64) -> String {
 impl Origami {
     pub fn panel(&self) -> Option<(usize, String, usize, Vec<Knob>)> {
         let (row, at) = self.knobbed?;
-        let (call, name, _, found) = knobs(self.lines.get(row)?, at)?;
+        let (call, name, _, mut found) = knobs(self.lines.get(row)?, at)?;
+        let linked = |c: &&Clip| {
+            let last = (c.line as usize).saturating_sub(1);
+            c.total > 0.
+                && last >= row
+                && self
+                    .lines
+                    .get(row + 1..=last)
+                    .is_some_and(|l| l.iter().all(|l| l.trim_start().starts_with('.')))
+        };
+        let top = match call.as_str() {
+            "trim" => self.tl.clips.iter().find(linked).map(|c| c.total),
+            "for" | "at" => Some((self.tl.duration * 2.).max(10.)),
+            _ => None,
+        };
+        for k in found.iter_mut().filter(|k| k.label != "#") {
+            k.hi = top.unwrap_or(k.hi);
+        }
         Some((row, call, name, found))
     }
 
@@ -265,13 +283,14 @@ impl Origami {
     }
 
     fn set(&mut self, mut values: Vec<(usize, f64)>) {
-        let Some((row, _, _, found)) = self.panel() else { return };
+        let Some((row, call, _, found)) = self.panel() else { return };
+        let timed = ["trim", "for", "at"].contains(&call.as_str());
         values.sort_by_key(|v| std::cmp::Reverse(v.0));
         for (i, v) in values {
             let k = &found[i];
             let text = match k.label == "#" {
                 true => format!("\"#{:06x}\"", v as u32),
-                false => show(v.clamp(k.lo, k.hi), k.lo, k.hi),
+                false => show(v.clamp(k.lo, k.hi), k.lo, if timed { k.lo } else { k.hi }),
             };
             self.lines[row].replace_range(k.span.0..k.span.1, &text);
         }
@@ -285,17 +304,14 @@ impl Origami {
         let (dx, dy) = (f32::from(at.x) - x - 10. - PAD / 2., f32::from(at.y) - y - 10. - PAD / 2.);
         let spot = |label: &str| found.iter().position(|k| k.label == label);
         match turn {
-            Turn::Slide(i, x0, v0) if found[i].label == "#" => {
+            Turn::Slide(i, x0, v0, _) if found[i].label == "#" => {
                 let (hue, vivid, _) = hsv(found[i].value);
                 self.set(vec![(
                     i,
                     pack(hue, vivid, (v0 as f32 + (f32::from(at.x) - x0) / TRACK).clamp(0., 1.)),
                 )]);
             }
-            Turn::Slide(i, x0, v0) => {
-                let k = &found[i];
-                self.set(vec![(i, v0 + ((f32::from(at.x) - x0) / TRACK) as f64 * (k.hi - k.lo))]);
-            }
+            Turn::Slide(i, x0, v0, wide) => self.set(vec![(i, v0 + ((f32::from(at.x) - x0) / TRACK) as f64 * wide)]),
             Turn::Wheel if spot("#").is_some() => {
                 let (i, far) = (spot("#").unwrap_or(0), (dx.hypot(dy) / (PAD / 2.)).min(1.));
                 let light = Some(hsv(found[i].value).2).filter(|v| *v > 0.02).unwrap_or(1.);
@@ -424,6 +440,7 @@ impl Origami {
                 true => (light as f64, light, "light".into(), format!("#{:06x}", k.value as u32)),
                 false => (k.value, part(k), k.label.clone(), show(k.value, k.lo, k.hi)),
             };
+            let wide = k.hi - k.lo;
             div()
                 .h(px(24.))
                 .flex()
@@ -432,7 +449,7 @@ impl Origami {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, e: &MouseDownEvent, _, cx| {
-                        this.hold(Turn::Slide(i, f32::from(e.position.x), value));
+                        this.hold(Turn::Slide(i, f32::from(e.position.x), value, wide));
                         cx.stop_propagation();
                         cx.notify();
                     }),

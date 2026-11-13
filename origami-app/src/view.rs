@@ -1,8 +1,8 @@
 use crate::{Asset, Mode, Origami, keys::stamp};
 use gpui::{
-    App, Bounds, Context, Div, FontWeight, HighlightStyle, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    ObjectFit, ParentElement, PathBuilder, Pixels, Render, ScrollWheelEvent, Styled, StyledImage, StyledText, Window, canvas, deferred,
-    div, img, point, prelude::*, px, relative, rgb, rgba,
+    App, Bounds, ClipboardItem, Context, Div, FontWeight, HighlightStyle, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, ObjectFit, ParentElement, PathBuilder, Pixels, Render, ScrollWheelEvent, Styled, StyledImage, StyledText, Window,
+    canvas, deferred, div, img, point, prelude::*, px, relative, rgb, rgba,
 };
 use origami_engine::Preview;
 use origami_lang::{Clip, Kind, Timeline};
@@ -972,7 +972,16 @@ impl Render for Origami {
             }))
         }))
         .children(self.knobs(window, cx))
-        .children(self.tip(window))
+        .children(self.tip(window).map(|(tip, text)| {
+            tip.occlude().cursor_pointer().on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                    this.note = "copied".into();
+                    cx.notify();
+                }),
+            )
+        }))
         .children(self.help.then_some(help))
     }
 }

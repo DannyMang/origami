@@ -232,7 +232,11 @@ impl Origami {
             "top" => (0, 0),
             "bottom" => (self.lines.len(), usize::MAX),
             "enter" | "\n" => {
-                let rest = self.lines[r].split_off(i);
+                let mut rest = self.lines[r].split_off(i);
+                if k == "enter" && self.lines[r].ends_with('.') && rest.starts_with(char::is_alphabetic) {
+                    self.lines[r].pop();
+                    rest.insert(0, '.');
+                }
                 let head = &self.lines[r];
                 let deep = head.trim_end().ends_with(['(', '[', '{']) as usize * 2;
                 let chain = k == "enter" && rest.starts_with('.') && !head.trim().is_empty();

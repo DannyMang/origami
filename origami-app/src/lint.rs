@@ -144,7 +144,7 @@ impl Origami {
         due
     }
 
-    pub fn tip(&self, window: &Window) -> Option<Div> {
+    pub fn tip(&self, window: &Window) -> Option<(Div, String)> {
         let (row, col) = self
             .hover
             .filter(|_| self.knobbed.is_none() && self.offers.1.is_empty() && self.turning.is_none())?;
@@ -162,11 +162,11 @@ impl Origami {
         }
         let w = f32::from(window.viewport_size().width);
         let y = self.head() + (top..row).filter(|i| !hidden[*i]).count() as f32 * self.row();
-        Some(
+        Some((
             div()
                 .absolute()
                 .left(px((w - self.side + self.inset() + from as f32 * self.glyph()).min(w - 420.)))
-                .top(px(y + self.row() + 2.))
+                .top(px(y + self.row()))
                 .max_w(px(410.))
                 .px_3()
                 .py_1()
@@ -176,7 +176,8 @@ impl Origami {
                 .rounded(px(6.))
                 .text_size(px(12.))
                 .text_color(rgb(if bad { RED } else { DIM }))
-                .child(text),
-        )
+                .child(text.clone()),
+            text,
+        ))
     }
 }
