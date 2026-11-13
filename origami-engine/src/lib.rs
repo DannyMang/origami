@@ -6,5 +6,5 @@ mod preview;
 mod text;
 
 pub use audio::Player;
-pub use export::{command, render};
+pub use export::{command, place, render};
 pub use preview::{Preview, peaks, thumb};

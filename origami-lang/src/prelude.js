@@ -78,7 +78,7 @@
     }) : d[k],
   })
   const base = { in: 0, out: null, speed: 1, gain: 1, fade: [0, 0], scale: 1, opacity: 1, rotate: 0, shown: 1, shift: 0, loop: 1 }
-  const leaf = f => line(n => (...a) => { at = n; const d = f(...a); return clip({ ...base, ...d, line: n, label: L[n] ?? d.label }) })
+  const leaf = f => line(n => (...a) => { at = n; const d = f(...a); return clip({ ...base, ...d, line: n, home: n, label: L[n] ?? d.label }) })
   const stem = p => p.split('/').pop().replace(/\.\w+$/, '')
   const file = (kind, pick) => leaf(p => {
     const m = JSON.parse(__probe(p, kind, at))
@@ -191,7 +191,7 @@
       duration: Math.max(0, ...out.map(c => c.end)),
       clips: out.map((c, z) => ({
         kind: c.kind, src: c.src, w: c.w ?? 0, h: c.h ?? 0, start: c.start, end: c.end, src_in: c.in, speed: c.speed, z,
-        scale: sample(c, c.scale), pos: (c.pos ?? [null, null]).map(v => v == null ? null : sample(c, v)), gain: c.gain, fade: c.fade, label: c.label, line: c.line, total: c.total ?? 0,
+        scale: sample(c, c.scale), pos: (c.pos ?? [null, null]).map(v => v == null ? null : sample(c, v)), gain: c.gain, fade: c.fade, label: c.label, line: c.line, home: c.home, total: c.total ?? 0,
         video: c.video, audio: c.audio, size: c.size ?? 0, color: c.color ?? '', font: c.font ?? '', grade: c.grade,
         opacity: sample(c, c.opacity), rotate: sample(c, c.rotate), shown: sample(c, c.shown),
         parts: c.parts?.map(p => Object.fromEntries(Object.entries(p).map(([k, v]) => [k, sample(c, v)]))),

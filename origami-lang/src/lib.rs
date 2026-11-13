@@ -79,6 +79,8 @@ pub struct Clip {
     pub label: String,
     pub line: u32,
     #[serde(default)]
+    pub home: u32,
+    #[serde(default)]
     pub total: f64,
     pub video: bool,
     pub audio: bool,
