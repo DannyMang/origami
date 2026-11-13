@@ -54,6 +54,15 @@ impl Origami {
             k => key.key_char.clone().unwrap_or(k.to_string()),
         };
         let plain = !(key.modifiers.platform || key.modifiers.shift || key.modifiers.alt || save);
+        if k == "escape" && self.peek.is_some() {
+            self.blink(cx);
+            return cx.notify();
+        }
+        let again = key.modifiers.platform && key.key == "g";
+        if self.finding.is_some() && (again || !(key.modifiers.platform || save)) {
+            self.search(if again { "enter" } else { &k }, key.modifiers.shift);
+            return cx.notify();
+        }
         if self.choose(&k, plain) {
             return cx.notify();
         }
@@ -63,13 +72,17 @@ impl Origami {
         if k == "escape" && self.key.take().is_some() {
             return cx.notify();
         }
-        if self.finding.is_some() && !(key.modifiers.platform || save) {
-            self.search(&k, key.modifiers.shift);
-            return cx.notify();
-        }
         match (key.modifiers.platform || save, key.key.as_str()) {
-            (true, "s") => self.store(),
-            (true, "f") => self.finding = self.finding.take().xor(Some(String::new())),
+            (true, "s") => {
+                self.store();
+                if self.clash {
+                    self.note = "the file changed on disk: keep mine or use disk, above the code".into();
+                }
+            }
+            (true, "f") => {
+                self.finding = self.finding.take().xor(Some(String::new()));
+                self.aim();
+            }
             (true, "0") => self.reset(),
             (true, "[" | "]") if key.modifiers.alt => {
                 let row = self.cursor.map(|c| c.0).or(self.focused().map(|c| c.line as usize - 1));

@@ -8,7 +8,7 @@ use origami_engine::Preview;
 use origami_lang::{Clip, Kind, Timeline};
 use std::{mem, ops::Range, time::Instant};
 
-const BG: u32 = 0x282c33;
+pub const BG: u32 = 0x282c33;
 pub const PANEL: u32 = 0x2f343e;
 pub const BAR: u32 = 0x3b414d;
 pub const BORDER: u32 = 0x464b57;
@@ -16,7 +16,7 @@ pub const TEXT: u32 = 0xdce0e5;
 const MUTED: u32 = 0xa9afbc;
 pub const DIM: u32 = 0x878a98;
 pub const BLUE: u32 = 0x74ade8;
-const GREEN: u32 = 0xa1c181;
+pub const GREEN: u32 = 0xa1c181;
 const PURPLE: u32 = 0xb477cf;
 const ORANGE: u32 = 0xbf956a;
 const RED: u32 = 0xd07277;
@@ -513,7 +513,7 @@ impl Origami {
             false => format!("saved {}", self.saved),
         };
         let name = self.script.file_name().unwrap_or_default().to_string_lossy().to_string();
-        let (regions, hidden, issues) = (self.regions(), self.hidden(), self.issues());
+        let (regions, hidden, issues, found) = (self.regions(), self.hidden(), self.issues(), self.hits());
         let row = |(i, s): (usize, &String)| {
             let on = i + 1 == active;
             let region = regions.iter().find(|r| r.start == i);
@@ -554,9 +554,13 @@ impl Origami {
                         if !this.mouse {
                             return;
                         }
+                        this.blink(cx);
                         this.place(e.position, window);
                         (this.anchor, this.picking) = (this.cursor, e.click_count == 1);
                         this.widen(e.click_count);
+                        if e.click_count == 3 {
+                            this.glance(i, cx);
+                        }
                         this.grasp();
                         let hit = this.tl.clips.iter().filter(|c| c.line as usize == i + 1).map(|c| c.start);
                         if let Some(t) = hit.min_by(f64::total_cmp) {
@@ -564,6 +568,20 @@ impl Origami {
                         }
                         cx.notify();
                     }),
+                )
+                .children(
+                    found[found.partition_point(|h| h.0 < i)..]
+                        .iter()
+                        .take_while(|h| h.0 == i)
+                        .map(|h| {
+                            div()
+                                .absolute()
+                                .top_0()
+                                .bottom_0()
+                                .left(px(self.inset() + h.1 as f32 * self.glyph()))
+                                .w(px(h.2 as f32 * self.glyph()))
+                                .bg(rgba(ORANGE << 8 | 0x48))
+                        }),
                 )
                 .children(span.filter(|(a, b)| a.0 <= i && i <= b.0).map(|(a, b)| {
                     let from = if i == a.0 { a.1 } else { 0 };
@@ -660,8 +678,82 @@ impl Origami {
                             .child(state),
                     ),
             )
+            .children(self.clash.then(|| {
+                let pick = |label: &'static str, mine: bool| {
+                    div()
+                        .px_2()
+                        .rounded(px(3.))
+                        .bg(rgb(BAR))
+                        .text_color(rgb(TEXT))
+                        .cursor_pointer()
+                        .child(label)
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                (this.clash, this.dirty) = (false, mine);
+                                match mine {
+                                    true => this.store(),
+                                    false => this.load(cx),
+                                }
+                                cx.stop_propagation();
+                                cx.notify();
+                            }),
+                        )
+                };
+                div()
+                    .h(px(30.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .bg(rgb(PANEL))
+                    .border_b_1()
+                    .border_color(rgb(BORDER))
+                    .text_size(px(12.))
+                    .child(div().text_color(rgb(ORANGE)).child("changed on disk while you were editing"))
+                    .child(div().flex_1())
+                    .child(pick("keep mine", true))
+                    .child(pick("use disk", false))
+            }))
             .children(self.finding.as_ref().map(|q| {
-                let hits = self.hits().len();
+                let hits = found.len();
+                let step = |label: &'static str, on: bool| {
+                    div()
+                        .px_2()
+                        .rounded(px(3.))
+                        .text_color(rgb(MUTED))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(rgb(BAR)).text_color(rgb(TEXT)))
+                        .child(label)
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                this.hunt(Some(on));
+                                cx.stop_propagation();
+                                cx.notify();
+                            }),
+                        )
+                };
+                let mode = |label: &'static str, i: usize| {
+                    div()
+                        .px_1()
+                        .rounded(px(3.))
+                        .text_size(px(12.))
+                        .text_color(rgb(if self.modes[i] { TEXT } else { MUTED }))
+                        .when(self.modes[i], |d| d.bg(rgba(BLUE << 8 | 0x40)))
+                        .cursor_pointer()
+                        .child(label)
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                this.flip(i);
+                                cx.stop_propagation();
+                                cx.notify();
+                            }),
+                        )
+                };
+                let bad = self.seeker.is_none() && !q.is_empty();
                 div()
                     .h(px(30.))
                     .flex_none()
@@ -675,16 +767,21 @@ impl Origami {
                     .child(if q.is_empty() {
                         div().text_color(rgb(DIM)).child("Search\u{2026}")
                     } else {
-                        div().child(q.clone())
+                        div().when(bad, |d| d.text_color(rgb(RED))).child(q.clone())
                     })
                     .child(div().w(px(1.)).h(px(14.)).bg(rgb(BLUE)))
                     .child(div().flex_1())
+                    .child(mode("Aa", 0))
+                    .child(mode("wd", 1))
+                    .child(mode(".*", 2))
                     .child(
                         div()
                             .text_size(px(11.))
                             .text_color(rgb(DIM))
                             .child(format!("{}/{hits}", (self.hit + 1).min(hits))),
                     )
+                    .child(step("\u{2039}", false))
+                    .child(step("\u{203a}", true))
             }))
             .child(
                 div()
@@ -873,6 +970,7 @@ impl Render for Origami {
         if let Some(x) = self.push.filter(|_| mem::take(&mut self.again)) {
             self.drag_to(x, window);
         }
+        self.settle(window);
         let tl = self.tl.clone();
         let focus = self.focused().cloned();
         let dir = self
@@ -942,7 +1040,10 @@ impl Render for Origami {
                 if out && this.hover.take().is_some() {
                     cx.notify();
                 }
-                if let Some(wide) = this.pull {
+                if this.eyeing {
+                    this.scan(e.position.x, window);
+                    cx.notify();
+                } else if let Some(wide) = this.pull {
                     this.resize(wide, e.position.x, e.position.y, window);
                     cx.notify();
                 } else if this.turning.is_some() {
@@ -1019,6 +1120,7 @@ impl Render for Origami {
                 }),
             )
         }))
+        .children(self.peep(window, cx))
         .children(self.help.then_some(help))
     }
 }

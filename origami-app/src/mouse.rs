@@ -9,6 +9,18 @@ pub fn recent() -> PathBuf {
     PathBuf::from(env::var("HOME").unwrap_or_default()).join(".origami/recent")
 }
 
+fn deep(zoom: f64, duration: f64, fps: f64) -> f64 {
+    zoom.clamp(1., (duration * fps / 8.).clamp(1., 64.))
+}
+
+fn within(pan: f64, duration: f64, span: f64) -> f64 {
+    pan.min(duration - span).max(0.)
+}
+
+fn pane(want: f32, room: f32, least: f32) -> f32 {
+    want.min(room).max(least)
+}
+
 #[derive(Clone, PartialEq)]
 pub enum Grab {
     Move,
@@ -68,6 +80,7 @@ impl Origami {
             let pick = answer.await.unwrap_or(2);
             let _ = this.update(cx, |this, cx| {
                 if pick == 0 {
+                    this.clash = false;
                     this.store();
                 }
                 if pick < 2 {
@@ -95,8 +108,8 @@ impl Origami {
     }
 
     pub fn magnify(&mut self, k: f64) {
-        self.zoom = (self.zoom * k).clamp(1., 64.);
-        self.pan = (self.t - self.span() / 2.).min(self.tl.duration - self.span()).max(0.);
+        self.zoom = deep(self.zoom * k, self.tl.duration, self.fps());
+        self.pan = within(self.t - self.span() / 2., self.tl.duration, self.span());
     }
 
     pub fn fullscreen(&mut self, window: &Window) {
@@ -150,7 +163,8 @@ impl Origami {
     }
 
     pub fn drag_to(&mut self, x: Pixels, window: &Window) {
-        let past = f32::from(x) > f32::from(window.viewport_size().width) - self.side - 12.;
+        let edge = f32::from(window.viewport_size().width) - self.side - 12.;
+        let (past, x) = (f32::from(x) > edge, px(f32::from(x).min(edge + 12.)));
         self.push = Some(x).filter(|_| past && self.drag.is_some());
         if self.push.is_some() {
             self.held = Some(self.tl.duration);
@@ -186,8 +200,20 @@ impl Origami {
     pub fn resize(&mut self, wide: bool, x: Pixels, y: Pixels, window: &Window) {
         let (w, h) = (f32::from(window.viewport_size().width), f32::from(window.viewport_size().height));
         match wide {
-            true => self.side = (w - f32::from(x)).min(w - 420.).max(260.),
-            false => self.dock = (h - f32::from(y) - 62.).min(h - 260.).max(70.),
+            true => self.side = pane(w - f32::from(x), w - 420., 260.),
+            false => self.dock = pane(h - f32::from(y) - 62., h - 260., 70.),
+        }
+    }
+
+    pub fn settle(&mut self, window: &Window) {
+        let (w, h) = (f32::from(window.viewport_size().width), f32::from(window.viewport_size().height));
+        (self.side, self.dock) = (pane(self.side, w - 420., 260.), pane(self.dock, h - 260., 70.));
+        self.fit = ((h - self.head() - 28.) / self.row()).max(1.) as usize;
+        self.roll(0.);
+        self.sway(0.);
+        if self.held.is_none() {
+            self.zoom = deep(self.zoom, self.tl.duration, self.fps());
+            self.pan = within(self.pan, self.tl.duration, self.span());
         }
     }
 
@@ -200,6 +226,7 @@ impl Origami {
             self.past.push(mem::take(&mut self.base));
             self.future.clear();
         }
+        self.eyeing = false;
         let Some((_, c, _, dt)) = self.drag.take() else {
             return;
         };
@@ -221,9 +248,8 @@ impl Origami {
         }
         let (d, t, per) = (e.delta.pixel_delta(px(16.)), self.at(e.position.x, window), self.per_px(window));
         let k = (t - self.pan) / self.span();
-        self.zoom = (self.zoom * (f64::from(d.y) / 200.).exp()).clamp(1., 64.);
-        self.pan = t - k * self.span() - f64::from(d.x) * per;
-        self.pan = self.pan.min(self.tl.duration - self.span()).max(0.);
+        self.zoom = deep(self.zoom * (f64::from(d.y) / 200.).exp(), self.tl.duration, self.fps());
+        self.pan = within(t - k * self.span() - f64::from(d.x) * per, self.tl.duration, self.span());
     }
 
     pub fn create(&mut self, cx: &mut Context<Self>) {
@@ -239,5 +265,25 @@ impl Origami {
             }
         })
         .detach();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn limits() {
+        assert_eq!((deep(0.2, 60., 30.), deep(500., 60., 30.)), (1., 64.));
+        assert_eq!((deep(500., 2., 30.), deep(500., 0., 30.)), (7.5, 1.));
+        assert_eq!(
+            (within(-3., 60., 10.), within(99., 60., 10.), within(20., 60., 10.)),
+            (0., 50., 20.)
+        );
+        assert_eq!((within(5., 0., 0.001), within(40., 30., 30.)), (0., 0.));
+        assert_eq!(
+            (pane(900., 380., 260.), pane(100., 380., 260.), pane(900., 100., 260.)),
+            (380., 260., 260.)
+        );
     }
 }

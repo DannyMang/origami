@@ -29,10 +29,9 @@ impl Origami {
                 })
             };
             for (call, name, end, found) in calls(line) {
-                let timed = ["trim", "for", "at", "shift"].contains(&call.as_str());
                 for k in found.iter().filter(|k| k.label != "#") {
                     let what = if k.label.parse::<usize>().is_ok() { &call } else { &k.label };
-                    match timed {
+                    match k.hi <= k.lo {
                         true if k.value < 0. && call != "shift" => flag(k.span.0, k.span.1, format!("{call} cannot be negative")),
                         false if k.value < k.lo - 1e-9 || k.value > k.hi + 1e-9 => {
                             flag(k.span.0, k.span.1, format!("{what} takes {} to {}", k.lo, k.hi))

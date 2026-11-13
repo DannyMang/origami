@@ -2,6 +2,10 @@ use crate::Origami;
 use gpui::{Context, Pixels, Point, Window};
 use std::{fs, mem};
 
+fn reach(wide: f32, room: f32) -> f32 {
+    (wide - room + 40.).max(0.)
+}
+
 fn links(chain: &str) -> Vec<String> {
     let (mut out, mut depth, mut quote) = (vec![String::new()], 0, None);
     for c in chain.chars() {
@@ -34,7 +38,7 @@ impl Origami {
 
     pub fn sway(&mut self, by: f32) {
         let wide = self.lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) as f32 * self.glyph();
-        self.left = (self.left - by).clamp(0., (wide - self.side + self.gutter() + 40.).max(0.));
+        self.left = (self.left - by).clamp(0., reach(wide, self.side - self.gutter()));
     }
 
     pub fn row(&self) -> f32 {
@@ -46,8 +50,10 @@ impl Origami {
     }
 
     pub fn store(&mut self) {
-        let _ = fs::write(&self.script, self.lines.join("\n") + "\n");
-        self.dirty = false;
+        self.dirty = self.clash;
+        if !self.clash {
+            let _ = fs::write(&self.script, self.lines.join("\n") + "\n");
+        }
     }
 
     fn mutate(&mut self, f: impl FnOnce(&mut Self)) -> bool {
@@ -94,7 +100,7 @@ impl Origami {
     pub fn reveal(&mut self, row: usize) {
         self.unfold(row);
         let (hidden, mut top) = (self.hidden(), (self.top as usize).min(row));
-        while (top..row).filter(|r| !hidden[*r]).count() > 23 {
+        while (top..row).filter(|r| !hidden[*r]).count() > self.fit.saturating_sub(1).min(23) {
             top += 1;
         }
         self.top = top as f32;
@@ -133,7 +139,7 @@ impl Origami {
     }
 
     pub fn head(&self) -> f32 {
-        76. + if self.finding.is_some() { 30. } else { 0. }
+        76. + if self.finding.is_some() { 30. } else { 0. } + if self.clash { 30. } else { 0. }
     }
 
     pub fn spot(&self, at: Point<Pixels>, window: &Window) -> (usize, usize) {
@@ -309,5 +315,11 @@ mod tests {
     fn links() {
         let got = super::links(".trim(0, 39.673).inputLut(\"a.cube\").exposure(0.3),");
         assert_eq!(got, [".trim(0, 39.673)", ".inputLut(\"a.cube\")", ".exposure(0.3),"]);
+    }
+
+    #[test]
+    fn reach() {
+        assert_eq!(super::reach(900., 400.), 540.);
+        assert_eq!(super::reach(300., 400.), 0.);
     }
 }

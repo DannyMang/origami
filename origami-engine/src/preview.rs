@@ -239,7 +239,7 @@ impl Preview {
                 .clone()?,
             Kind::Text => self
                 .stills
-                .entry(format!("{}|{}|{th}", c.src, c.color))
+                .entry(format!("{}|{}|{}|{th}", c.src, c.color, c.font))
                 .or_insert_with(|| Some(Arc::new(text::raster(c, k).0)))
                 .clone()?,
             _ => {
@@ -261,7 +261,7 @@ impl Preview {
             }
             return;
         }
-        let key = format!("{}|{}|{}|{:?}", c.src, c.color, c.size * c.scale.max() * k, c.grade);
+        let key = format!("{}|{}|{}|{}|{:?}", c.src, c.color, c.font, c.size * c.scale.max() * k, c.grade);
         let tint = |mut g: Glyph| {
             g.px = c.grade.as_ref().map_or(g.px.clone(), |x| grade::paint(x, g.px, (g.w, g.h)));
             g

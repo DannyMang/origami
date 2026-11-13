@@ -84,6 +84,8 @@ pub struct Clip {
     pub audio: bool,
     pub size: f64,
     pub color: String,
+    #[serde(default)]
+    pub font: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grade: Option<Grade>,
     pub opacity: Val,
@@ -173,6 +175,17 @@ fn cube(dir: &Path, name: &str) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
+fn face(dir: &Path, name: &str) -> Option<PathBuf> {
+    if name.contains('/') || Path::new(name).extension().is_some() {
+        return find(dir, name);
+    }
+    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default()).join("Library/Fonts");
+    let system = ["/System/Library/Fonts", "/System/Library/Fonts/Supplemental", "/Library/Fonts"].map(PathBuf::from);
+    let places = [dir.to_path_buf(), dir.join("fonts"), home].into_iter().chain(system);
+    let files = places.flat_map(|p| ["ttf", "otf", "ttc"].map(|e| p.join(format!("{name}.{e}"))));
+    files.into_iter().find(|p| p.is_file())
+}
+
 fn media(path: &Path, old: &Lock, new: &mut Lock, relock: bool, rel: &str) -> Result<String> {
     let meta = fs::metadata(path)?;
     let (size, mtime) = (meta.len(), meta.modified()?.duration_since(UNIX_EPOCH)?.as_secs());
@@ -247,12 +260,20 @@ fn lut(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
     host(args, cx, cube, |_, path| Ok(path.to_string_lossy().into()))
 }
 
-pub fn eval(script: &Path, relock: bool) -> Result<Timeline> {
-    FAIL.take();
-    build(script, relock).map_err(|e| FAIL.take().map_or(e, Into::into))
+fn font(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
+    host(args, cx, face, |_, path| Ok(path.to_string_lossy().into()))
 }
 
-fn build(script: &Path, relock: bool) -> Result<Timeline> {
+pub fn eval(script: &Path, relock: bool) -> Result<Timeline> {
+    FAIL.take();
+    build(script, relock, None).map_err(|e| FAIL.take().map_or(e, Into::into))
+}
+
+pub fn peek(script: &Path, src: &str) -> Result<Timeline> {
+    build(script, false, Some(src))
+}
+
+fn build(script: &Path, relock: bool, src: Option<&str>) -> Result<Timeline> {
     let script = script
         .canonicalize()
         .with_context(|| format!("missing script: {}", script.display()))?;
@@ -274,18 +295,23 @@ fn build(script: &Path, relock: bool) -> Result<Timeline> {
         ),
         (js_string!("__read"), read),
         (js_string!("__lut"), lut),
+        (js_string!("__font"), font),
     ] {
         cx.register_global_builtin_callable(name, 1, NativeFunction::from_fn_ptr(f))
             .map_err(js)?;
     }
     run(cx, include_str!("prelude.js"))?;
-    set(cx, js_string!("__src"), JsString::from(fs::read_to_string(&script)?).into())?;
+    set(
+        cx,
+        js_string!("__src"),
+        JsString::from(src.map_or_else(|| fs::read_to_string(&script), |s| Ok(s.into()))?).into(),
+    )?;
     let code = run(cx, "__prep(__src)")?.to_string(cx).map_err(js)?.to_std_string_escaped();
     let root = run(cx, &code)?;
     set(cx, js_string!("__root"), root)?;
     let out = run(cx, "__out(__root)")?.to_string(cx).map_err(js)?.to_std_string_escaped();
     let new = ST.take().2;
-    if new != old {
+    if new != old && src.is_none() {
         fs::write(lock, serde_json::to_string_pretty(&new)?)?;
     }
     Ok(serde_json::from_str(&out)?)

@@ -24,7 +24,7 @@ const PAD: f32 = 150.;
 pub const TRACK: f32 = 160.;
 const CURVES: [&str; 6] = ["curve", "hueVsSat", "hueVsHue", "hueVsLuma", "lumaVsSat", "satVsSat"];
 
-fn range(call: &str, label: &str, value: f64) -> Option<(f64, f64)> {
+fn range(call: &str, label: &str) -> Option<(f64, f64)> {
     Some(match (call, label) {
         ("saturation", "0") | ("look", "1") | (_, "saturation") => (0., 200.),
         ("exposure", "0") => (-5., 5.),
@@ -44,11 +44,8 @@ fn range(call: &str, label: &str, value: f64) -> Option<(f64, f64)> {
         ("scale", "0") => (0.1, 2.),
         ("opacity" | "shown", "0") => (0., 1.),
         ("rotate", "0") => (-360., 360.),
-        ("loop", "0") => (1., 10.),
         ("pos", _) => (0., 1.),
-        ("fade", _) => (0., 5.),
-        ("trim" | "for" | "at", _) => (0., (value * 2.).max(10.)),
-        ("shift", _) => (-10., 10.),
+        ("trim" | "fade" | "for" | "at" | "shift", _) => (0., 0.),
         ("curve", "x" | "y") | (_, "x") if CURVES.contains(&call) => (0., 1.),
         (_, "y") if CURVES.contains(&call) => (-1., 1.),
         _ => return None,
@@ -182,7 +179,7 @@ fn scan(line: &str, call: &str, open: usize, end: usize) -> Vec<Knob> {
                 _ => arg.to_string(),
             };
             pair += (square > 0) as usize;
-            if let Some((lo, hi)) = range(call, &label, value) {
+            if let Some((lo, hi)) = range(call, &label) {
                 out.push(Knob {
                     label,
                     span: (from, i + 1),
@@ -211,6 +208,25 @@ pub fn calls(line: &str) -> Vec<(String, usize, usize, Vec<Knob>)> {
 pub fn knobs(line: &str, at: usize) -> Option<(String, usize, usize, Vec<Knob>)> {
     let on = calls(line).into_iter().filter(|c| c.1 <= at && at <= c.2 && !c.3.is_empty());
     on.max_by_key(|c| c.1)
+}
+
+fn bound(found: &mut Vec<Knob>, top: Option<f64>) {
+    for k in found.iter_mut().filter(|k| k.label != "#") {
+        k.hi = top.unwrap_or(k.hi);
+    }
+    found.retain(|k| k.hi > k.lo);
+}
+
+fn limit(call: &str, i: usize, found: &[Knob]) -> (f64, f64) {
+    match (call, i, found) {
+        ("trim", 0, [a, b]) => (a.lo, a.hi.min(b.value - 0.04)),
+        ("trim", 1, [a, b]) => (b.lo.max(a.value + 0.04), b.hi),
+        _ => (found[i].lo, found[i].hi),
+    }
+}
+
+fn part(k: &Knob) -> f32 {
+    ((k.value - k.lo) / (k.hi - k.lo)).clamp(0., 1.) as f32
 }
 
 fn show(v: f64, lo: f64, hi: f64) -> String {
@@ -249,26 +265,29 @@ pub fn rail(label: String, start: f32, text: String) -> Div {
 }
 
 impl Origami {
-    pub fn panel(&self) -> Option<(usize, String, usize, Vec<Knob>)> {
-        let (row, at) = self.knobbed?;
-        let (call, name, _, mut found) = knobs(self.lines.get(row)?, at)?;
+    fn board(&self, row: usize, at: usize) -> Option<(String, usize, usize, Vec<Knob>)> {
+        let (call, name, end, mut found) = knobs(self.lines.get(row)?, at)?;
         let linked = |c: &&Clip| {
             let last = (c.line as usize).saturating_sub(1);
-            c.total > 0.
-                && last >= row
+            last >= row
                 && self
                     .lines
                     .get(row + 1..=last)
                     .is_some_and(|l| l.iter().all(|l| l.trim_start().starts_with('.')))
         };
+        let clip = self.tl.clips.iter().find(linked);
         let top = match call.as_str() {
-            "trim" => self.tl.clips.iter().find(linked).map(|c| c.total),
-            "for" | "at" => Some((self.tl.duration * 2.).max(10.)),
+            "trim" => clip.map(|c| c.total),
+            "fade" => clip.map(|c| c.end - c.start),
             _ => None,
         };
-        for k in found.iter_mut().filter(|k| k.label != "#") {
-            k.hi = top.unwrap_or(k.hi);
-        }
+        bound(&mut found, top);
+        (!found.is_empty()).then_some((call, name, end, found))
+    }
+
+    pub fn panel(&self) -> Option<(usize, String, usize, Vec<Knob>)> {
+        let (row, at) = self.knobbed?;
+        let (call, name, _, found) = self.board(row, at)?;
         Some((row, call, name, found))
     }
 
@@ -276,7 +295,7 @@ impl Origami {
         let line = self.lines.get(row)?;
         let (r, col) = self.hover.filter(|h| h.0 == row)?;
         let at = line.char_indices().nth(col).map_or(line.len(), |x| x.0);
-        let (_, name, end, _) = knobs(line, at).filter(|_| r == row)?;
+        let (_, name, end, _) = self.board(row, at).filter(|_| r == row)?;
         let cols = |b: usize| line[..b].chars().count();
         Some((cols(name), cols(end) + 1))
     }
@@ -285,7 +304,7 @@ impl Origami {
         let Some((row, col)) = self.cursor else { return };
         let line = &self.lines[row];
         let at = line.char_indices().nth(col).map_or(line.len(), |x| x.0);
-        self.knobbed = knobs(line, at).map(|k| (row, k.1));
+        self.knobbed = self.board(row, at).map(|k| (row, k.1));
     }
 
     fn origin(&self, window: &Window) -> Option<(f32, f32, usize, bool)> {
@@ -314,13 +333,13 @@ impl Origami {
 
     fn set(&mut self, mut values: Vec<(usize, f64)>) {
         let Some((row, call, _, found)) = self.panel() else { return };
-        let timed = ["trim", "for", "at"].contains(&call.as_str());
+        let timed = ["trim", "fade"].contains(&call.as_str());
         values.sort_by_key(|v| std::cmp::Reverse(v.0));
         for (i, v) in values {
-            let k = &found[i];
+            let (k, (lo, hi)) = (&found[i], limit(&call, i, &found));
             let text = match k.label == "#" {
                 true => format!("\"#{:06x}\"", v as u32),
-                false => show(v.clamp(k.lo, k.hi), k.lo, if timed { k.lo } else { k.hi }),
+                false => show(v.min(hi).max(lo), k.lo, if timed { k.lo } else { k.hi }),
             };
             self.lines[row].replace_range(k.span.0..k.span.1, &text);
         }
@@ -355,7 +374,9 @@ impl Origami {
                 self.set(vec![(hue, angle as f64), (amount, far as f64 * found[amount].hi)]);
             }
             Turn::Point(j) => {
-                let (kx, ky) = (&found[j * 2], &found[j * 2 + 1]);
+                let (Some(kx), Some(ky)) = (found.get(j * 2), found.get(j * 2 + 1)) else {
+                    return;
+                };
                 let (fx, fy) = ((dx / PAD + 0.5).clamp(0., 1.) as f64, (0.5 - dy / PAD).clamp(0., 1.) as f64);
                 self.set(vec![
                     (j * 2, kx.lo + fx * (kx.hi - kx.lo)),
@@ -382,9 +403,12 @@ impl Origami {
                 .size(px(size))
                 .rounded_full()
         };
-        let part = |k: &Knob| ((k.value - k.lo) / (k.hi - k.lo)).clamp(0., 1.) as f32;
         let curve = CURVES.contains(&call.as_str());
-        let mut points: Vec<(f32, f32)> = found.chunks(2).filter(|_| curve).map(|p| (part(&p[0]), part(&p[1]))).collect();
+        let mut points: Vec<(f32, f32)> = found
+            .chunks_exact(2)
+            .filter(|_| curve)
+            .map(|p| (part(&p[0]), part(&p[1])))
+            .collect();
         let marks: Vec<Div> = match curve {
             true => {
                 let args = &self.lines[row][name..];
@@ -451,9 +475,8 @@ impl Origami {
                         (f32::from(e.position.x) - x - 10.) / PAD,
                         1. - (f32::from(e.position.y) - y - 10.) / PAD,
                     );
-                    let part = |k: &Knob| ((k.value - k.lo) / (k.hi - k.lo)) as f32;
                     let near = |p: &[Knob]| (part(&p[0]) - fx).hypot(part(&p[1]) - fy);
-                    let nearest = found.chunks(2).enumerate().min_by(|a, b| near(a.1).total_cmp(&near(b.1)));
+                    let nearest = found.chunks_exact(2).enumerate().min_by(|a, b| near(a.1).total_cmp(&near(b.1)));
                     this.hold(match CURVES.contains(&call.as_str()) {
                         true => Turn::Point(nearest.map_or(0, |n| n.0)),
                         false => Turn::Wheel,
@@ -468,7 +491,7 @@ impl Origami {
             let light = hsv(k.value).2;
             let (value, start, label, text) = match k.label == "#" {
                 true => (light as f64, light, "light".into(), format!("#{:06x}", k.value as u32)),
-                false => (k.value, part(k), k.label.clone(), show(k.value, k.lo, k.hi)),
+                false => (k.value.clamp(k.lo, k.hi), part(k), k.label.clone(), show(k.value, k.lo, k.hi)),
             };
             let wide = k.hi - k.lo;
             rail(label, start, text).on_mouse_down(
@@ -536,5 +559,26 @@ mod tests {
         assert_eq!(labels("a.opacity(0.5).rotate(-90)", 16), [("0".into(), -90.)]);
         let keyed = "  .pos(null, keys([0, 0.36], [0.9, 0.3, \"slowOut\"])).scale(keys([0, 1], [\"100%\", 1.2, bezier(0.3, 0, 0.6, 1)]))";
         assert!((0..keyed.len()).all(|at| labels(keyed, at).is_empty()));
+    }
+
+    fn slides(line: &str, at: usize, top: Option<f64>) -> Vec<Knob> {
+        let mut found = knobs(line, at).map_or(vec![], |k| k.3);
+        bound(&mut found, top);
+        found
+    }
+
+    #[test]
+    fn bounds() {
+        for free in ["a.for(5)", "a.at(2)", "a.shift(-1)", "a.loop(3)", "a.trim(0, 9)", "a.fade(1)"] {
+            assert!(slides(free, 3, None).is_empty(), "{free}");
+        }
+        let trim = slides("a.trim(5, 99)", 3, Some(40.));
+        assert_eq!((trim[1].lo, trim[1].hi, part(&trim[1])), (0., 40., 1.));
+        assert_eq!(limit("trim", 0, &trim), (0., 40.));
+        assert_eq!(limit("trim", 1, &trim), (5.04, 40.));
+        assert_eq!(limit("trim", 0, &slides("a.trim(5, 9)", 3, Some(40.))), (0., 8.96));
+        let hot = slides("a.temperature(250)", 3, None);
+        assert_eq!((limit("temperature", 0, &hot), part(&hot[0])), ((-100., 100.), 1.));
+        assert_eq!(part(&slides("a.temperature(-250)", 3, None)[0]), 0.);
     }
 }

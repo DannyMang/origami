@@ -4259,6 +4259,7 @@ dependencies = [
  "image",
  "origami-engine",
  "origami-lang",
+ "regex",
  "serde_json",
 ]
 

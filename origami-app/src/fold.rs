@@ -25,6 +25,11 @@ fn kind(l: &str) -> Option<&'static str> {
     })
 }
 
+pub fn floor(hidden: &[bool], rows: usize) -> usize {
+    let seen = hidden.iter().enumerate().rev().filter(|h| !h.1);
+    seen.map(|h| h.0).nth(rows.saturating_sub(1)).unwrap_or(0)
+}
+
 impl Origami {
     pub fn regions(&self) -> Vec<Region> {
         let (mut out, mut i) = (vec![], 0);
@@ -100,11 +105,25 @@ impl Origami {
     }
 
     pub fn roll(&mut self, rows: f32) {
-        let (hidden, last) = (self.hidden(), self.lines.len().saturating_sub(1));
+        let hidden = self.hidden();
+        let last = floor(&hidden, self.fit);
         let mut top = (self.top - rows).clamp(0., last as f32);
         while hidden.get(top as usize) == Some(&true) && top > 0. && (top as usize) < last {
             top += if rows < 0. { 1. } else { -1. };
         }
         self.top = top;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn floor() {
+        let folded = [false, false, true, true, false, false];
+        assert_eq!(super::floor(&[false; 50], 36), 14);
+        assert_eq!(super::floor(&[false; 10], 36), 0);
+        assert_eq!(super::floor(&folded, 3), 1);
+        assert_eq!(super::floor(&folded, 2), 4);
+        assert_eq!(super::floor(&[], 36), 0);
     }
 }
