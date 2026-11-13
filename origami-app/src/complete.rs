@@ -41,6 +41,13 @@ pub const DEFS: &[Def] = &[
     global("color", "color", "Fills the frame with a color."),
     global("cat", "...clips", "Plays clips one after another."),
     global("stack", "...clips", "Plays clips at the same time. Later clips draw on top."),
+    global(
+        "keys",
+        "[time, value, ease], ...",
+        "Animates through values. Time in seconds, negative from the end, or \"50%\".",
+    ),
+    global("delay", "value, seconds", "Starts an animated value later."),
+    global("bezier", "x1, y1, x2, y2", "A custom ease for a key."),
     method("trim", "start, end", "Keeps the source between two times."),
     method("for", "duration", "Sets how long the clip lasts."),
     method("at", "time", "Sets when the clip starts inside its group."),
@@ -49,9 +56,25 @@ pub const DEFS: &[Def] = &[
     method("volume", "factor", "Scales loudness."),
     method("mute", "", "Silences the clip."),
     method("fade", "in, out", "Fades in and out, in seconds."),
-    method("scale", "factor", "Resizes the picture."),
-    method("pos", "x, y", "Places the top-left corner, as fractions of the frame."),
     method("loop", "count", "Repeats the clip."),
+    method("scale", "factor", "Resizes the picture. A number, a function of time, or keys."),
+    method(
+        "pos",
+        "x, y",
+        "Places the top-left corner, as fractions of the frame. Each takes a number, a function of time, or keys.",
+    ),
+    method("opacity", "amount", "Fades the picture. 0 to 1, a function of time, or keys."),
+    method("rotate", "degrees", "Turns the picture. A number, a function of time, or keys."),
+    method(
+        "shown",
+        "share",
+        "Shows the first share of the letters. 0 to 1, a function of time, or keys.",
+    ),
+    method(
+        "each",
+        "\"char\", (i, n) => ({ opacity, x, y, scale, rotate })",
+        "Animates every char, word or line of the text on its own.",
+    ),
     method("temperature", "amount", "Cooler (negative) or warmer (positive). -100 to 100."),
     method("tint", "amount", "Green (negative) or magenta (positive). -100 to 100."),
     method("saturation", "amount", "Overall colour strength. 0 to 200, default 100."),
@@ -134,7 +157,8 @@ pub fn kind(lines: &[String], name: &str) -> Option<&'static str> {
     let made = |n: &str| match n {
         "video" => Some("Video"),
         "sound" => Some("Audio"),
-        "image" | "text" | "caption" | "captions" | "color" => Some("Shape"),
+        "image" | "color" => Some("Shape"),
+        "text" | "caption" | "captions" => Some("Text"),
         "cat" | "stack" => Some("Group"),
         _ => None,
     };
@@ -154,11 +178,11 @@ pub fn kind(lines: &[String], name: &str) -> Option<&'static str> {
 }
 
 pub fn fits(method: &str, kind: Option<&str>) -> bool {
-    let i = DEFS.iter().position(|d| d.name == method).unwrap_or(0);
-    let seen = ["scale", "pos"].contains(&method) || i > DEFS.iter().position(|d| d.name == "loop").unwrap_or(0);
+    let at = |name: &str| DEFS.iter().position(|d| d.name == name).unwrap_or(0);
     match kind {
-        Some("Audio") => !seen,
-        Some("Shape") => !["trim", "speed", "volume", "mute"].contains(&method),
+        Some("Video" | "Audio" | "Shape") if ["shown", "each"].contains(&method) => false,
+        Some("Audio") => at(method) < at("scale"),
+        Some("Shape" | "Text") => !["trim", "speed", "volume", "mute"].contains(&method),
         _ => true,
     }
 }
@@ -369,7 +393,11 @@ mod tests {
     #[test]
     fn names() {
         assert_eq!(at("clip.te"), ["temperature"]);
-        assert_eq!(at("  .sh"), ["shift", "shadows", "sharpen", "shadowTint"]);
+        assert_eq!(at("  .sh"), ["shift", "shown", "shadows", "sharpen", "shadowTint"]);
+        assert_eq!(at("video(\"a\")\n  .sh"), ["shift", "shadows", "sharpen", "shadowTint"]);
+        assert_eq!(at("const t = caption(\"a\")\nt.for(1).e"), ["each", "exposure"]);
+        assert_eq!(at("let m = sound(\"a\")\nm.o"), [] as [&str; 0]);
+        assert_eq!(at("x.opacity(k"), ["keys"]);
         assert_eq!(
             at("const clip = video()\nconst cut = c"),
             ["caption", "captions", "color", "cat", "clip", "cut"]

@@ -132,6 +132,7 @@ impl Origami {
         let can = match made {
             "Audio" => "timing and sound methods; no picture, so no colour",
             "Shape" => "timing, placement and colour methods; no source to trim",
+            "Text" => "timing, placement, colour and per-letter methods; no source to trim",
             "Group" => "methods apply to every clip inside",
             _ => "timing, sound, placement and colour methods",
         };
