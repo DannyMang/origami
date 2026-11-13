@@ -64,7 +64,7 @@
   })
   const words = (size, pos) => leaf((s, o = {}) => {
     if (typeof o !== 'object') throw new Error(`line ${at}: options are written { size: 72, color: "red" }`)
-    return { kind: 'text', src: String(s), video: true, audio: false, size: o.size ?? size, color: o.color ?? 'white', pos, label: String(s) }
+    return { kind: 'text', src: String(s), video: true, audio: false, size: o.size ?? size, color: o.color ?? 'white', font: o.font == null ? '' : __font(o.font, 'font', at), pos, label: String(s) }
   })
   const group = cat => (...kids) => clip({ ...base, cat, kids: kids.flat() })
   Object.assign(globalThis, {
@@ -130,7 +130,7 @@
       clips: out.map((c, z) => ({
         kind: c.kind, src: c.src, w: c.w ?? 0, h: c.h ?? 0, start: c.start, end: c.end, src_in: c.in, speed: c.speed, z,
         scale: c.scale, pos: c.pos ?? [null, null], gain: c.gain, fade: c.fade, label: c.label, line: c.line, total: c.total ?? 0,
-        video: c.video, audio: c.audio, size: c.size ?? 0, color: c.color ?? '', grade: c.grade,
+        video: c.video, audio: c.audio, size: c.size ?? 0, color: c.color ?? '', font: c.font ?? '', grade: c.grade,
       })),
     })
   }

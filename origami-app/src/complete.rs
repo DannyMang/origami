@@ -35,8 +35,8 @@ pub const DEFS: &[Def] = &[
     global("video", "path", "Loads a video file."),
     global("sound", "path", "Loads an audio file."),
     global("image", "path", "Loads a still image."),
-    global("text", "words, { size, color }", "Draws text, centered."),
-    global("caption", "words, { size, color }", "Draws smaller text near the bottom."),
+    global("text", "words, { size, color, font }", "Draws text, centered."),
+    global("caption", "words, { size, color, font }", "Draws smaller text near the bottom."),
     global("captions", "path", "Loads every caption from an .srt file."),
     global("color", "color", "Fills the frame with a color."),
     global("cat", "...clips", "Plays clips one after another."),
@@ -214,19 +214,21 @@ pub fn offers(lines: &[String], (row, col): (usize, usize), dir: &Path) -> (usiz
     }
     if let Some((_, q)) = quote {
         let before = String::from_iter(&head[..q]);
-        let Some(call) = before.trim_end().strip_suffix('(') else {
+        let font = before.trim_end().ends_with("font:");
+        let Some(call) = before.trim_end().strip_suffix(if font { ':' } else { '(' }) else {
             return (0, vec![]);
         };
         let call = String::from_iter(word(&call.chars().collect::<Vec<_>>()));
         let look = call == "look";
         let look = look || call == "inputLut";
-        if !look && !["video", "sound", "image", "captions"].contains(&call.as_str()) {
+        if !look && !["video", "sound", "image", "captions", "font"].contains(&call.as_str()) {
             return (0, vec![]);
         }
         let start = head.iter().rposition(|c| *c == '/').filter(|s| *s > q).unwrap_or(q) + 1;
         let (folder, typed) = (String::from_iter(&head[q + 1..start]), String::from_iter(&head[start..]));
         let found = names(&dir.join(&folder)).into_iter();
-        let files = found.filter(|(n, d)| *d || !look || n.ends_with(".cube"));
+        let faces = |n: &str| [".ttf", ".otf", ".ttc"].iter().any(|e| n.to_lowercase().ends_with(e));
+        let files = found.filter(|(n, d)| *d || if font { faces(n) } else { !look || n.ends_with(".cube") });
         let files = files.map(|(n, d)| if d { n + "/" } else { n });
         let builtin = if look && folder.is_empty() { premiere() } else { vec![] };
         let fit = files.chain(builtin).filter(|n| starts(n, &typed));

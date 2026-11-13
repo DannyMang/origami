@@ -173,7 +173,7 @@ impl Preview {
                 .clone()?,
             Kind::Text => self
                 .stills
-                .entry(format!("{}|{}|{th}", c.src, c.color))
+                .entry(format!("{}|{}|{}|{th}", c.src, c.color, c.font))
                 .or_insert_with(|| Some(Arc::new(text::raster(c, k).0)))
                 .clone()?,
             _ => {

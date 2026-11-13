@@ -5,6 +5,7 @@ mod keys;
 mod knob;
 mod lint;
 mod mouse;
+mod peek;
 mod search;
 mod view;
 
@@ -77,6 +78,11 @@ struct Origami {
     strips: [Arc<RenderImage>; 3],
     finding: Option<String>,
     hit: usize,
+    modes: [bool; 3],
+    peek: Option<peek::Peek>,
+    scout: Arc<Mutex<Preview>>,
+    eyeing: bool,
+    seeker: Option<regex::Regex>,
     fresh: bool,
     past: Vec<Vec<String>>,
     future: Vec<Vec<String>>,
@@ -84,6 +90,7 @@ struct Origami {
     dirty: bool,
     saved: String,
     top: f32,
+    fit: usize,
     recent: Vec<PathBuf>,
     rate: f64,
     side: f32,
@@ -105,6 +112,7 @@ struct Origami {
     shown: Option<(i64, usize)>,
     busy: bool,
     reading: bool,
+    clash: bool,
     player: Option<(Instant, f64, Option<Player>)>,
     assets: HashMap<String, Option<Asset>>,
     jobs: Vec<(String, String, Option<f64>)>,
@@ -147,7 +155,7 @@ impl Origami {
     }
 
     fn seek(&mut self, t: f64) {
-        self.t = (t.clamp(0., self.end()) * self.fps()).round() / self.fps();
+        self.t = (t.max(0.).min(self.end()) * self.fps()).round() / self.fps();
         self.sel = None;
         match self.scrubbing {
             _ if self.player.is_none() => {}
@@ -166,12 +174,19 @@ impl Origami {
     }
 
     fn load(&mut self, cx: &mut Context<Self>) {
-        if !self.dirty {
-            self.lines = fs::read_to_string(&self.script)
-                .unwrap_or_default()
-                .lines()
-                .map(String::from)
-                .collect();
+        let disk: Vec<String> = fs::read_to_string(&self.script)
+            .unwrap_or_default()
+            .lines()
+            .map(String::from)
+            .collect();
+        let differs = disk != self.lines;
+        if self.dirty {
+            (self.clash, self.dirty) = (differs, differs);
+        } else if differs {
+            let old = std::mem::replace(&mut self.lines, disk);
+            if !self.fresh {
+                self.past.push(old);
+            }
         }
         if std::mem::take(&mut self.fresh) {
             self.fold_all(true);
@@ -261,6 +276,7 @@ impl Origami {
         if self.dwell() {
             cx.notify();
         }
+        self.gaze(cx);
         if self.push.is_some() {
             self.again = true;
             cx.notify();
@@ -329,6 +345,7 @@ fn main() {
                 traffic_light_position: None,
             }),
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(1512.), px(900.)), cx))),
+            window_min_size: Some(size(px(680.), px(330.))),
             ..Default::default()
         };
         cx.on_window_closed(|cx| cx.quit()).detach();
@@ -396,6 +413,11 @@ fn main() {
                     strips: [0, 1, 2].map(|kind| bitmap(knob::strip(kind), 150, 150)),
                     finding: None,
                     hit: 0,
+                    modes: [false; 3],
+                    peek: None,
+                    scout: Arc::default(),
+                    eyeing: false,
+                    seeker: None,
                     fresh: false,
                     past: vec![],
                     future: vec![],
@@ -403,6 +425,7 @@ fn main() {
                     dirty: false,
                     saved: String::new(),
                     top: 0.,
+                    fit: 24,
                     recent,
                     rate: 1.,
                     side: 520.,
@@ -424,6 +447,7 @@ fn main() {
                     shown: None,
                     busy: false,
                     reading: false,
+                    clash: false,
                     player: None,
                     assets: HashMap::new(),
                     jobs: vec![],
