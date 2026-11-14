@@ -560,6 +560,8 @@ mod tests {
 
     #[test]
     fn finds() {
+        let tied = "  .pos(title.pos.x, add(title2.pos.y, -0.06)).opacity(mul(title.opacity, 2)).scale(a1.scale)";
+        assert!(calls(tied).iter().all(|c| c.3.is_empty()));
         assert_eq!(labels("  clip.temperature(-10),", 12), [("0".into(), -10.)]);
         assert_eq!(labels("a.trim(\"0:10\", 30).speed(1.5)", 4), [("0".into(), 10.), ("1".into(), 30.)]);
         assert_eq!(labels("a.trim(\"0:10\", 30).speed(1.5)", 22), [("0".into(), 1.5)]);

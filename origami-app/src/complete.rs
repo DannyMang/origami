@@ -70,6 +70,12 @@ pub const DEFS: &[Def] = &[
     ),
     global("delay", "value, seconds", "Starts an animated value later."),
     global("bezier", "x1, y1, x2, y2", "A custom ease for a key."),
+    global(
+        "add",
+        "value, number",
+        "Adds a number to a followed value: add(title.pos.y, -0.06).",
+    ),
+    global("mul", "value, number", "Multiplies a followed value: mul(title.scale, 2)."),
     method("trim", "start, end", "Keeps the source between two times."),
     method("for", "duration", "Sets how long the clip lasts."),
     method("at", "time", "Sets when the clip starts inside its group."),
@@ -250,6 +256,19 @@ fn root(lines: &[String], row: usize, head: &[char]) -> String {
     }
 }
 
+fn inside(head: &[char]) -> String {
+    let mut depth = 0;
+    for i in (0..head.len()).rev() {
+        match head[i] {
+            ')' => depth += 1,
+            '(' if depth == 0 => return String::from_iter(word(&head[..i])),
+            '(' => depth -= 1,
+            _ => {}
+        }
+    }
+    String::new()
+}
+
 fn vars(lines: &[String]) -> Vec<String> {
     let mut out = vec![];
     for line in lines {
@@ -310,9 +329,18 @@ pub fn offers(lines: &[String], (row, col): (usize, usize), dir: &Path) -> (usiz
     if chars.get(head.len()).is_some_and(|c| ident(*c)) || number(typed) || dot && number(owner) || spread || !dot && typed.is_empty() {
         return (0, vec![]);
     }
-    let typed = String::from_iter(typed);
+    let (typed, axis) = (String::from_iter(typed), owner == ['p', 'o', 's']);
     let owner = root(lines, row, &head[..start.saturating_sub(1)]);
     let owner = kind(lines, &owner).filter(|_| dot);
+    let fed = ["pos", "scale", "rotate", "opacity", "shown", "add", "mul"].contains(&inside(&head[..start]).as_str());
+    if fed && owner.is_some_and(|k| !["Group", "Audio"].contains(&k)) {
+        let reads: &[&str] = match axis {
+            true => &["x", "y"],
+            false => &["pos", "pos.x", "pos.y", "scale", "rotate", "opacity"],
+        };
+        let fit = reads.iter().filter(|n| starts(n, &typed));
+        return (start, fit.map(|n| (n.to_string(), "", "")).collect());
+    }
     let defs = DEFS
         .iter()
         .filter(|d| d.method == dot && (starts(d.name, &typed) || d.name == typed) && fits(d.name, owner));
@@ -443,6 +471,16 @@ mod tests {
         assert_eq!(at("const t = caption(\"a\")\nt.for(1).e"), ["each", "exposure"]);
         assert_eq!(at("let m = sound(\"a\")\nm.o"), [] as [&str; 0]);
         assert_eq!(at("x.opacity(k"), ["keys"]);
+        assert_eq!(at("x.opacity(m"), ["mul"]);
+        let title = "const title = text(\"a\")\n";
+        assert_eq!(
+            at(&format!("{title}x.pos(title.")),
+            ["pos", "pos.x", "pos.y", "scale", "rotate", "opacity"]
+        );
+        assert_eq!(at(&format!("{title}x.pos(0.5, add(title.pos.")), ["x", "y"]);
+        assert_eq!(at(&format!("{title}x.opacity(mul(title.o")), ["opacity"]);
+        assert_eq!(at(&format!("{title}stack(title.op")), ["opacity"]);
+        assert_eq!(at(&format!("{title}x.pos(0.5).op")), ["opacity"]);
         assert_eq!(
             at("const clip = video()\nconst cut = c"),
             ["caption", "captions", "color", "cat", "clip", "cut"]

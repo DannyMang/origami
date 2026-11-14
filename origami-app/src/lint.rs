@@ -115,6 +115,12 @@ impl Origami {
         if let Some(d) = DEFS.iter().find(|d| d.name == name && call && d.method == dot) {
             return Some((from, format!("{}({})  {}", d.name, d.args, d.about)));
         }
+        if dot && !call && ["pos", "scale", "rotate", "opacity"].contains(&name.as_str()) {
+            let tip = format!(
+                "{name} read as an argument: the property it is given to follows this clip's {name} at the same moment on the timeline"
+            );
+            return Some((from, tip));
+        }
         let made = kind(&self.lines, &name).filter(|_| !name.is_empty() && !dot && !call)?;
         let clip = self.tl.clips.iter().find(|c| c.label == name);
         let more = match (made, clip) {

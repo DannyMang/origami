@@ -111,7 +111,7 @@ impl Origami {
             self.pick(c.z);
         }
         let (rows, (_, wide, _)) = (self.rows(&c), self.quad(&c));
-        let from = ["x", "y"].map(|n| rows.iter().find(|r| r.name == n && r.form != Form::Code).map(|r| r.now));
+        let from = ["x", "y"].map(|n| rows.iter().find(|r| r.name == n && r.form.free()).map(|r| r.now));
         let gain = [sheet.size.width, sheet.size.height].map(|s| 1. / f32::from(s).max(1.) as f64);
         self.seize(at, [gain[0], gain[1], 0.], Pull::Place(from, [wide.0 / w, wide.1 / h]));
         true

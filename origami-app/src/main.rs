@@ -12,6 +12,7 @@ mod scene;
 mod search;
 mod stage;
 mod view;
+mod web;
 
 use gpui::{
     App, AppContext, Application, Bounds, Context, FocusHandle, Pixels, RenderImage, TitlebarOptions, WindowBounds, WindowOptions, px, size,
@@ -80,6 +81,11 @@ struct Origami {
     turning: Option<knob::Turn>,
     motion: bool,
     graph: bool,
+    web: bool,
+    roam: (f32, f32),
+    open: Vec<u32>,
+    tie: Option<(u32, &'static str)>,
+    cord: Option<motion::Cord>,
     lift: f32,
     key: Option<(u32, &'static str, usize)>,
     slip: Option<motion::Slip>,
@@ -169,7 +175,7 @@ impl Origami {
 
     fn seek(&mut self, t: f64) {
         self.t = (t.max(0.).min(self.end()) * self.fps()).round() / self.fps();
-        self.sel = self.sel.filter(|_| self.motion);
+        self.sel = self.sel.filter(|_| self.motion || self.web);
         match self.scrubbing {
             _ if self.player.is_none() => {}
             true => self.player = Some((Instant::now(), self.t, None)),
@@ -426,6 +432,11 @@ fn main() {
                     turning: None,
                     motion: false,
                     graph: false,
+                    web: false,
+                    roam: (0., 0.),
+                    open: vec![],
+                    tie: None,
+                    cord: None,
                     lift: 0.,
                     key: None,
                     slip: None,

@@ -18,11 +18,15 @@ const HUES: [u32; 6] = [BLUE, GREEN, ORANGE, PURPLE, RED, MUTED];
 
 impl Origami {
     pub fn plot(&self, c: Option<&Clip>, rows: &[Row], per: f64, cx: &mut Context<Self>) -> Div {
-        let keyed = rows.iter().filter_map(|r| match &r.form {
-            Form::Keyed(keys) => Some((r.name, keys, HUES[ATTRS.iter().position(|a| a.0 == r.name)? % 6])),
-            _ => None,
+        let keyed = rows.iter().filter_map(|r| {
+            let keys = match &r.form {
+                Form::Keyed(keys) => &keys[..],
+                Form::Linked(_) => &[],
+                _ => return None,
+            };
+            Some((r.name, keys, HUES[ATTRS.iter().position(|a| a.0 == r.name)? % 6]))
         });
-        let keyed: Vec<(&'static str, &Vec<Key>, u32)> = keyed.collect();
+        let keyed: Vec<(&'static str, &[Key], u32)> = keyed.collect();
         let Some(c) = c.filter(|_| !keyed.is_empty()) else {
             let hint = "select a clip and click a diamond to key a property: its curve shows here";
             return div().p_3().text_size(px(11.)).text_color(rgb(DIM)).child(hint);

@@ -32,6 +32,7 @@ pub const ATTRS: [(&str, &str, f64, f64, f64, usize); 10] = [
     ("radius", "radius", 1., 0., f64::MAX, 0),
 ];
 pub const STILL: [&str; 4] = ["size", "width", "height", "radius"];
+pub const FOLLOWS: [&str; 6] = ["x", "y", "scale", "rotate", "opacity", "shown"];
 const MAKERS: [(&str, Kind); 7] = [
     ("video", Kind::Video),
     ("image", Kind::Image),
@@ -56,6 +57,7 @@ pub enum Pull {
     Field(&'static str, f64),
     Bend(bool, f64, f64),
     Zoom(f64),
+    Wire(&'static str, f64),
     Place([Option<f64>; 2], [f64; 2]),
 }
 
@@ -68,11 +70,40 @@ pub struct Slip {
     pull: Pull,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct Link {
+    pub clip: String,
+    pub attr: &'static str,
+    pub wire: Option<(bool, f64)>,
+}
+
+#[derive(Clone, Copy)]
+pub struct Cord {
+    pub to: (u32, &'static str),
+    pub from: Point<Pixels>,
+    pub at: Point<Pixels>,
+    pub over: Option<(u32, &'static str)>,
+}
+
 #[derive(PartialEq)]
 pub enum Form {
     Plain,
     Keyed(Vec<Key>),
+    Linked(Link),
     Code,
+}
+
+impl Cord {
+    pub fn still(&self) -> bool {
+        let d = self.at - self.from;
+        f32::from(d.x).hypot(f32::from(d.y)) < 4.
+    }
+}
+
+impl Form {
+    pub fn free(&self) -> bool {
+        matches!(self, Self::Plain | Self::Keyed(_))
+    }
 }
 
 pub struct Row {
@@ -200,6 +231,46 @@ pub fn assign(old: &str, t: f64, v: f64, len: f64, fps: f64) -> String {
         None => drop(plant(&mut keys, t, v, len)),
     }
     print(&keys)
+}
+
+pub fn link(arg: &str) -> Option<Link> {
+    let arg = arg.trim();
+    let wrap = ["add(", "mul("].iter().position(|w| arg.starts_with(w) && arg.ends_with(')'));
+    let (path, wire) = match wrap.map(|i| (i, split(&arg[4..arg.len() - 1]))) {
+        Some((i, args)) if args.len() == 2 => (args[0].trim(), Some((i == 1, args[1].trim().parse().ok()?))),
+        Some(_) => return None,
+        None => (arg, None),
+    };
+    let (clip, attr) = path.split_once('.')?;
+    let attr = match attr {
+        "pos.x" => "x",
+        "pos.y" => "y",
+        a => FOLLOWS[2..5].iter().copied().find(|r| *r == a)?,
+    };
+    let word = !clip.is_empty() && clip.chars().all(|c| c.is_alphanumeric() || c == '_');
+    word.then(|| Link {
+        clip: clip.into(),
+        attr,
+        wire,
+    })
+}
+
+pub fn tie(l: &Link) -> String {
+    let path = format!("{}.{}{}", l.clip, if l.attr.len() == 1 { "pos." } else { "" }, l.attr);
+    match l.wire {
+        Some((mul, n)) => format!("{}({path}, {n})", if mul { "mul" } else { "add" }),
+        None => path,
+    }
+}
+
+pub fn retie(old: &str, n: f64) -> String {
+    let wired = link(old).filter(|l| l.wire.is_some());
+    wired.map_or(old.into(), |l| {
+        tie(&Link {
+            wire: l.wire.map(|w| (w.0, round(n, 3))),
+            ..l
+        })
+    })
 }
 
 pub fn tidy(name: &str, v: f64) -> f64 {
@@ -357,7 +428,71 @@ fn read(s: &str, from: usize, kind: Kind, name: &str) -> Option<(Slot, bool)> {
     Some((slot(s, &calls, name)?, &s[calls[0].0..calls[0].1] == "caption"))
 }
 
+fn spread(s: &str, from: usize, kind: Kind) -> Option<String> {
+    let calls = chain(s, from, kind)?;
+    let mut found = calls[1..].iter().filter(|c| &s[c.0..c.1] == "pos");
+    let (&(_, open, end), None) = (found.next()?, found.next()) else {
+        return None;
+    };
+    let clip = s[open + 1..end].trim().strip_suffix(".pos")?;
+    link(&format!("{clip}.pos.x"))?;
+    Some(format!("{}{clip}.pos.x, {clip}.pos.y{}", &s[..open + 1], &s[end..]))
+}
+
+pub fn name(s: &str, from: usize, kind: Kind) -> Option<&str> {
+    let mut head = s[from..chain(s, from, kind)?[0].0].trim().strip_suffix('=')?.split_whitespace();
+    let (word, name, None) = (head.next()?, head.next()?, head.next()) else {
+        return None;
+    };
+    ["const", "let", "var"].contains(&word).then_some(name)
+}
+
+pub fn ties(s: &str, from: usize, kind: Kind) -> Vec<(&'static str, Link)> {
+    let wide = spread(s, from, kind);
+    let s = wide.as_deref().unwrap_or(s);
+    let tied = |n: &&'static str| {
+        let (slot, _) = read(s, from, kind, n)?;
+        Some((*n, link(&s[slot.a..slot.b])?))
+    };
+    FOLLOWS.iter().filter_map(tied).collect()
+}
+
+pub fn follow(s: &str, to: (usize, Kind, &str), from: (usize, Kind, &'static str)) -> Result<String, String> {
+    let Some(clip) = name(s, from.0, from.1) else {
+        return Err("give that clip a name (const name = ...) so it can be followed".into());
+    };
+    if from.0 >= to.0 {
+        return Err(format!(
+            "{clip} must come first in the script: a clip can only follow one defined above it"
+        ));
+    }
+    if !FOLLOWS[..5].contains(&from.2) {
+        return Err("pos, scale, rotate and opacity can be followed".into());
+    }
+    let new = Link {
+        clip: clip.into(),
+        attr: from.2,
+        wire: None,
+    };
+    if ties(s, to.0, to.1).iter().any(|t| t.0 == to.2 && t.1 == new) {
+        return Ok(s.into());
+    }
+    amend(s, to.0, to.1, to.2, |_| tie(&new)).ok_or("that property is not written in a way the Motion tab can rewrite".into())
+}
+
+pub fn sever(s: &str, from: usize, kind: Kind, name: &str, now: impl Fn(&str) -> f64) -> String {
+    let both = matches!(name, "x" | "y") && spread(s, from, kind).is_some();
+    let cut = |s: String, n: &str| amend(&s, from, kind, n, |_| tidy(n, now(n)).to_string()).unwrap_or(s);
+    ["x", "y"]
+        .into_iter()
+        .filter(|n| both && *n != name)
+        .chain([name])
+        .fold(s.into(), cut)
+}
+
 pub fn amend(s: &str, from: usize, kind: Kind, name: &str, f: impl FnOnce(&str) -> String) -> Option<String> {
+    let wide = spread(s, from, kind).filter(|_| matches!(name, "x" | "y"));
+    let s = wide.as_deref().unwrap_or(s);
     let (slot, _) = read(s, from, kind, name)?;
     let old = s[slot.a..slot.b].trim();
     let new = Some(f(old)).filter(|new| new != old)?;
@@ -365,7 +500,7 @@ pub fn amend(s: &str, from: usize, kind: Kind, name: &str, f: impl FnOnce(&str) 
 }
 
 impl Origami {
-    fn offset(&self, c: &Clip) -> Option<usize> {
+    pub fn offset(&self, c: &Clip) -> Option<usize> {
         let row = (c.home as usize).checked_sub(1).filter(|r| *r < self.lines.len())?;
         Some(self.lines[..row].iter().map(|l| l.len() + 1).sum())
     }
@@ -382,6 +517,7 @@ impl Origami {
 
     pub fn rows(&self, c: &Clip) -> Vec<Row> {
         let (text, frame) = (self.lines.join("\n"), self.frame(c) as usize);
+        let text = self.offset(c).and_then(|from| spread(&text, from, c.kind)).unwrap_or(text);
         let fits = |a: &&(&str, &str, f64, f64, f64, usize)| match (c.kind, a.0) {
             (Kind::Sound, _) => false,
             (Kind::Text, "shown" | "size") | (Kind::Rect, "width" | "height" | "radius") | (Kind::Line, "width") => true,
@@ -410,7 +546,7 @@ impl Origami {
                 Some((old, _)) => match (old.parse(), parse(old)) {
                     (Ok(v), _) => (Form::Plain, v),
                     (_, Some(keys)) => (Form::Keyed(keys), live),
-                    _ => (Form::Code, live),
+                    _ => (link(old).filter(|_| !STILL.contains(&name)).map_or(Form::Code, Form::Linked), live),
                 },
             };
             Row { name, form, now }
@@ -431,16 +567,19 @@ impl Origami {
     }
 
     pub fn swing(&self, c: &Clip, row: &Row) -> (f64, f64) {
-        match &row.form {
-            Form::Keyed(keys) if !matches!(row.name, "opacity" | "shown") => {
-                bounds(keys.iter().map(|k| k.value).chain(curve(c, row.name).into_iter().map(f64::from)))
-            }
-            _ => (0., 1.),
+        let keys = match &row.form {
+            Form::Keyed(keys) => &keys[..],
+            Form::Linked(_) => &[],
+            _ => return (0., 1.),
+        };
+        match row.name {
+            "opacity" | "shown" => (0., 1.),
+            name => bounds(keys.iter().map(|k| k.value).chain(curve(c, name).into_iter().map(f64::from))),
         }
     }
 
     pub fn reach(&self, c: &Clip, rows: &[Row]) -> (f64, f64) {
-        let keyed = rows.iter().filter(|r| matches!(r.form, Form::Keyed(_)));
+        let keyed = rows.iter().filter(|r| matches!(r.form, Form::Keyed(_) | Form::Linked(_)));
         let ends: Vec<f64> = keyed.flat_map(|r| <[f64; 2]>::from(self.swing(c, r))).collect();
         match self.slip {
             Some(s) => (s.lo, s.hi),
@@ -452,7 +591,82 @@ impl Origami {
     fn amend(&mut self, c: &Clip, name: &str, f: impl FnOnce(&str) -> String) {
         let text = self.offset(c).and_then(|from| amend(&self.lines.join("\n"), from, c.kind, name, f));
         if let Some(text) = text {
-            self.lines = text.split('\n').map(String::from).collect();
+            self.put(&text);
+        }
+    }
+
+    fn put(&mut self, text: &str) {
+        self.lines = text.split('\n').map(String::from).collect();
+    }
+
+    pub fn named(&self, c: &Clip) -> Option<String> {
+        name(&self.lines.join("\n"), self.offset(c)?, c.kind).map(String::from)
+    }
+
+    pub fn bound(&self, to: (u32, &'static str), from: (u32, &'static str)) -> Result<String, String> {
+        let at = |z: u32| {
+            self.tl
+                .clips
+                .iter()
+                .find(|c| c.z == z)
+                .and_then(|c| Some((self.offset(c)?, c.kind)))
+        };
+        let (Some(a), Some(b)) = (at(to.0), at(from.0)) else {
+            return Err(String::new());
+        };
+        let pairs = match (to.1, from.1) {
+            (_, "pos") => vec![("x", "x"), ("y", "y")],
+            (t, "") => vec![(t, t)],
+            (t, f) => vec![(t, f)],
+        };
+        let tied = |s: String, (t, f)| follow(&s, (a.0, a.1, t), (b.0, b.1, f));
+        pairs.into_iter().try_fold(self.lines.join("\n"), tied)
+    }
+
+    pub fn bind(&mut self, to: (u32, &'static str), from: (u32, &'static str)) {
+        match self.bound(to, from) {
+            Ok(text) => self.change(|this| this.put(&text)),
+            Err(note) => self.note = note,
+        }
+    }
+
+    pub fn tied(&self, (z, name): (u32, &'static str)) -> Option<(Clip, Vec<Row>)> {
+        let c = self.tl.clips.iter().find(|c| c.z == z)?.clone();
+        let rows = self.rows(&c);
+        rows.iter()
+            .any(|r| r.name == name && matches!(r.form, Form::Linked(_)))
+            .then_some((c, rows))
+    }
+
+    pub fn sever(&mut self, at: (u32, &'static str)) {
+        let Some((c, rows)) = self.tied(at) else { return };
+        let now = |n: &str| rows.iter().find(|r| r.name == n).map_or(0., |r| r.now);
+        if let Some(text) = self.offset(&c).map(|from| sever(&self.lines.join("\n"), from, c.kind, at.1, now)) {
+            self.change(|this| this.put(&text));
+        }
+    }
+
+    pub fn wrap(&mut self, at: (u32, &'static str), wire: Option<(bool, f64)>) {
+        let Some((c, _)) = self.tied(at) else { return };
+        let wired = |old: &str| link(old).map_or(old.into(), |l| tie(&Link { wire, ..l }));
+        self.change(|this| this.amend(&c, at.1, wired));
+    }
+
+    pub fn trace(&mut self, at: (u32, &'static str)) {
+        let Some((_, rows)) = self.tied(at) else { return };
+        let from = rows.iter().find_map(|r| match &r.form {
+            Form::Linked(l) if r.name == at.1 => self.tl.clips.iter().find(|c| self.named(c).as_ref() == Some(&l.clip)),
+            _ => None,
+        });
+        if let Some(z) = from.map(|c| c.z).filter(|z| self.sel != Some(*z)) {
+            self.pick(z);
+        }
+    }
+
+    pub fn unfurl(&mut self, z: u32) {
+        match self.open.iter().position(|o| *o == z) {
+            Some(i) => drop(self.open.remove(i)),
+            None => self.open.push(z),
         }
     }
 
@@ -471,6 +685,9 @@ impl Origami {
 
     pub fn pick(&mut self, z: u32) {
         (self.sel, self.key) = (Some(z).filter(|z| self.sel != Some(*z)), None);
+        if self.sel.is_some() && !self.open.contains(&z) {
+            self.open.push(z);
+        }
         if let Some(row) = self.opened().map(|c| (c.home as usize).saturating_sub(1)) {
             self.reveal(row);
         }
@@ -483,7 +700,7 @@ impl Origami {
 
     fn live(&self, name: &str) -> Option<(Clip, Row)> {
         let c = self.opened()?.clone();
-        let row = self.rows(&c).into_iter().find(|r| r.name == name && r.form != Form::Code)?;
+        let row = self.rows(&c).into_iter().find(|r| r.name == name && r.form.free())?;
         Some((c, row))
     }
 
@@ -555,9 +772,10 @@ impl Origami {
                 let to = [0, 1].map(|n| from[n].map(|v| rest(v, [dx, dy][n] * s.gain[n], size[n])));
                 if let Some(at) = self.offset(&c) {
                     let text = drag(&self.lines.join("\n"), at, c.kind, to, (self.frame(&c) / fps, len, fps));
-                    self.lines = text.split('\n').map(String::from).collect();
+                    self.put(&text);
                 }
             }
+            (Pull::Wire(name, from), _) => self.amend(&c, name, |old| retie(old, from + dx * s.gain[1])),
             (Pull::Key, Some((_, name, i))) => self.shape(&c, name, |keys| {
                 let (was, by) = (keys.get(i).map_or(0., |k| k.value), dx * s.gain[1] + dy * s.gain[2]);
                 let v = if by == 0. { was } else { tidy(name, was + by) };
@@ -579,7 +797,7 @@ impl Origami {
 
     pub fn cull(&mut self) -> bool {
         let Some((c, name, i)) = self.held() else {
-            return self.motion;
+            return self.motion || self.web;
         };
         let cut = |old: &str| parse(old).filter(|k| i < k.len()).map_or(old.into(), |k| without(k, i));
         self.change(|this| this.amend(&c, name, cut));
@@ -798,6 +1016,107 @@ stack(shot, title.shift(1), tag, note, text(\"inline\").for(2))";
         assert_eq!(row(&on(3, Kind::Rect, "color", "\"#fff\""), 4), "    radius: 2, color: \"#fff\"");
         assert_eq!(on(2, Kind::Rect, "width", "8"), src);
         assert_eq!((tidy("width", -4.), tidy("radius", -4.), tidy("height", 80.4)), (1., 0., 80.));
+    }
+
+    const TIED: &str = "const shot = color(\"#203040\").for(6)
+const title = text(\"yosemite\").for(4)
+  .pos(0.5, keys([0, 0.5], [0.8, 0.42, \"slowOut\"]))
+const tag = text(\"holger\")
+  .opacity(keys([0, 0], [0.6, 1]))
+  .pos(title.pos.x, add(title.pos.y, -0.06))
+const twin = text(\"twin\").pos(title.pos).scale(mul(title.scale, 2))
+stack(shot, title.at(1), tag, twin, text(\"inline\"))";
+
+    fn at(row: usize) -> usize {
+        TIED.lines().take(row).map(|l| l.len() + 1).sum()
+    }
+
+    #[test]
+    fn reads_links() {
+        let l = |clip: &str, attr, wire| Link {
+            clip: clip.into(),
+            attr,
+            wire,
+        };
+        assert_eq!(link("title.pos.y"), Some(l("title", "y", None)));
+        assert_eq!(link(" add(title.pos.y, -0.06) "), Some(l("title", "y", Some((false, -0.06)))));
+        assert_eq!(link("mul(a_1.scale, 2)"), Some(l("a_1", "scale", Some((true, 2.)))));
+        for none in [
+            "title.pos",
+            "title.shown",
+            "title.pos.z",
+            "add(title.pos.y, n)",
+            "add(title.pos.y)",
+            "t => t",
+            "0.5",
+            "a.b.scale",
+            "add(mul(a.scale, 2), 1)",
+        ] {
+            assert_eq!(link(none), None, "{none}");
+        }
+        for text in ["title.pos.x", "title.opacity", "add(title.pos.y, -0.06)", "mul(title.scale, 2)"] {
+            assert_eq!(tie(&link(text).unwrap()), text);
+        }
+        let tied = |row, kind| ties(TIED, at(row), kind).into_iter().map(|t| (t.0, tie(&t.1))).collect::<Vec<_>>();
+        assert_eq!(
+            tied(3, Kind::Text),
+            [("x", "title.pos.x".to_string()), ("y", "add(title.pos.y, -0.06)".into())]
+        );
+        assert_eq!(
+            tied(6, Kind::Text),
+            [
+                ("x", "title.pos.x".to_string()),
+                ("y", "title.pos.y".into()),
+                ("scale", "mul(title.scale, 2)".into())
+            ]
+        );
+        assert_eq!(
+            (tied(1, Kind::Text), name(TIED, at(1), Kind::Text), name(TIED, at(7), Kind::Text)),
+            (vec![], Some("title"), None)
+        );
+        assert_eq!(name("const k = () => text(\"a\")", 0, Kind::Text), None);
+    }
+
+    #[test]
+    fn connects_and_breaks() {
+        let row = |s: &str, n: usize| s.lines().nth(n).unwrap().to_string();
+        let tag = (at(3), Kind::Text);
+        let on = |name, from: (usize, Kind, &'static str)| follow(TIED, (tag.0, tag.1, name), from);
+        let keyed = on("opacity", (at(1), Kind::Text, "opacity")).unwrap();
+        assert_eq!(row(&keyed, 4), "  .opacity(title.opacity)");
+        assert_eq!(row(&on("scale", (at(1), Kind::Text, "y")).unwrap(), 6), "  .scale(title.pos.y)");
+        assert_eq!(
+            row(&on("x", (at(0), Kind::Color, "scale")).unwrap(), 5),
+            "  .pos(shot.scale, add(title.pos.y, -0.06))"
+        );
+        let late = on("x", (at(6), Kind::Text, "x")).unwrap_err();
+        assert!(late.starts_with("twin must come first in the script"), "{late}");
+        assert!(on("x", (at(3), Kind::Text, "y")).unwrap_err().starts_with("tag must come first"));
+        assert!(on("x", (at(7), Kind::Text, "x")).unwrap_err().starts_with("give that clip a name"));
+        assert!(on("x", (at(1), Kind::Text, "size")).unwrap_err().starts_with("pos, scale, rotate"));
+        let twin = follow(TIED, (at(6), Kind::Text, "y"), (at(3), Kind::Text, "y")).unwrap();
+        assert_eq!(
+            row(&twin, 6),
+            "const twin = text(\"twin\").pos(title.pos.x, tag.pos.y).scale(mul(title.scale, 2))"
+        );
+        let far = amend(TIED, tag.0, tag.1, "y", |old| retie(old, 0.1234)).unwrap();
+        assert_eq!(row(&far, 5), "  .pos(title.pos.x, add(title.pos.y, 0.123))");
+        let big = amend(TIED, at(6), Kind::Text, "scale", |old| retie(old, 1.5)).unwrap();
+        assert!(row(&big, 6).ends_with(".scale(mul(title.scale, 1.5))"));
+        assert_eq!(
+            (retie("title.pos.y", 3.), retie("0.5", 3.)),
+            ("title.pos.y".to_string(), "0.5".to_string())
+        );
+        let now = |n: &str| if n == "x" { 0.5 } else { 0.36049 };
+        assert_eq!(row(&sever(TIED, tag.0, tag.1, "y", now), 5), "  .pos(title.pos.x, 0.36)");
+        assert_eq!(
+            row(&sever(TIED, at(6), Kind::Text, "x", now), 6),
+            "const twin = text(\"twin\").pos(0.5, 0.36).scale(mul(title.scale, 2))"
+        );
+        assert_eq!(
+            row(&sever(TIED, at(6), Kind::Text, "scale", |_| 2.), 6),
+            "const twin = text(\"twin\").pos(title.pos).scale(2)"
+        );
     }
 
     #[test]

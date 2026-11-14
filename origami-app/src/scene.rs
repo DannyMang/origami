@@ -1,12 +1,12 @@
 use crate::{
     Origami,
     complete::faces,
-    motion::{ATTRS, Form, Pull, Row, STILL, secs},
+    motion::{ATTRS, Cord, FOLLOWS, Form, Link, Pull, Row, STILL, curve, secs},
     view::{BAR, BG, BLUE, BORDER, DIM, MUTED, ORANGE, PANEL, RULER, TEXT, tint},
 };
 use gpui::{
-    App, Bounds, Context, Div, MouseButton, MouseDownEvent, PathBuilder, Pixels, Point, Window, canvas, div, fill, point, prelude::*, px,
-    relative, rgb, rgba, size,
+    App, Bounds, Context, Div, MouseButton, MouseDownEvent, PathBuilder, Pixels, Point, Window, canvas, deferred, div, fill, point,
+    prelude::*, px, relative, rgb, rgba, size,
 };
 use origami_engine::tone;
 use origami_lang::{Clip, Kind};
@@ -87,6 +87,52 @@ fn stem(path: &str) -> String {
     Path::new(path).file_stem().unwrap_or_default().to_string_lossy().to_string()
 }
 
+pub fn title(attr: &str) -> &str {
+    ATTRS.iter().find(|a| a.0 == attr).map_or(attr, |a| a.1)
+}
+
+pub fn hit(slots: &[(u32, &'static str, f32)], y: f32) -> Option<(u32, &'static str)> {
+    let mut top = 0.;
+    let under = |s: &&(u32, &'static str, f32)| {
+        top += s.2;
+        (top - s.2..top).contains(&y)
+    };
+    slots.iter().find(under).map(|s| (s.0, s.1))
+}
+
+fn top(slots: &[(u32, &'static str, f32)], at: (u32, &str)) -> f32 {
+    slots.iter().take_while(|s| (s.0, s.1) != at).map(|s| s.2).sum()
+}
+
+fn sheet(left: f32, bottom: f32) -> Div {
+    div()
+        .absolute()
+        .left(px(left))
+        .bottom(px(bottom))
+        .min_w(px(120.))
+        .p_1()
+        .flex()
+        .flex_col()
+        .bg(rgb(PANEL))
+        .border_1()
+        .border_color(rgb(BORDER))
+        .rounded(px(6.))
+        .text_size(px(12.))
+        .occlude()
+}
+
+fn option(label: String) -> Div {
+    div()
+        .h(px(20.))
+        .px_2()
+        .flex()
+        .items_center()
+        .rounded(px(3.))
+        .cursor_pointer()
+        .hover(|s| s.bg(rgb(BAR)))
+        .child(label)
+}
+
 fn count(kind: Kind) -> usize {
     match kind {
         Kind::Sound => 0,
@@ -111,12 +157,37 @@ impl Origami {
         })
     }
 
+    pub fn slots(&self) -> Vec<(u32, &'static str, f32)> {
+        let mut out = vec![];
+        for c in &self.tl.clips {
+            out.push((c.z, "", LAYER));
+            if self.open.contains(&c.z) {
+                let rows = self.rows(c);
+                out.extend(rows.iter().map(|r| (c.z, r.name, ATTR)));
+                out.extend((rows.len()..count(c.kind)).map(|_| (c.z, "-", ATTR)));
+            }
+        }
+        out
+    }
+
     pub fn tall(&self) -> f32 {
-        self.tl.clips.len() as f32 * LAYER + self.opened().map_or(0, |c| count(c.kind)) as f32 * ATTR
+        self.slots().iter().map(|s| s.2).sum()
+    }
+
+    fn floor(&self, window: &Window) -> f32 {
+        f32::from(window.viewport_size().height) - 28. - self.dock + RULER - self.lift
+    }
+
+    pub fn haul(&mut self, at: Point<Pixels>, window: &Window) {
+        let y = f32::from(at.y) - self.floor(window);
+        let over = hit(&self.slots(), y).filter(|_| f32::from(at.x) < NAMES);
+        if let Some(c) = &mut self.cord {
+            (c.at, c.over) = (at, over);
+        }
     }
 
     fn layer(&self, c: &Clip, cx: &mut Context<Self>) -> Div {
-        let (z, on) = (c.z, self.sel == Some(c.z));
+        let (z, on, open) = (c.z, self.sel == Some(c.z), self.open.contains(&c.z));
         let (glyph, kind) = match c.kind {
             Kind::Video => ("\u{25b6}", "video"),
             Kind::Sound => ("\u{266a}", "sound"),
@@ -143,7 +214,8 @@ impl Origami {
             .child(
                 slot(14.)
                     .text_color(rgb(if on { TEXT } else { DIM }))
-                    .child(if on { "\u{25be}" } else { "\u{25b8}" }),
+                    .on_mouse_down(MouseButton::Left, Self::tap(cx, move |this, _, _| this.unfurl(z)))
+                    .child(if open { "\u{25be}" } else { "\u{25b8}" }),
             )
             .child(slot(18.).child(div().size(px(10.)).rounded(px(2.)).bg(rgb(tint(c.kind)))))
             .child(slot(20.).text_color(rgb(MUTED)).child(glyph))
@@ -157,7 +229,30 @@ impl Origami {
             )
     }
 
-    fn attr(&self, label: &'static str, lit: bool, control: Div, gem: Div) -> Div {
+    fn attr(&self, at: (u32, &'static str), label: &'static str, lit: (bool, bool), control: Div, gem: Div, cx: &mut Context<Self>) -> Div {
+        let aim = self
+            .cord
+            .filter(|c| c.to != at)
+            .map(|c| (c.over == Some(at), self.bound(c.to, at).is_ok()));
+        let (lit, linked, tied) = (
+            lit.0 || self.cord.is_some_and(|c| c.to == at),
+            lit.1,
+            lit.1 || aim.is_some_and(|a| a.1),
+        );
+        let pull = move |this: &mut Self, e: &MouseDownEvent, _: &mut Window| {
+            this.cord = Some(Cord {
+                to: at,
+                from: e.position,
+                at: e.position,
+                over: None,
+            })
+        };
+        let dot = div()
+            .size(px(7.))
+            .rounded_full()
+            .border_1()
+            .border_color(rgb(if tied { BLUE } else { DIM }))
+            .when(linked, |d| d.bg(rgb(BLUE)));
         div()
             .relative()
             .h(px(ATTR))
@@ -172,11 +267,27 @@ impl Origami {
                 d.bg(rgb(LINE))
                     .child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(rgb(BLUE)))
             })
+            .map(|d| match aim {
+                Some((true, true)) => d.bg(rgb(BAR)).border_1().border_color(rgb(BLUE)),
+                Some((_, false)) => d.opacity(0.35),
+                _ => d,
+            })
+            .capture_any_mouse_down(cx.listener(move |this, _, _, _| {
+                if this.mouse && this.sel != Some(at.0) {
+                    (this.sel, this.key) = (Some(at.0), None);
+                }
+            }))
             .child(
                 div()
                     .w(px(14.))
+                    .h_full()
                     .flex_none()
-                    .child(div().size(px(7.)).rounded_full().border_1().border_color(rgb(DIM))),
+                    .flex()
+                    .items_center()
+                    .child(dot)
+                    .when(FOLLOWS.contains(&at.1), |d| {
+                        d.cursor_pointer().on_mouse_down(MouseButton::Left, Self::tap(cx, pull))
+                    }),
             )
             .child(div().w(px(80.)).flex_none().child(label))
             .child(
@@ -193,27 +304,70 @@ impl Origami {
     }
 
     fn cells(&self, c: &Clip, rows: &[Row], cx: &mut Context<Self>) -> Vec<Div> {
-        let code = |text: String| div().text_color(rgb(DIM)).child(format!("{text}  code"));
-        let number = |row: &Row| {
+        let (z, code) = (c.z, |text: String| div().text_color(rgb(DIM)).child(format!("{text}  code")));
+        let chip = |name: &'static str, l: &Link, step: f64, cx: &mut Context<Self>| {
+            let label = format!("\u{2190} {}.{}", l.clip, title(l.attr));
+            let menu = move |this: &mut Self, _: &MouseDownEvent, _: &mut Window| {
+                let shut = this.shut == "chip" && this.tie == Some((z, name));
+                (this.menu, this.tie) = (if shut { "" } else { "chip" }, Some((z, name)));
+            };
+            let chip = div()
+                .h(px(15.))
+                .px(px(6.))
+                .flex()
+                .items_center()
+                .rounded(px(8.))
+                .border_1()
+                .border_color(rgb(BLUE))
+                .bg(rgba(BLUE << 8 | 0x26))
+                .text_size(px(10.))
+                .text_color(rgb(BLUE))
+                .min_w_0()
+                .overflow_hidden()
+                .cursor_pointer()
+                .on_mouse_down(MouseButton::Left, Self::tap(cx, menu))
+                .child(label);
+            div().gap_1().child(chip).children(l.wire.map(|(mul, n)| {
+                let (sign, gain) = match (mul, n < 0.) {
+                    (true, _) => ("\u{d7}", 0.01),
+                    (_, true) => ("\u{2212}", step),
+                    _ => ("+", step),
+                };
+                let tug =
+                    move |this: &mut Self, e: &MouseDownEvent, _: &mut Window| this.seize(e.position, [0., gain, 0.], Pull::Wire(name, n));
+                field(format!("{sign} {}", if mul { n } else { n.abs() }))
+                    .px(px(4.))
+                    .flex_none()
+                    .text_size(px(10.))
+                    .cursor_col_resize()
+                    .on_mouse_down(MouseButton::Left, Self::tap(cx, tug))
+            }))
+        };
+        let number = |row: &Row, cx: &mut Context<Self>| {
             let (name, a) = (row.name, ATTRS.iter().find(|a| a.0 == row.name).unwrap_or(&ATTRS[0]));
             let (text, keyed) = (format!("{:.*}", a.5, row.now), matches!(row.form, Form::Keyed(_)));
-            let control = match row.form {
+            let control = match &row.form {
                 Form::Code => code(text),
+                Form::Linked(l) => chip(name, l, a.2, cx),
                 _ => div()
                     .cursor_col_resize()
                     .on_mouse_down(MouseButton::Left, Self::tap(cx, move |this, e, _| this.tug(name, e.position)))
                     .children((a.4 == 1.).then(|| slider(row.now as f32, 64., BLUE)))
                     .child(field(text)),
             };
-            let key = match row.form == Form::Code || STILL.contains(&name) {
-                true => gem(false, BORDER),
-                false => gem(keyed, if keyed { BLUE } else { DIM })
+            let key = match row.form.free() && !STILL.contains(&name) {
+                false => gem(false, BORDER),
+                true => gem(keyed, if keyed { BLUE } else { DIM })
                     .cursor_pointer()
                     .on_mouse_down(MouseButton::Left, Self::tap(cx, move |this, _, _| this.pin(name))),
             };
-            self.attr(a.1, self.key.is_some_and(|k| k.1 == name), control, key)
+            let lit = (
+                self.key.is_some_and(|k| (k.0, k.1) == (z, name)),
+                matches!(row.form, Form::Linked(_)),
+            );
+            self.attr((z, name), a.1, lit, control, key, cx)
         };
-        let mut out: Vec<Div> = rows.iter().map(number).collect();
+        let mut out: Vec<Div> = rows.iter().map(|r| number(r, cx)).collect();
         let swatch = |name: &'static str, cx: &mut Context<Self>| {
             let (none, set) = if name == "color" {
                 ([255; 4], &c.color)
@@ -240,7 +394,7 @@ impl Origami {
                     })),
                 _ => code(set.clone()),
             };
-            self.attr(name, false, control, gem(false, BORDER))
+            self.attr((z, "-"), name, (false, false), control, gem(false, BORDER), cx)
         };
         if let Kind::Rect | Kind::Line = c.kind {
             out.push(swatch("color", cx));
@@ -262,7 +416,7 @@ impl Origami {
                 None => code(stem(&c.font)),
             };
             out.push(swatch("color", cx));
-            out.push(self.attr("font", false, font, gem(false, BORDER)));
+            out.push(self.attr((z, "-"), "font", (false, false), font, gem(false, BORDER), cx));
             out.push(swatch("background", cx));
         }
         out
@@ -275,7 +429,7 @@ impl Origami {
                 Form::Keyed(keys) => Some((r.name, keys)),
                 _ => None,
             });
-            let lit = row.is_some_and(|r| self.key.is_some_and(|k| k.1 == r.name));
+            let lit = row.is_some_and(|r| self.key.is_some_and(|k| (k.0, k.1) == (z, r.name)));
             let out = div()
                 .relative()
                 .h(px(ATTR))
@@ -283,9 +437,27 @@ impl Origami {
                 .border_b_1()
                 .border_color(rgb(LINE))
                 .when(lit, |d| d.bg(rgb(LINE)));
+            if let Some(r) = row.filter(|r| matches!(r.form, Form::Linked(_))) {
+                let (s, fps) = (curve(c, r.name), self.fps());
+                let (lo, hi) = s.iter().fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(*v), hi.max(*v)));
+                let trace = move |b: Bounds<Pixels>, _, window: &mut Window, _: &mut App| {
+                    let x = |t: f64| b.origin.x + b.size.width * ((start + t - pan) / d) as f32;
+                    let y = |v: f32| b.origin.y + px(ATTR - 5. - (v - lo) / (hi - lo).max(1e-6) * (ATTR - 10.));
+                    let mut line = PathBuilder::stroke(px(1.2));
+                    line.move_to(point(x(0.), y(s[0])));
+                    for (i, v) in s.iter().enumerate() {
+                        line.line_to(point(x(i as f64 / fps), y(*v)));
+                    }
+                    line.line_to(point(x(len), y(s[s.len() - 1])));
+                    if let Ok(line) = line.build() {
+                        window.paint_path(line, rgba(BLUE << 8 | 0xa0));
+                    }
+                };
+                return out.child(track().child(canvas(|_, _, _| (), trace).absolute().size_full()));
+            }
             let Some((name, keys)) = keys else { return out };
             let spots: Vec<f64> = keys.iter().map(|k| start + secs(&k.time, len)).collect();
-            let picked = self.key.filter(|k| k.1 == name).map(|k| k.2);
+            let picked = self.key.filter(|k| (k.0, k.1) == (z, name)).map(|k| k.2);
             let hits = spots.iter().enumerate().map(|(i, &t)| {
                 div()
                     .absolute()
@@ -416,7 +588,8 @@ impl Origami {
                     .on_mouse_down(MouseButton::Left, Self::tap(cx, move |this, _, _| this.pick(z)))
                     .child(track().child(bar)),
             );
-            if on {
+            if self.open.contains(&z) {
+                let rows = self.rows(c);
                 cells.extend(self.cells(c, &rows, cx));
                 lanes.extend(self.lanes(c, &rows, per, cx));
             }
@@ -548,23 +721,14 @@ impl Origami {
         let c = self
             .opened()
             .filter(|c| self.menu == "font" && self.motion && c.kind == Kind::Text)?;
-        let at = self.tl.clips.iter().position(|o| o.z == c.z)? as f32;
         let h = f32::from(window.viewport_size().height);
-        let y = h - 28. - self.dock + RULER + (at + 1.) * LAYER + 8. * ATTR - self.lift;
+        let y = self.floor(window) + top(&self.slots(), (c.z, "-")) + ATTR;
         let (all, now) = (faces(self.script.parent()?), self.option(c, "font").unwrap_or_default());
         let items = all.iter().take(FACES).map(|name| {
             let pick = name.clone();
-            div()
-                .h(px(20.))
-                .px_2()
-                .flex()
-                .items_center()
-                .rounded(px(3.))
-                .cursor_pointer()
-                .hover(|s| s.bg(rgb(BAR)))
+            option(name.clone())
                 .when(*name == now, |d| d.bg(rgba(BLUE << 8 | 0x40)))
                 .on_mouse_down(MouseButton::Left, Self::tap(cx, move |this, _, _| this.face(&pick)))
-                .child(name.clone())
         });
         let items: Vec<Div> = items.collect();
         let note = match all.len() {
@@ -573,22 +737,87 @@ impl Origami {
             _ => None,
         };
         Some(
-            div()
-                .absolute()
-                .left(px(128.))
-                .bottom(px(h - y))
-                .min_w(px(120.))
-                .p_1()
-                .flex()
-                .flex_col()
-                .bg(rgb(PANEL))
-                .border_1()
-                .border_color(rgb(BORDER))
-                .rounded(px(6.))
-                .text_size(px(12.))
-                .occlude()
+            sheet(128., h - y)
                 .children(items)
                 .children(note.map(|n| div().px_2().text_size(px(11.)).text_color(rgb(DIM)).child(n))),
+        )
+    }
+
+    pub fn wires(&self, window: &Window, cx: &mut Context<Self>) -> Option<Div> {
+        let at = self.tie.filter(|_| self.motion && ["follow", "chip"].contains(&self.menu))?;
+        let me = self.tl.clips.iter().find(|c| c.z == at.0)?;
+        let up = f32::from(window.viewport_size().height) - self.floor(window) - top(&self.slots(), at);
+        if self.menu == "chip" {
+            let (_, rows) = self.tied(at)?;
+            let wired = rows
+                .iter()
+                .any(|r| r.name == at.1 && matches!(&r.form, Form::Linked(l) if l.wire.is_some()));
+            let item = |label: &str, act: fn(&mut Self, (u32, &'static str)), cx: &mut Context<Self>| {
+                option(label.into()).on_mouse_down(MouseButton::Left, Self::tap(cx, move |this, _, _| act(this, at)))
+            };
+            let maths = match wired {
+                true => vec![item("remove the maths", |this, at| this.wrap(at, None), cx)],
+                false => vec![
+                    item("add an offset", |this, at| this.wrap(at, Some((false, 0.))), cx),
+                    item("multiply", |this, at| this.wrap(at, Some((true, 1.))), cx),
+                ],
+            };
+            let menu = sheet(128., up)
+                .child(item("go to source", Self::trace, cx))
+                .child(item("break", Self::sever, cx));
+            return Some(menu.children(maths));
+        }
+        let above = self.tl.clips.iter().filter(|c| c.home < me.home && c.kind != Kind::Sound);
+        let mut named: Vec<(&Clip, String)> = above.filter_map(|c| Some((c, self.named(c)?))).collect();
+        named.dedup_by_key(|n| n.0.home);
+        let both = ["pos"].into_iter().filter(|_| at.1.len() == 1);
+        let lines = named.iter().map(|(c, name)| {
+            let from = c.z;
+            let picks = both.clone().chain(FOLLOWS[..5].iter().copied()).map(|a| {
+                option(title(a).into())
+                    .text_color(rgb(MUTED))
+                    .on_mouse_down(MouseButton::Left, Self::tap(cx, move |this, _, _| this.bind(at, (from, a))))
+            });
+            let picks: Vec<Div> = picks.collect();
+            div()
+                .h(px(22.))
+                .px_1()
+                .flex()
+                .items_center()
+                .child(div().size(px(10.)).flex_none().rounded(px(2.)).bg(rgb(tint(c.kind))))
+                .child(div().w(px(84.)).flex_none().pl_2().overflow_hidden().child(name.clone()))
+                .children(picks)
+        });
+        let lines: Vec<Div> = lines.collect();
+        let head = match lines.is_empty() {
+            true => "no named clip is defined above this one in the script".to_string(),
+            false => format!("{} follows", title(at.1)),
+        };
+        Some(
+            sheet(48., up)
+                .child(div().h(px(18.)).px_2().text_size(px(11.)).text_color(rgb(DIM)).child(head))
+                .children(lines),
+        )
+    }
+
+    pub fn cable(&self) -> Option<Div> {
+        let c = self.cord.filter(|c| !c.still())?;
+        let draw = move |_, _, window: &mut Window, _: &mut App| {
+            let (mut line, bow) = (
+                PathBuilder::stroke(px(1.5)),
+                point((c.at.x - c.from.x).abs() / 2. + px(24.), px(0.)),
+            );
+            line.move_to(c.from);
+            line.cubic_bezier_to(c.at, c.from + bow, c.at - bow);
+            if let Ok(line) = line.build() {
+                window.paint_path(line, rgb(BLUE));
+            }
+        };
+        Some(
+            div()
+                .absolute()
+                .size_full()
+                .child(deferred(canvas(|_, _, _| (), draw).absolute().size_full())),
         )
     }
 }
@@ -602,6 +831,34 @@ mod tests {
         assert_eq!((tick(18. / 630., 64.), tick(60. / 600., 64.)), ((2., 4), (10., 4)));
         assert_eq!((tick(0.3 / 900., 64.), tick(3600. / 600., 64.)), ((0.05, 5), (500., 5)));
         assert_eq!((tick(1. / 64., 64.), tick(0.75 / 210., 40.)), ((1., 4), (0.2, 4)));
+    }
+
+    #[test]
+    fn finds_the_row_under_the_pointer() {
+        let slots = [
+            (0, "", LAYER),
+            (1, "", LAYER),
+            (1, "x", ATTR),
+            (1, "y", ATTR),
+            (1, "-", ATTR),
+            (2, "", LAYER),
+        ];
+        assert_eq!(
+            (hit(&slots, 0.), hit(&slots, 19.9), hit(&slots, 20.)),
+            (Some((0, "")), Some((0, "")), Some((1, "")))
+        );
+        assert_eq!(
+            (hit(&slots, 41.), hit(&slots, 60.), hit(&slots, 80.)),
+            (Some((1, "x")), Some((1, "y")), Some((1, "-")))
+        );
+        assert_eq!(
+            (hit(&slots, 100.), hit(&slots, 117.), hit(&slots, -1.)),
+            (Some((2, "")), None, None)
+        );
+        assert_eq!(
+            (top(&slots, (1, "y")), top(&slots, (2, "")), top(&slots, (9, ""))),
+            (59., 97., 117.)
+        );
     }
 
     #[test]

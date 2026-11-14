@@ -236,6 +236,14 @@ impl Origami {
             self.future.clear();
         }
         self.eyeing = false;
+        match self.cord.take() {
+            Some(c) if c.still() => {
+                let shut = self.shut == "follow" && self.tie == Some(c.to);
+                (self.menu, self.tie) = (if shut { "" } else { "follow" }, Some(c.to));
+            }
+            Some(c) => drop(c.over.map(|from| self.bind(c.to, from))),
+            None => {}
+        }
         let Some((_, c, _, dt)) = self.drag.take() else {
             return;
         };
@@ -256,6 +264,9 @@ impl Origami {
             return;
         }
         let (d, t, per) = (e.delta.pixel_delta(px(16.)), self.at(e.position.x, window), self.per_px(window));
+        if self.web {
+            return self.roam = (self.roam.0 - f32::from(d.x), self.roam.1 - f32::from(d.y));
+        }
         if self.motion && t < self.pan {
             return self.lift -= f32::from(d.y);
         }

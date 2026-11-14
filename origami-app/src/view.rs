@@ -36,6 +36,7 @@ const HELP: &str =
 click the script to type in it, cmd+s saves and applies, esc leaves     scroll zooms the timeline     drag pane edges to resize     cmd+ cmd-  code size     cmd+0  reset layout     cmd+f  search
 Motion tab: click a clip to open its properties, drag a number sideways to change it, click a diamond to add or remove a key at the playhead
 click a key for its time, value and ease, drag it to move it, delete removes it     Graph Editor: drag keys and curve handles
+drag a property's dot onto another clip's property to make it follow, or click the dot to pick one; click the chip to break it     Graph tab: what follows what
 Program: click text, a shape or a placed clip to select it, drag it to move it; with keys on its position the drag sets a key at the playhead
 fold code with the gutter arrows, cmd+opt+[ and cmd+opt+], or za zM zR in vim keys     esc  vim keys, i  back
 h l  frame        H L  second       w b  clip boundary    0 $ gg G  start, end
@@ -281,21 +282,27 @@ impl Origami {
             self.tool("export", cx, |t, _, cx| t.run("export out.mp4", cx)),
         ];
         let side = || div().flex_1().flex().items_center().text_size(px(20.));
-        let page = |label: &'static str, motion: bool| {
+        let page = |label: &'static str, motion: bool, web: bool| {
             div()
                 .cursor_pointer()
-                .text_color(rgb(if self.motion == motion { TEXT } else { DIM }))
+                .text_color(rgb(if (self.motion, self.web) == (motion, web) { TEXT } else { DIM }))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
-                        this.motion = motion;
+                        (this.motion, this.web) = (motion, web);
                         cx.stop_propagation();
                         cx.notify();
                     }),
                 )
                 .child(label)
         };
-        tab(div().flex().gap_4().child(page("Timeline", false)).child(page("Motion", true)))
+        let pages = div()
+            .flex()
+            .gap_4()
+            .child(page("Timeline", false, false))
+            .child(page("Motion", true, false))
+            .child(page("Graph", false, true));
+        tab(pages)
             .relative()
             .child(
                 side()
@@ -470,10 +477,11 @@ impl Origami {
         [ruler].into_iter().chain(rows).chain([line, flag]).collect()
     }
 
-    fn timeline(&mut self, tl: &Timeline, focus: Option<&Clip>, per: f64, cx: &mut Context<Self>) -> Div {
-        let body = match self.motion {
-            true => self.scene(per, cx),
-            false => self.strips(tl, focus, per, cx),
+    fn timeline(&mut self, tl: &Timeline, focus: Option<&Clip>, per: f64, wide: f32, cx: &mut Context<Self>) -> Div {
+        let body = match (self.web, self.motion) {
+            (true, _) => vec![self.web((wide, self.dock), cx)],
+            (_, true) => self.scene(per, cx),
+            _ => self.strips(tl, focus, per, cx),
         };
         div()
             .relative()
@@ -1035,6 +1043,7 @@ impl Render for Origami {
                 this.kept = this.knobbed.take();
                 this.offers.1.clear();
                 this.shut = mem::take(&mut this.menu);
+                this.note.clear();
                 cx.notify();
             }))
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, window, cx| {
@@ -1050,6 +1059,9 @@ impl Render for Origami {
                     cx.notify();
                 } else if this.turning.is_some() {
                     this.turn(e.position, window);
+                    cx.notify();
+                } else if this.cord.is_some() {
+                    this.haul(e.position, window);
                     cx.notify();
                 } else if this.slip.is_some() {
                     this.slide(e.position);
@@ -1099,7 +1111,13 @@ impl Render for Origami {
                         .min_w_0()
                         .child(tab("Program"))
                         .child(stage)
-                        .child(self.timeline(&tl, focus.as_ref(), self.per_px(window), cx)),
+                        .child(self.timeline(
+                            &tl,
+                            focus.as_ref(),
+                            self.per_px(window),
+                            f32::from(window.viewport_size().width) - self.side,
+                            cx,
+                        )),
                 )
                 .child(self.script(focus.as_ref(), rows, cx)),
         )
@@ -1113,6 +1131,8 @@ impl Render for Origami {
         .children(self.knobs(window, cx))
         .children(self.keyed(window, cx))
         .children(self.fonts(window, cx))
+        .children(self.wires(window, cx))
+        .children(self.cable())
         .children(self.tip(window).map(|(tip, text)| {
             tip.occlude().cursor_pointer().on_mouse_down(
                 MouseButton::Left,
