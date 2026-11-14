@@ -21,7 +21,7 @@ pub enum Turn {
     Point(usize),
 }
 
-const PAD: f32 = 150.;
+const PAD: f32 = 200.;
 pub const TRACK: f32 = 160.;
 const CURVES: [&str; 6] = ["curve", "hueVsSat", "hueVsHue", "hueVsLuma", "lumaVsSat", "satVsSat"];
 
@@ -255,6 +255,33 @@ fn part(k: &Knob) -> f32 {
     ((k.value - k.lo) / (k.hi - k.lo)).clamp(0., 1.) as f32
 }
 
+fn graft(line: &str, found: &[Knob], x: f64, y: f64) -> (String, usize) {
+    let (j, text) = (
+        found.chunks_exact(2).filter(|p| p[0].value < x).count(),
+        format!("[{}, {}]", show(x, 0., 1.), show(y, 0., 1.)),
+    );
+    let mut line = line.to_string();
+    match found.get(j * 2) {
+        Some(k) => line.insert_str(line[..k.span.0].rfind('[').unwrap_or(k.span.0), &(text + ", ")),
+        None => {
+            let end = found.last().map_or(0, |k| k.span.1);
+            line.insert_str(end + line[end..].find(']').map_or(0, |i| i + 1), &format!(", {text}"));
+        }
+    }
+    (line, j)
+}
+
+fn prune(line: &str, found: &[Knob], j: usize) -> String {
+    let (a, b) = (found[j * 2].span.0, found[j * 2 + 1].span.1);
+    let (mut a, mut b) = (line[..a].rfind('[').unwrap_or(a), b + line[b..].find(']').map_or(0, |i| i + 1));
+    match line[b..].starts_with(", ") {
+        true => b += 2,
+        false if line[..a].ends_with(", ") => a -= 2,
+        false => {}
+    }
+    format!("{}{}", &line[..a], &line[b..])
+}
+
 fn show(v: f64, lo: f64, hi: f64) -> String {
     match hi - lo >= 50. {
         true => format!("{}", v.round()),
@@ -341,7 +368,8 @@ impl Origami {
         }
         let (w, h) = (f32::from(window.viewport_size().width), f32::from(window.viewport_size().height));
         let pad = found.iter().any(|k| k.label == "hue" || k.label == "#") || CURVES.contains(&call.as_str());
-        let tall = found.len() as f32 * 24. + 20. + if pad { PAD + 10. } else { 0. };
+        let rows = if CURVES.contains(&call.as_str()) { 1 } else { found.len() };
+        let tall = rows as f32 * 24. + 20. + if pad { PAD + 10. } else { 0. };
         let col = self.lines[row][..name].chars().count() as f32;
         let y = self.head() + (top..row).filter(|i| !hidden[*i]).count() as f32 * self.row();
         let x = (w - self.side + self.inset() + col * self.glyph()).min(w - 344.);
@@ -448,7 +476,7 @@ impl Origami {
                         .inset_0()
                         .child(img(self.strips[i.saturating_sub(2)].clone()).size_full())
                 });
-                let handle = |p: &(f32, f32)| dot(p.0, p.1, 10.).bg(rgb(ink)).border_1().border_color(rgb(0x1b1f25));
+                let handle = |p: &(f32, f32)| dot(p.0, p.1, 14.).bg(rgb(ink)).border_2().border_color(rgb(0x1b1f25));
                 let handles: Vec<Div> = points.iter().map(handle).collect();
                 let rule = |i: usize| {
                     div().absolute().bg(rgba(BORDER << 8 | 0x90)).map(|d| match i < 3 {
@@ -488,7 +516,7 @@ impl Origami {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, e: &MouseDownEvent, window, cx| {
-                    let Some(((x, y, _, _), (_, call, _, found))) = this.origin(window).zip(this.panel()) else {
+                    let Some(((x, y, _, _), (row, call, _, found))) = this.origin(window).zip(this.panel()) else {
                         return;
                     };
                     let (fx, fy) = (
@@ -497,10 +525,26 @@ impl Origami {
                     );
                     let near = |p: &[Knob]| (part(&p[0]) - fx).hypot(part(&p[1]) - fy);
                     let nearest = found.chunks_exact(2).enumerate().min_by(|a, b| near(a.1).total_cmp(&near(b.1)));
-                    this.hold(match CURVES.contains(&call.as_str()) {
-                        true => Turn::Point(nearest.map_or(0, |n| n.0)),
-                        false => Turn::Wheel,
-                    });
+                    let hit = nearest.filter(|n| near(n.1) < 0.07).map(|n| n.0);
+                    let curve = CURVES.contains(&call.as_str());
+                    this.hold(Turn::Wheel);
+                    match (curve, hit) {
+                        (false, _) => {}
+                        (_, Some(j)) if e.click_count == 2 => {
+                            if found.len() > 4 {
+                                this.lines[row] = prune(&this.lines[row], &found, j);
+                            }
+                            this.turning = None;
+                            this.store();
+                            return cx.stop_propagation();
+                        }
+                        (_, Some(j)) => this.turning = Some(Turn::Point(j)),
+                        (_, None) => {
+                            let at = |k: &Knob, f: f32| k.lo + (f.clamp(0., 1.) as f64) * (k.hi - k.lo);
+                            let (line, j) = graft(&this.lines[row], &found, at(&found[0], fx), at(&found[1], fy));
+                            (this.lines[row], this.turning) = (line, Some(Turn::Point(j)));
+                        }
+                    }
                     this.turn(e.position, window);
                     cx.stop_propagation();
                     cx.notify();
@@ -523,7 +567,18 @@ impl Origami {
                 }),
             )
         });
-        let rows: Vec<Div> = rows.collect();
+        let rows: Vec<Div> = match curve {
+            true => vec![
+                div()
+                    .h(px(24.))
+                    .flex()
+                    .items_center()
+                    .text_size(px(11.))
+                    .text_color(rgb(DIM))
+                    .child("drag a point \u{b7} click to add \u{b7} double-click to remove"),
+            ],
+            false => rows.collect(),
+        };
         Some(
             div()
                 .absolute()
@@ -571,6 +626,18 @@ mod tests {
         );
         assert_eq!(labels("c.curve(\"luma\", [[0, 0], [0.5, 0.6]])", 3).len(), 4);
         assert!(labels("video(\"a2.mp4\")", 2).is_empty());
+        let line = "c.curve(\"red\", [[0, 0], [0.45, 0.53], [1, 1]])";
+        let found = knobs(line, 3).unwrap().3;
+        assert_eq!(
+            graft(line, &found, 0.2, 0.3),
+            ("c.curve(\"red\", [[0, 0], [0.2, 0.3], [0.45, 0.53], [1, 1]])".into(), 1)
+        );
+        assert_eq!(
+            graft(line, &found, 1.5, 0.3).0,
+            "c.curve(\"red\", [[0, 0], [0.45, 0.53], [1, 1], [1.5, 0.3]])"
+        );
+        assert_eq!(prune(line, &found, 1), "c.curve(\"red\", [[0, 0], [1, 1]])");
+        assert_eq!(prune(line, &found, 2), "c.curve(\"red\", [[0, 0], [0.45, 0.53]])");
         assert_eq!(
             labels("color(\"#282c33\").for(5)", 2),
             [("#".into(), 0x282c33 as f64), ("strength".into(), 1.)]
