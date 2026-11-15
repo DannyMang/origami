@@ -129,6 +129,10 @@ pub struct Timeline {
     pub fps: u32,
     pub size: (u32, u32),
     pub duration: f64,
+    #[serde(default)]
+    pub preview: String,
+    #[serde(default)]
+    pub proxy: bool,
     pub clips: Vec<Clip>,
 }
 
@@ -667,6 +671,32 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         let old: Timeline = serde_json::from_value(old).unwrap();
         assert_eq!((old.clips[4].clone(), old.clips[0].radius), (c[4].clone(), 0.));
         assert_eq!(serde_json::from_value::<Timeline>(json).unwrap(), t);
+    }
+
+    // Preview quality and sidecar scrubbing are set in settings and reach the timeline; a value that
+    // is not one of the choices names the line it is on.
+    #[test]
+    fn settings_check_their_values() {
+        let t = tl("settings({ fps: 24 })\ntext('a')");
+        assert_eq!((t.fps, t.preview.as_str(), t.proxy), (24, "auto", true));
+        let t = tl("settings({ preview: 'half', proxy: false })\ntext('half')");
+        assert_eq!((t.preview.as_str(), t.proxy), ("half", false));
+        for (src, says) in [
+            (
+                "text('a')\nsettings({ preview: 'big' })",
+                "line 2: preview is \"auto\", \"full\", \"half\" or \"quarter\"",
+            ),
+            (
+                "settings({ fps: 30 })\n\nsettings({ proxy: 'no' })\ntext('a')",
+                "line 3: proxy is true or false",
+            ),
+        ] {
+            let dir = std::env::temp_dir().join(format!("origami-settings-{}", src.len()));
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("edit.js"), src).unwrap();
+            let e = eval(&dir.join("edit.js"), true, size).unwrap_err().to_string();
+            assert!(e.contains(says), "{e}");
+        }
     }
 
     // A looped clip should repeat back to back, and shift should move all of its repeats later by the

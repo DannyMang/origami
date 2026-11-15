@@ -121,7 +121,7 @@ struct Slot {
     post: &'static str,
 }
 
-fn split(s: &str) -> Vec<&str> {
+pub fn split(s: &str) -> Vec<&str> {
     let (mut out, mut depth, mut quote, mut from) = (vec![], 0, None, 0);
     for (i, c) in s.char_indices() {
         match (quote, c) {

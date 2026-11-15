@@ -31,7 +31,11 @@ const fn method(name: &'static str, args: &'static str, about: &'static str) -> 
 }
 
 pub const DEFS: &[Def] = &[
-    global("settings", "{ fps, size }", "Sets frame rate and output size."),
+    global(
+        "settings",
+        "{ fps, size, preview, proxy }",
+        "Sets frame rate and output size. preview is \"auto\", \"full\", \"half\" or \"quarter\"; proxy: false scrubs without camera sidecar files.",
+    ),
     global("video", "path", "Loads a video file."),
     global("sound", "path", "Loads an audio file."),
     global("image", "path", "Loads a still image."),

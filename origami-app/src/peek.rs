@@ -7,7 +7,7 @@ use gpui::{
     App, Bounds, Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent, ObjectFit, PathBuilder, Pixels, RenderImage, StyledImage,
     Window, canvas, div, img, point, prelude::*, px, rgb, rgba,
 };
-use origami_engine::{Player, footprint};
+use origami_engine::{Player, Preview, footprint};
 use origami_lang::{Clip, Kind, Timeline};
 use std::{sync::Arc, time::Instant};
 
@@ -20,6 +20,7 @@ pub struct Peek {
     run: Option<(Instant, f64, Option<Player>)>,
     image: Option<Arc<RenderImage>>,
     shown: Option<i64>,
+    rough: bool,
     busy: bool,
 }
 
@@ -32,6 +33,7 @@ impl Peek {
             run: None,
             image: None,
             shown: None,
+            rough: false,
             busy: false,
         }
     }
@@ -57,6 +59,8 @@ impl Origami {
                 fps: self.tl.fps,
                 size: self.tl.size,
                 duration: clip.end,
+                preview: self.tl.preview.clone(),
+                proxy: self.tl.proxy,
                 clips: vec![clip],
             };
             return self.peek = Some(Peek::new(row, tl));
@@ -101,23 +105,25 @@ impl Origami {
         }
         let fps = p.tl.fps.max(1) as f64;
         let want = (p.t * fps).round() as i64;
-        if p.busy || p.shown == Some(want) || !p.tl.clips.iter().any(|c| c.video) {
+        if p.busy || p.shown == Some(want) && !(p.rough && !self.eyeing) || !p.tl.clips.iter().any(|c| c.video) {
             return;
         }
         p.busy = true;
-        let (scout, tl) = (self.scout.clone(), p.tl.clone());
+        let (scout, tl, fast) = (self.scout.clone(), p.tl.clone(), self.eyeing && p.tl.proxy);
+        let (w, h) = Preview::size(&tl, (WIDE * self.dense) as f64, false);
         cx.spawn(async move |this, cx| {
-            let w = (WIDE as usize * 2).min(tl.size.0 as usize) & !1;
-            let ((w, h), job) = ((w, (w * tl.size.1 as usize / tl.size.0.max(1) as usize).max(2) & !1), tl.clone());
-            let px = cx
-                .background_executor()
-                .spawn(async move { scout.lock().unwrap().frame(&job, want as f64 / fps, (w, h)) })
-                .await;
+            let job = tl.clone();
+            let draw = async move {
+                let mut scout = scout.lock().unwrap();
+                scout.fast = fast;
+                (scout.frame(&job, want as f64 / fps, (w, h)), scout.rough)
+            };
+            let (px, rough) = cx.background_executor().spawn(draw).await;
             this.update(cx, |this, cx| {
                 let image = bitmap(px, w, h);
                 let old = match this.peek.as_mut().filter(|p| Arc::ptr_eq(&p.tl, &tl)) {
                     Some(p) => {
-                        (p.busy, p.shown) = (false, Some(want));
+                        (p.busy, p.shown, p.rough) = (false, Some(want), rough);
                         p.image.replace(image)
                     }
                     None => Some(image),

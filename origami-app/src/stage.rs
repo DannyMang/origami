@@ -4,7 +4,7 @@ use crate::{
     view::{INK, TEXT},
 };
 use gpui::{Bounds, PathBuilder, Pixels, Point, Window, point, px, quad, rgb, size};
-use origami_engine::{Preview, place, seat};
+use origami_engine::{place, seat};
 use origami_lang::{Clip, Kind, Val};
 
 type Quad = ((f64, f64), (f64, f64), f64);
@@ -91,7 +91,8 @@ pub fn draw(marks: &Marks, sheet: Bounds<Pixels>, window: &mut Window) {
 
 impl Origami {
     pub fn sheet(&self) -> Bounds<Pixels> {
-        letterbox(self.stage, if self.full { 0. } else { 12. }, Preview::size(&self.tl))
+        let size = (self.tl.size.0 as usize, self.tl.size.1 as usize);
+        letterbox(self.stage, if self.full { 0. } else { 12. }, size)
     }
 
     fn quad(&self, c: &Clip) -> Quad {

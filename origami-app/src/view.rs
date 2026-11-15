@@ -9,7 +9,6 @@ use gpui::{
     MouseMoveEvent, ObjectFit, ParentElement, PathBuilder, Pixels, Render, ScrollWheelEvent, Styled, StyledImage, StyledText, Window,
     canvas, deferred, div, img, point, prelude::*, px, relative, rgb, rgba,
 };
-use origami_engine::Preview;
 use origami_lang::{Clip, Kind, Timeline};
 use std::{mem, ops::Range, time::Instant};
 
@@ -309,6 +308,7 @@ impl Origami {
             self.tool("smaller code", cx, |t, _, _| t.scale(-1.)),
             self.tool("reset layout", cx, |t, _, _| t.reset()),
             self.tool("export", cx, |t, _, cx| t.run("export out.mp4", cx)),
+            self.quality(cx),
         ];
         let side = || div().flex_1().flex().items_center().text_size(px(20.));
         let page = |label: &'static str, motion: bool, web: bool| {
@@ -1049,9 +1049,9 @@ impl Render for Origami {
         let h = f32::from(window.viewport_size().height);
         let rows = ((h - self.head() - 28.) / self.row()).ceil().max(0.) as usize;
         let (me, image, marks) = (cx.weak_entity(), self.image.clone(), self.marks());
-        let (pad, size) = (if self.full { 0. } else { 12. }, Preview::size(&tl));
-        let seen = move |b: Bounds<Pixels>, _: &mut Window, cx: &mut App| {
-            let _ = me.update(cx, |this, _| this.stage = b);
+        let (pad, size) = (if self.full { 0. } else { 12. }, (tl.size.0 as usize, tl.size.1 as usize));
+        let seen = move |b: Bounds<Pixels>, window: &mut Window, cx: &mut App| {
+            let _ = me.update(cx, |this, _| (this.stage, this.dense) = (b, window.scale_factor()));
         };
         let show = move |b: Bounds<Pixels>, _, window: &mut Window, _: &mut App| {
             let sheet = letterbox(b, pad, size);

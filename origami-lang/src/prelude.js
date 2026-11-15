@@ -1,9 +1,9 @@
 (() => {
   const T = t => typeof t === 'number' ? t : String(t).split(':').reduce((a, x) => a * 60 + +x, 0)
-  const S = { fps: 30, size: null }
+  const S = { fps: 30, size: null, preview: 'auto', proxy: true }
   let L = {}, at = 0, N = 0, P = [], D = 0, W = [1, 1]
   const M = new Map(), reads = ['x', 'y', 'scale', 'rotate', 'opacity']
-  const digits = /^\d+$/, named = /(?:const|let|var)\s+(\w+)\s*=/, made = 'video sound image text captions caption color', bare = 'keys rect line add mul'
+  const digits = /^\d+$/, named = /(?:const|let|var)\s+(\w+)\s*=/, made = 'video sound image text captions caption color', bare = 'keys rect line add mul settings'
   const line = g => new Proxy(g(0), { get: (t, n) => digits.test(String(n)) ? g(+n) : t[n] })
   const anim = (k, v) => {
     if (v?.of) {
@@ -153,7 +153,11 @@
       return B(y1, y2, (lo + hi) / 2)
     },
     delay: (v, s) => (t, d, T) => v(t - s, d, T - s),
-    settings: o => { Object.assign(S, o) },
+    settings: line(n => o => {
+      if (!['auto', 'full', 'half', 'quarter'].includes(o?.preview ?? 'auto')) throw new Error(`line ${n}: preview is "auto", "full", "half" or "quarter"`)
+      if (typeof (o?.proxy ?? true) !== 'boolean') throw new Error(`line ${n}: proxy is true or false`)
+      Object.assign(S, o)
+    }),
     video: file('video', m => ({ video: m.video, audio: m.audio, out: m.dur, total: m.dur })),
     sound: file('sound', m => ({ video: false, audio: m.audio, out: m.dur, total: m.dur })),
     image: file('image', () => ({ video: true, audio: false })),
@@ -248,6 +252,6 @@
     const first = P.find(c => c.kind === 'video' && c.w)
     W = (S.size ?? (first ? [first.w, first.h] : [1920, 1080])).map(even)
     D = Math.max(0, ...P.map(c => c.end))
-    return JSON.stringify({ fps: S.fps, size: W, duration: D, clips: P.map(ir) })
+    return JSON.stringify({ fps: S.fps, size: W, duration: D, preview: S.preview, proxy: S.proxy, clips: P.map(ir) })
   }
 })()

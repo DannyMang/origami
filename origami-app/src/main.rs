@@ -13,6 +13,7 @@ mod peek;
 mod scene;
 mod search;
 mod stage;
+mod tune;
 mod view;
 mod voice;
 mod web;
@@ -94,6 +95,7 @@ struct Origami {
     key: Option<(u32, &'static str, usize)>,
     slip: Option<motion::Slip>,
     stage: Bounds<Pixels>,
+    dense: f32,
     disc: Arc<RenderImage>,
     strips: [Arc<RenderImage>; 3],
     finding: Option<String>,
@@ -131,7 +133,8 @@ struct Origami {
     help: bool,
     preview: Arc<Mutex<Preview>>,
     image: Option<Arc<RenderImage>>,
-    shown: Option<(i64, usize)>,
+    shown: Option<(i64, usize, (usize, usize))>,
+    rough: bool,
     busy: bool,
     reading: bool,
     clash: bool,
@@ -275,23 +278,30 @@ impl Origami {
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) -> bool {
-        let want = ((self.t * self.fps()).round() as i64, self.rev);
-        if self.busy || self.shown == Some(want) || self.tl.duration <= 0. {
+        let (wide, still) = (
+            f32::from(self.sheet().size.width) * self.dense,
+            self.player.is_none() && !self.scrubbing,
+        );
+        let (w, h) = Preview::size(&self.tl, wide as f64, still);
+        let want = ((self.t * self.fps()).round() as i64, self.rev, (w, h));
+        if self.busy || self.shown == Some(want) && !(self.rough && still) || self.tl.duration <= 0. || wide <= 0. {
             return false;
         }
         self.busy = true;
+        let (scrub, hop) = (self.tl.proxy && self.scrubbing, self.tl.proxy && still && self.shown != Some(want));
         let (preview, tl, t) = (self.preview.clone(), self.tl.clone(), want.0 as f64 / self.fps());
         cx.spawn(async move |this, cx| {
-            let (w, h) = Preview::size(&tl);
-            let px = cx
-                .background_executor()
-                .spawn(async move { preview.lock().unwrap().frame(&tl, t, (w, h)) })
-                .await;
+            let draw = async move {
+                let mut preview = preview.lock().unwrap();
+                preview.fast = scrub || hop && !preview.ready(&tl, t, (w, h));
+                (preview.frame(&tl, t, (w, h)), preview.rough)
+            };
+            let (px, rough) = cx.background_executor().spawn(draw).await;
             this.update(cx, |this, cx| {
                 if let Some(old) = this.image.replace(bitmap(px, w, h)) {
                     cx.drop_image(old, None);
                 }
-                (this.busy, this.shown) = (false, Some(want));
+                (this.busy, this.shown, this.rough) = (false, Some(want), rough);
                 this.refresh(cx);
                 cx.notify();
             })
@@ -426,6 +436,7 @@ fn fresh(focus: FocusHandle, recent: Vec<PathBuf>) -> Origami {
         key: None,
         slip: None,
         stage: Bounds::default(),
+        dense: 1.,
         disc: bitmap(knob::disc(), 300, 300),
         strips: [0, 1, 2].map(|kind| bitmap(knob::strip(kind), 150, 150)),
         finding: None,
@@ -464,6 +475,7 @@ fn fresh(focus: FocusHandle, recent: Vec<PathBuf>) -> Origami {
         preview: Arc::default(),
         image: None,
         shown: None,
+        rough: false,
         busy: false,
         reading: false,
         clash: false,
