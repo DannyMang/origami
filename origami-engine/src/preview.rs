@@ -17,6 +17,7 @@ use std::{
 
 type Key = (String, usize, usize);
 type Px = Arc<Vec<u8>>;
+type Laid = Arc<(Vec<Glyph>, usize, usize)>;
 
 type Info = (&'static [&'static str], f64, f64);
 
@@ -158,6 +159,10 @@ fn nudge(px: &[u8], w: usize, (fx, fy): (f64, f64)) -> Vec<u8> {
     out
 }
 
+fn kept<V: Clone>(now: &mut HashMap<String, V>, was: &mut HashMap<String, V>, key: String, make: impl FnOnce() -> V) -> V {
+    now.entry(key).or_insert_with_key(|k| was.remove(k).unwrap_or_else(make)).clone()
+}
+
 fn index(c: &Clip, t: f64, fps: f64, rate: f64) -> i64 {
     let (step, at) = (fps / rate / c.speed, (t - c.start) * fps);
     let last = ((c.end - c.start) * fps / step - 1e-6).ceil() - 1.;
@@ -183,7 +188,9 @@ pub struct Preview {
     frames: LruCache<(Key, i64), Px>,
     held: usize,
     stills: HashMap<String, Option<Px>>,
-    texts: HashMap<String, Arc<(Vec<Glyph>, usize, usize)>>,
+    texts: HashMap<String, Laid>,
+    was: (HashMap<String, Option<Px>>, HashMap<String, Laid>),
+    at: f64,
     pub room: usize,
     pub fast: bool,
     pub rough: bool,
@@ -197,6 +204,8 @@ impl Default for Preview {
             held: 0,
             stills: HashMap::new(),
             texts: HashMap::new(),
+            was: Default::default(),
+            at: -1.,
             room: 1 << 30,
             fast: false,
             rough: false,
@@ -234,15 +243,31 @@ impl Preview {
         self.decoders.iter().position(|(o, d)| o == key && d.next <= k && k <= d.next + 30)
     }
 
-    pub fn ready(&self, tl: &Timeline, t: f64, (pw, ph): (usize, usize)) -> bool {
+    pub fn ready(&mut self, tl: &Timeline, t: f64, (pw, ph): (usize, usize)) -> bool {
         let (k, shown) = (pw as f64 / tl.size.0 as f64, |c: &&Clip| {
             c.kind == Kind::Video && c.video && c.start <= t && t < c.end
         });
-        tl.clips.iter().filter(shown).all(|c| {
+        let mut all = true;
+        for c in tl.clips.iter().filter(shown) {
             let (tw, th, ..) = place(c, (pw as f64, ph as f64), k);
-            let (key, i, _) = Self::cell(c, t, tl.fps, (tw as usize, th as usize), false);
-            self.frames.contains(&(key.clone(), i)) || self.near(&key, i).is_some()
-        })
+            let (key, i, rate) = Self::cell(c, t, tl.fps, (tw as usize, th as usize), false);
+            if !self.frames.contains(&(key.clone(), i)) && self.near(&key, i).is_none() {
+                all = false;
+                if t != self.at && self.lap(&key, i) == 0 {
+                    self.decoder(&key, i, i, rate);
+                }
+            }
+        }
+        all
+    }
+
+    fn lap(&self, key: &Key, k: i64) -> i64 {
+        let back = self.decoders.iter().any(|(o, d)| o == key && k < d.next && d.next <= k + 60);
+        if back {
+            (self.room / 4 / (key.1 * key.2 * 4).max(1)).min(45) as i64
+        } else {
+            0
+        }
     }
 
     fn decoder(&mut self, key: &Key, k: i64, from: i64, (n, d): (f64, f64)) -> Option<()> {
@@ -262,9 +287,14 @@ impl Preview {
                     "bgra",
                     "-",
                 ];
+                let lrf: &[&str] = match key.0.ends_with(".LRF") {
+                    true => &["-probesize", "32768", "-analyzeduration", "0"],
+                    false => &[],
+                };
                 let child = ffmpeg()
                     .args(["-v", "error"])
                     .args(probe(&key.0).0)
+                    .args(lrf)
                     .args(args)
                     .args(out)
                     .stdin(Stdio::null())
@@ -285,9 +315,7 @@ impl Preview {
             return Some(px.clone());
         }
         let len = key.1 * key.2 * 4;
-        let back = self.decoders.iter().any(|(o, d)| *o == key && k < d.next && d.next <= k + 60);
-        let lap = if back { (self.room / 4 / len.max(1)).min(45) as i64 } else { 0 };
-        self.decoder(&key, k, (k - lap).max(0), rate)?;
+        self.decoder(&key, k, (k - self.lap(&key, k)).max(0), rate)?;
         let (_, mut d) = self.decoders.pop()?;
         while d.next <= k {
             let mut px = vec![0; len];
@@ -310,9 +338,10 @@ impl Preview {
     fn layer(&mut self, c: &Clip, t: f64, fps: u32, size: (usize, usize), k: f64) -> Option<(Px, (usize, usize), (i64, i64))> {
         let (tw, th, x, y) = place(c, (size.0 as f64, size.1 as f64), k);
         let (tw, th) = (tw as usize, th as usize);
-        let px = match c.kind {
+        let (px, base) = match c.kind {
             Kind::Video => {
                 let (key, i, rate) = Self::cell(c, t, fps, (tw, th), self.fast);
+                let base = format!("{key:?}|{i}");
                 let lean = if key.0 == c.src {
                     (0., 0.)
                 } else {
@@ -320,23 +349,32 @@ impl Preview {
                 };
                 self.rough |= lean.0 > 0.;
                 let px = self.video(key, i, rate)?;
-                if lean.0 > 0. { Arc::new(nudge(&px, tw, lean)) } else { px }
+                (if lean.0 > 0. { Arc::new(nudge(&px, tw, lean)) } else { px }, base)
             }
-            Kind::Image => self
-                .stills
-                .entry(format!("{}|{tw}x{th}", c.src))
-                .or_insert_with(|| still(&c.src, 0., tw, th).map(Arc::new))
-                .clone()?,
-            _ => self
-                .stills
-                .entry(format!(
+            Kind::Image => {
+                let base = format!("{}|{tw}x{th}", c.src);
+                (
+                    kept(&mut self.stills, &mut self.was.0, base.clone(), || {
+                        still(&c.src, 0., tw, th).map(Arc::new)
+                    })?,
+                    base,
+                )
+            }
+            _ => {
+                let base = format!(
                     "{}|{}|{}|{}|{}|{}|{:?}|{tw}x{th}",
                     c.src, c.color, c.font, c.background, c.align, c.radius, c.ends
-                ))
-                .or_insert_with(|| Some(Arc::new(shape::image(c, (size.0 as f64, size.1 as f64), k).0)))
-                .clone()?,
+                );
+                let make = || Some(Arc::new(shape::image(c, (size.0 as f64, size.1 as f64), k).0));
+                (kept(&mut self.stills, &mut self.was.0, base.clone(), make)?, base)
+            }
         };
-        let px = c.grade.as_ref().map_or(px.clone(), |g| grade::paint(g, px, (tw, th)));
+        let px = match &c.grade {
+            Some(g) => kept(&mut self.stills, &mut self.was.0, format!("{base}|{g:?}"), || {
+                Some(grade::paint(g, px, (tw, th)))
+            })?,
+            None => px,
+        };
         Some((px, (tw, th), (x as i64, y as i64)))
     }
 
@@ -367,7 +405,7 @@ impl Preview {
             let (glyphs, tw, th) = text::glyphs(c, k, true);
             Arc::new((glyphs.into_iter().map(tint).collect(), tw, th))
         };
-        let text = self.texts.entry(key).or_insert_with(laid).clone();
+        let text = kept(&mut self.texts, &mut self.was.1, key, laid);
         let (glyphs, tw, th) = &*text;
         let (mid, n) = (mid(*tw, *th), (c.shown.at(i) * c.src.chars().count() as f64).round() as usize);
         let own = |p: &Part| {
@@ -413,7 +451,8 @@ impl Preview {
             c.scale.max() > 0. && (c.kind != Kind::Text || c.size > 0.)
         });
         let mut out = [0, 0, 0, 255].repeat(pw * ph);
-        self.rough = false;
+        (self.rough, self.at) = (false, t);
+        self.was = (std::mem::take(&mut self.stills), std::mem::take(&mut self.texts));
         for c in tl.clips.iter().filter(|c| c.video && c.start <= t && t < c.end).filter(drawn) {
             let i = ((t - c.start) * tl.fps as f64).round() as usize;
             let (a, solid) = ((alpha(c, t) * c.opacity.at(i)).clamp(0., 1.), c.kind == Kind::Video);
@@ -520,5 +559,39 @@ mod tests {
             ["full", "half", "quarter"].map(|q| size(1920, 1080, q, 100., false)),
             [(1920, 1080), (960, 540), (480, 270)]
         );
+    }
+
+    // The preview should keep only the text and shape pictures the last frame drew, so a long run of
+    // different titles does not keep growing memory, while a picture that stays on screen is drawn
+    // once.
+    #[test]
+    fn pictures_last_one_frame() {
+        let flash = (0..40).map(|i| Clip {
+            start: i as f64 / 30.,
+            end: (i + 1) as f64 / 30.,
+            color: format!("#{i:02x}0000"),
+            ..clip("rect", "")
+        });
+        let stay = Clip {
+            end: 2.,
+            w: 80,
+            ..clip("rect", "")
+        };
+        let tl = Timeline {
+            fps: 30,
+            size: (200, 100),
+            duration: 2.,
+            clips: flash.chain([stay]).collect(),
+            ..Default::default()
+        };
+        let mut p = Preview::default();
+        let wide = |p: &Preview| p.stills.values().flatten().find(|px| px.len() == 80 * 20 * 4).cloned().unwrap();
+        p.frame(&tl, 0., (200, 100));
+        let first = wide(&p);
+        for i in 1..40 {
+            p.frame(&tl, i as f64 / 30., (200, 100));
+            assert_eq!((p.stills.len(), p.was.0.len()), (2, 1));
+            assert!(Arc::ptr_eq(&first, &wide(&p)));
+        }
     }
 }
