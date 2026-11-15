@@ -67,8 +67,12 @@ fn exact(v: f64) -> String {
     }
 }
 
+fn up(v: f64) -> f64 {
+    (v * 1e9 + 0.5).ceil() / 1e9
+}
+
 fn after(v: f64) -> String {
-    format!("{:.9}", (v * 1e9 + 0.5).ceil() / 1e9)
+    format!("{:.9}", up(v))
 }
 
 fn plain(line: &str) -> &str {
@@ -129,17 +133,21 @@ impl Origami {
         alone
     }
 
-    fn cuts(&self, c: &Clip) -> Option<(f64, f64, f64)> {
-        let (a, b) = (c.src_in, c.src_in + (c.end - c.start) * c.speed);
-        let m = match c.kind {
+    fn cuts(&self, c: &Clip) -> Option<(f64, f64, f64, f64)> {
+        let (a, b, m) = (
+            c.src_in,
+            c.src_in + (c.end - c.start) * c.speed,
+            c.src_in + (self.t - c.start) * c.speed,
+        );
+        let (m, n) = match c.kind {
             Kind::Video => Preview::seam(c, self.t, self.tl.fps),
-            _ => a + (self.t - c.start) * c.speed,
+            _ => (m, m),
         };
         let inside = c.start < self.t && self.t < c.end && matches!(c.kind, Kind::Video | Kind::Sound);
-        (inside && m - a >= 0.04 && b - m >= 0.04).then_some((a, m, b))
+        (inside && n - a >= 0.04 && b - m >= 0.04).then_some((a, m, n, b))
     }
 
-    fn echo(&mut self, c: &Clip, rows: Range<usize>, by: f64, cut: Option<(f64, f64, f64)>, verb: &str) {
+    fn echo(&mut self, c: &Clip, rows: Range<usize>, by: f64, cut: Option<(f64, f64, f64, f64)>, verb: &str) {
         let mut next = self.lines[rows.clone()].to_vec();
         let (n, def) = (next.len() as u32, (c.home as usize).saturating_sub(1).min(rows.start));
         let chain = |(i, l): &(usize, &String)| *i == 0 || l.trim_start().starts_with('.');
@@ -157,12 +165,13 @@ impl Origami {
             );
         };
         let dyadic = |v: &f64| (v * 1024.).fract() == 0.;
-        let fine = cut.is_none_or(|(a, m, _)| [a, m, c.start].iter().all(dyadic) && c.speed.log2().fract() == 0.);
+        let fine = cut.is_none_or(|(a, m, s, _)| [a, m, s, c.start].iter().all(dyadic) && c.speed.log2().fract() == 0.);
         self.change(|this| {
-            if let Some((a, m, b)) = cut {
-                let m = if fine { format!("{m:.3}") } else { after(m) };
-                set(&mut next, n, "trim", |_| format!("{m}, {}", exact(b)));
-                set(&mut this.lines, c.line, "trim", |_| format!("{}, {m}", exact(a)));
+            if let Some((a, m, s, b)) = cut {
+                let put = |v: f64| if fine { format!("{v:.3}") } else { after(v) };
+                let b = if m == s { exact(b) } else { after(b - up(m) + up(s)) };
+                set(&mut next, n, "trim", |_| format!("{}, {b}", put(s)));
+                set(&mut this.lines, c.line, "trim", |_| format!("{}, {}", exact(a), put(m)));
             }
             if !(cat && c.video && timed.is_none()) {
                 let at = old + by;

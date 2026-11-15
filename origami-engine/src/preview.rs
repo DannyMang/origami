@@ -211,6 +211,33 @@ fn index(c: &Clip, t: f64, fps: f64, (n, d, tb): (f64, f64, f64), dur: f64) -> i
     (first + i.min(last).max(0.)) as i64
 }
 
+fn seam(c: &Clip, t: f64, fps: f64, (n, d, tb): (f64, f64, f64), dur: f64) -> (f64, f64) {
+    let at = |c: &Clip, t: f64| index(c, t, fps, (n, d, tb), dur);
+    let (i, first) = (at(c, t), (c.src_in * n / d - 1e-6).ceil());
+    let cut = |i: i64| c.src_in + (i as f64 - first) * d / n;
+    let before = (((c.start + (cut(i) - c.src_in) / c.speed - 1e-6) * fps).ceil() - 1.) / fps;
+    if at(c, before) != i {
+        return (cut(i), cut(i));
+    }
+    let late = cut(i) + if tb > 0. { 0.6 / tb } else { 1e-4 };
+    let two = Clip {
+        start: c.start + (late - c.src_in) / c.speed,
+        src_in: cut(i),
+        ..c.clone()
+    };
+    match (1..12).map(|j| before + j as f64 / fps).all(|t| at(&two, t) == at(c, t)) {
+        true => (late, cut(i)),
+        false => (cut(i + 1), cut(i + 1)),
+    }
+}
+
+fn rate(src: &str, fps: f64) -> (f64, f64, f64) {
+    match probe(src) {
+        (_, _, n, d, _, tb, _) if n > 0. && d > 0. => (n, d, tb),
+        _ => (fps, 1., 0.),
+    }
+}
+
 struct Decoder {
     child: Child,
     next: i64,
@@ -276,16 +303,12 @@ impl Preview {
         } else {
             c.src.clone()
         };
-        let (n, d, tb) = match probe(&src) {
-            (_, _, n, d, _, tb, _) if n > 0. && d > 0. => (n, d, tb),
-            _ => (fps, 1., 0.),
-        };
+        let (n, d, tb) = rate(&src, fps);
         ((src, tw, th), index(c, t, fps, (n, d, tb), probe(&c.src).4), (n, d))
     }
 
-    pub fn seam(c: &Clip, t: f64, fps: u32) -> f64 {
-        let (_, i, (n, d)) = Self::cell(c, t, fps, (0, 0), false);
-        c.src_in + (i as f64 - (c.src_in * n / d - 1e-6).ceil()) * d / n
+    pub fn seam(c: &Clip, t: f64, fps: u32) -> (f64, f64) {
+        seam(c, t, fps as f64, rate(&c.src, fps as f64), probe(&c.src).4)
     }
 
     fn renew(&mut self, src: &str) {
@@ -639,49 +662,76 @@ mod tests {
         assert_eq!(see((0.05, 3.05, 0., 1.), 60., (24., 1., 0.), &[5, 60]), [0, 22]);
     }
 
-    // Splitting a clip should cut it where the source frame shown at the playhead starts, so the two
-    // pieces, and the clip after them, show the same frame on every timeline frame as before, at any
-    // playhead position and speed, with the cut written a nanosecond late as the app writes it.
+    // Splitting a clip in a cat( ) should keep the playhead frame and leave every other timeline frame,
+    // of both pieces and of the clip after them, showing the source frame it showed before, at common
+    // source rates and time bases and any speed and trim, with the cuts written as the app writes them,
+    // except a few 24 fps frames that no cut can keep along with the playhead frame and 60 fps frames
+    // half-way between timeline frames that float rounding of the next clip's start moves either way.
     #[test]
     fn seams_keep_every_frame() {
-        let shown = |clips: &[Clip], t: f64| clips.iter().find(|c| live(c, t)).map(|c| index(c, t, 30., (30., 1., 15360.), 0.));
-        for (speed, src_in, len) in [(0.5, 0., 3.), (1., 0.51, 2.9), (2., 0.1, 3.), (1.5, 0., 2.)] {
-            let c = Clip {
-                end: len,
-                src_in,
-                speed,
-                ..clip("video", "")
-            };
-            let next = Clip {
-                start: len,
-                end: len + 1.,
-                ..clip("video", "")
-            };
-            for k in 1..(len * 30.) as usize {
-                let m = (Preview::seam(&c, k as f64 / 30., 30) * 1e9 + 0.5).ceil() / 1e9;
-                let (cut, rest) = ((m - src_in) / speed, (src_in + len * speed - m) / speed);
-                let one = Clip { end: cut, ..c.clone() };
-                let two = Clip {
-                    start: cut,
-                    end: cut + rest,
-                    src_in: m,
-                    ..c.clone()
+        let ns = |v: f64| (v * 1e9 + 0.5).ceil() / 1e9;
+        let rates = [
+            (30000., 1001., 30000.),
+            (30., 1., 15360.),
+            (25., 1., 12800.),
+            (24., 1., 12288.),
+            (60., 1., 15360.),
+        ];
+        let mut changed = vec![];
+        for rate in rates {
+            let shown = |clips: &[Clip], t: f64| clips.iter().find(|c| live(c, t)).map(|c| index(c, t, 30., rate, 0.));
+            let mut bad = 0;
+            for (speed, src_in, start, len) in [
+                (0.5, 0., 0., 3.),
+                (0.5, 0.37, 0.2, 2.),
+                (1., 0., 0., 3.),
+                (1., 0.51, 0.7, 2.9),
+                (1.5, 0., 1.234, 2.),
+                (1.5, 0.2, 0., 2.5),
+                (2., 0.1, 0., 3.),
+                (2., 0., 0.5, 2.),
+            ] {
+                let b = src_in + len * speed;
+                let c = Clip {
+                    start,
+                    end: start + (b - src_in) / speed,
+                    src_in,
+                    speed,
+                    ..clip("video", "")
                 };
-                let after = Clip {
-                    start: cut + rest,
-                    end: cut + rest + 1.,
-                    ..next.clone()
+                let next = Clip {
+                    start: c.end,
+                    end: c.end + 1.,
+                    ..clip("video", "")
                 };
-                for j in 0..((len + 1.) * 30.) as usize {
-                    let t = j as f64 / 30.;
-                    let (was, now) = (
-                        shown(&[c.clone(), next.clone()], t),
-                        shown(&[one.clone(), two.clone(), after.clone()], t),
-                    );
-                    assert_eq!(now, was, "{speed} {k} {j}");
+                for k in (start * 30.).ceil() as usize + 1..(c.end * 30.) as usize {
+                    let (m, n) = seam(&c, k as f64 / 30., 30., rate, 0.);
+                    let b = if m == n { b } else { ns(b - ns(m) + ns(n)) };
+                    let (p, q) = ((ns(m) - src_in) / speed, (b - ns(n)) / speed);
+                    let one = Clip {
+                        end: start + p,
+                        ..c.clone()
+                    };
+                    let two = Clip {
+                        start: one.end,
+                        end: start + (p + q),
+                        src_in: ns(n),
+                        ..c.clone()
+                    };
+                    let after = Clip {
+                        start: two.end,
+                        end: two.end + 1.,
+                        ..next.clone()
+                    };
+                    let (was, now) = ([c.clone(), next.clone()], [one, two, after]);
+                    let same = |j: usize| shown(&now, j as f64 / 30.) == shown(&was, j as f64 / 30.);
+                    assert!(same(k), "{rate:?} {speed} {k}");
+                    bad += (0..(next.end * 30.) as usize).filter(|j| !same(*j)).count();
                 }
             }
+            changed.push(bad);
         }
+        assert_eq!(changed, [0, 0, 0, 18, 721]);
     }
 
     // While scrubbing, a sidecar that cannot be read, or that ends before the full file does, should
