@@ -284,6 +284,7 @@ fn args(tl: &Timeline, out: &str, dir: &Path) -> Vec<String> {
         ];
         a.extend(raw.map(String::from));
     }
+    let big = tl.size.0 > 4096 || tl.size.1 > 4096;
     let tail = [
         "-filter_complex",
         &f,
@@ -292,9 +293,13 @@ fn args(tl: &Timeline, out: &str, dir: &Path) -> Vec<String> {
         "-map",
         "[a]",
         "-c:v",
-        "libx264",
-        "-crf",
-        "18",
+        if big { "hevc_videotoolbox" } else { "h264_videotoolbox" },
+        "-tag:v",
+        if big { "hvc1" } else { "avc1" },
+        "-allow_sw",
+        "1",
+        "-q:v",
+        "70",
         "-pix_fmt",
         "yuv420p",
         "-c:a",

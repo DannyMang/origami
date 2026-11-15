@@ -20,6 +20,7 @@ What changed in each version of Origami. The launch screen shows the version you
 - A cut or delete that brings another 4K clip under the playhead shows it about a third sooner.
 - Moved, scaled or rotated layers draw up to a quarter faster.
 - Every edit, drag and slider updates the picture sooner: the script runs in about half the time.
+- **Exports about twice as fast**, using the Mac's built-in video encoder at the same picture quality. Files are larger, about twice the size of before. Frames wider or taller than 4096 pixels are saved as HEVC.
 - Jumping far in 10-bit HEVC footage (such as DJI's) and opening a project are about 50 ms faster.
 - The Motion tab draws more than twice as fast on big projects.
 - Jumping onto a keyframe in footage without B-frames (such as DJI's) no longer decodes the whole second before it: the slowest far jumps are about a fifth faster.
