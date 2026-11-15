@@ -3,7 +3,14 @@
   const S = { fps: 30, size: null, preview: 'auto', proxy: true }
   let L = {}, at = 0, N = 0, P = [], D = 0, W = [1, 1]
   const M = new Map(), reads = ['x', 'y', 'scale', 'rotate', 'opacity']
-  const digits = /^\d+$/, named = /(?:const|let|var)\s+(\w+)\s*=/, made = 'video sound image text captions caption color', bare = 'keys rect line add mul settings'
+  const digits = /^\d+$/, named = /(?:const|let|var)\s+(\w+)\s*=/, made = 'video sound image text captions caption color', bare = 'keys rect line add mul cat stack settings'
+  const DAY = 86400
+  const must = (ok, say) => { if (!ok) throw new Error(`line ${at}: ${say}`) }
+  const span = (k, t, some) => {
+    const s = T(t)
+    must(Math.abs(s) <= DAY && !(some && s <= 0), `${k} takes a time${some ? ' above 0' : ''}, in seconds or "m:ss", up to 24 hours`)
+    return s
+  }
   const line = g => new Proxy(g(0), { get: (t, n) => digits.test(String(n)) ? g(+n) : t[n] })
   const anim = (k, v) => {
     if (v?.of) {
@@ -22,14 +29,23 @@
   }
   const split = { char: /\S/gu, word: /\S+/gu, line: /.+/gu }
   const ops = {
-    trim: (d, a, b) => ({ ...d, in: T(a), out: Math.max(b == null ? d.out : T(b), T(a) + 0.04) }),
-    for: (d, s) => ({ ...d, dur: T(s) }),
-    at: (d, t) => ({ ...d, at: T(t) }),
-    shift: (d, s) => ({ ...d, shift: d.shift + T(s) }),
-    speed: (d, x) => ({ ...d, speed: d.speed * x }),
+    trim: (d, a, b) => {
+      const top = d.total ? Math.ceil(d.total * 1e3) / 1e3 : DAY, i = Math.max(0, Math.min(span('trim', a), top - 0.04))
+      return { ...d, in: i, out: Math.min(Math.max(b == null ? d.out : span('trim', b), i + 0.04), top) }
+    },
+    for: (d, s) => ({ ...d, dur: span('for', s, true) }),
+    at: (d, t) => ({ ...d, at: span('at', t) }),
+    shift: (d, s) => ({ ...d, shift: d.shift + span('shift', s) }),
+    speed: (d, x) => {
+      must(x > 0, 'speed takes a number above 0')
+      return { ...d, speed: d.speed * x }
+    },
     volume: (d, x) => ({ ...d, gain: d.gain * x }),
     mute: d => ({ ...d, gain: 0 }),
-    fade: (d, a, b = a) => ({ ...d, fade: [a, b] }),
+    fade: (d, a, b = a) => {
+      must([a, b].every(x => Number.isFinite(x) && x >= 0), 'fade takes seconds, 0 or more')
+      return { ...d, fade: [a, b] }
+    },
     scale: (d, x) => ({ ...d, scale: times('scale', d.scale, x) }),
     pos: (d, x, y) => ({ ...d, pos: (x?.k === 'pos' && y === undefined ? [x.x, x.y] : [x, y]).map(v => v == null ? null : anim('pos', v)) }),
     opacity: (d, x) => ({ ...d, opacity: times('opacity', d.opacity, x) }),
@@ -46,7 +62,10 @@
         }),
       }
     },
-    loop: (d, n) => ({ ...d, loop: n }),
+    loop: (d, n) => {
+      must(Number.isInteger(n) && n > 0 && n <= 1000, 'loop takes a whole number from 1 to 1000')
+      return { ...d, loop: n }
+    },
   }
   const grade = (d, g) => ({ ...d, grade: { ...d.grade, ...g } })
   const sorted = p => [...p].sort((a, b) => a[0] - b[0])
@@ -79,7 +98,7 @@
   const clip = d => new Proxy(d, {
     get: (d, k) => k === '$' ? d : k in ops ? line(n => Object.assign((...a) => {
       at = n || at
-      if (nums.includes(k) && typeof a[0] !== 'number') throw new Error(`line ${at}: ${k} takes a number`)
+      if (nums.includes(k) && !Number.isFinite(a[0])) throw new Error(`line ${at}: ${k} takes a number`)
       if (!d.kids && d.kind !== 'text' && (k === 'shown' || k === 'each')) throw new Error(`line ${at}: ${k} is for text and caption`)
       return clip({
         ...(d.kids && deep.includes(k) ? { ...d, kids: d.kids.map(c => c[k](...a)) } : ops[k](d, ...a)),
@@ -92,11 +111,13 @@
   const stem = p => p.split('/').pop().replace(/\.\w+$/, '')
   const file = (kind, pick) => leaf(p => {
     const m = JSON.parse(__probe(p, kind, at))
+    must(kind === 'sound' ? m.audio : kind === 'image' ? m.video && m.dur <= 0.04 : m.video || m.audio, `${kind}("${p}") cannot be read as ${kind === 'image' ? 'a still image' : kind}`)
     return { kind, src: m.path, w: m.w, h: m.h, label: stem(p), ...pick(m) }
   })
   const words = (size, pos) => leaf((s, o = {}) => {
     if (typeof o !== 'object') throw new Error(`line ${at}: options are written { size: 72, color: "red" }`)
     if (!['left', 'center', 'right'].includes(o.align ?? 'center')) throw new Error(`line ${at}: align is "left", "center" or "right"`)
+    must(Number.isFinite(o.size ?? size) && (o.size ?? size) >= 0, 'size takes a number, 0 or more')
     return {
       kind: 'text', src: String(s), video: true, audio: false, size: o.size ?? size, color: o.color ?? 'white', font: o.font == null ? '' : __font(o.font, 'font', at), pos, label: String(s),
       background: o.background, align: o.align,
@@ -107,7 +128,12 @@
     if (!(a.length >= n && a.slice(0, n).every(Number.isFinite)) || typeof o !== 'object') throw new Error(`line ${at}: ${kind} is written ${how}`)
     return { kind, src: '', video: true, audio: false, color: o.color ?? 'white', label: kind, ...make(a, o) }
   })
-  const group = cat => (...kids) => clip({ ...base, cat, kids: kids.flat() })
+  const group = (cat, k) => line(n => (...kids) => {
+    at = n || at
+    kids.flat().forEach((c, i) => must(c?.$, `${k} takes clips, but item ${i + 1} is not a clip`))
+    return clip({ ...base, cat, kids: kids.flat() })
+  })
+  const pile = group(false, 'stack')
   const out3 = x => 1 - (1 - x) ** 3
   const eases = {
     linear: x => x,
@@ -153,9 +179,12 @@
       return B(y1, y2, (lo + hi) / 2)
     },
     delay: (v, s) => (t, d, T) => v(t - s, d, T - s),
-    settings: line(n => o => {
-      if (!['auto', 'full', 'half', 'quarter'].includes(o?.preview ?? 'auto')) throw new Error(`line ${n}: preview is "auto", "full", "half" or "quarter"`)
-      if (typeof (o?.proxy ?? true) !== 'boolean') throw new Error(`line ${n}: proxy is true or false`)
+    settings: line(n => (o = {}) => {
+      at = n || at
+      must(o.fps === undefined || Number.isInteger(o.fps) && o.fps > 0 && o.fps <= 240, 'fps takes a whole number from 1 to 240')
+      must(o.size == null || Array.isArray(o.size) && o.size.length === 2 && o.size.every(v => v >= 1 && v <= 16384), 'size is written [1920, 1080]')
+      must(['auto', 'full', 'half', 'quarter'].includes(o.preview ?? 'auto'), 'preview is "auto", "full", "half" or "quarter"')
+      must(typeof (o.proxy ?? true) === 'boolean', 'proxy is true or false')
       Object.assign(S, o)
     }),
     video: file('video', m => ({ video: m.video, audio: m.audio, out: m.dur, total: m.dur })),
@@ -163,15 +192,23 @@
     image: file('image', () => ({ video: true, audio: false })),
     text: words(72),
     caption: words(44, [null, 0.84]),
-    captions: line(n => p => group(false)(__read(p, 'captions', n).replace(/\r/g, '').split(/\n\n+/).map(b => {
-      const [, a, z, s] = b.match(/(\S+) --> (\S+)\n([\s\S]+)/) ?? [], t = x => T(x.replace(',', '.'))
-      return a && caption[n](s.trim().replace(/\n/g, ' ')).at[n](t(a)).for[n](t(z) - t(a))
-    }).filter(Boolean))),
-    color: leaf(c => ({ kind: 'color', src: c, video: true, audio: false, label: c })),
+    captions: line(n => p => {
+      const src = __read(p, 'captions', n).replace(/\r/g, '')
+      return pile(src.split(/\n\n+/).map(b => {
+        const [cue, a, z, s] = b.match(/(\S+) --> (\S+)\n([\s\S]+)/) ?? [], t = x => T(x.replace(',', '.'))
+        at = n
+        must(!a || t(z) > t(a), `captions("${p}") line ${src.slice(0, src.indexOf(cue)).split('\n').length}: ${a} --> ${z} is not a time range like 00:00:01,000 --> 00:00:04,000`)
+        return a && caption[n](s.trim().replace(/\n/g, ' ')).at[n](t(a)).for[n](t(z) - t(a))
+      }).filter(Boolean))
+    }),
+    color: leaf(c => {
+      must(typeof c === 'string', 'color is written color("#203040")')
+      return { kind: 'color', src: c, video: true, audio: false, label: c }
+    }),
     rect: shape('rect', 2, 'rect(400, 120, { color: "#0008", radius: 12 })', ([w, h], o) => ({ w: Math.max(1, Math.round(w)), h: Math.max(1, Math.round(h)), radius: o.radius ?? 0 })),
     line: shape('line', 4, 'line(0.1, 0.5, 0.9, 0.5, { color: "white", width: 4 })', (a, o) => ({ ends: a.slice(0, 4), size: o.width ?? 4 })),
-    cat: group(true),
-    stack: group(false),
+    cat: group(true, 'cat'),
+    stack: pile,
   })
   const vid = d => d.kids ? d.kids.some(c => vid(c.$)) : d.video
   const own = d => d.dur ?? (d.out == null ? null : (d.out - d.in) / d.speed)
@@ -206,9 +243,22 @@
     })
     return __tag(src, made, bare, called)
   }
+  const tail = () => __src.split('\n').findLastIndex(s => /^\s*[^\s/]/.test(s)) + 1 || 1
+  const loose = () => {
+    let q = ''
+    return __src.split('\n').findIndex(s => {
+      s = s.replace(/\\./g, '')
+      for (let i = 0; i < s.length && (q || !s.startsWith('//', i)); i++) q = q ? s[i] === q ? '' : q : '"\'`'.includes(s[i]) ? s[i] : ''
+      return q && q !== '`'
+    }) + 1
+  }
   globalThis.__late = m => {
     const [, name, n] = m.match(/(\w+) is not defined.*?:(\d+):/) ?? [], below = Object.keys(L).find(l => L[l] === name && +l > +n)
-    return below ? `line ${n}: ${name} is defined below, on line ${below}; a clip can only follow one defined above it` : m
+    if (below) return `line ${n}: ${name} is defined below, on line ${below}; a clip can only follow one defined above it`
+    const head = m.split('\n')[0].replace(/ \((unknown at |script:|native\)).*/, '').replace(/^Error: /, '')
+      .replace(/^RuntimeLimitError.*/, 'script took too long: a loop, or a function that calls itself, never ends')
+    const row = /\bline \d/.test(head) ? 0 : /unterminated string/.test(head) ? loose() : /abrupt end/.test(head) ? tail() : m.match(/script:(\d+):/)?.[1]
+    return row ? `line ${row}: ${head}` : head
   }
   const frames = d => Math.max(1, Math.ceil(d * S.fps - 1e-6))
   const sample = (c, v) => {
@@ -219,7 +269,7 @@
   }
   const ir = (c, z) => ({
     kind: c.kind, src: c.src, w: c.w ?? 0, h: c.h ?? 0, start: c.start, end: c.end, src_in: c.in, speed: c.speed, z,
-    scale: sample(c, c.scale), pos: (c.pos ?? [null, null]).map(v => v == null ? null : sample(c, v)), gain: c.gain, fade: c.fade, label: c.label, line: c.line, home: c.home, total: c.total ?? 0,
+    scale: sample(c, c.scale), pos: (c.pos ?? [null, null]).map(v => v == null ? null : sample(c, v)), gain: c.gain, fade: c.fade.map(f => Math.min(f, c.end - c.start)), label: c.label, line: c.line, home: c.home, total: c.total ?? 0,
     video: c.video, audio: c.audio, size: c.size ?? 0, color: c.color ?? '', font: c.font ?? '', grade: c.grade,
     radius: c.radius ?? 0, ends: c.ends ?? [0, 0, 0, 0], background: c.background ?? '', align: c.align ?? '',
     opacity: sample(c, c.opacity), rotate: sample(c, c.rotate), shown: sample(c, c.shown),
@@ -245,10 +295,12 @@
     }
   }
   globalThis.__out = r => {
-    if (!r || !r.$) throw new Error('script must end with a clip')
+    if (!r || !r.$) throw new Error(`line ${tail()}: script must end with a clip`)
     const root = r.$, even = n => Math.round(n / 2) * 2
     place(root, 0, len(root) ?? 5, P)
     P = P.filter(c => c.video || c.gain > 0)
+    const late = P.find(c => !(c.start >= -DAY && c.end <= DAY))
+    if (late) throw new Error(`line ${late.line}: ${late.label} would end more than 24 hours in`)
     const first = P.find(c => c.kind === 'video' && c.w)
     W = (S.size ?? (first ? [first.w, first.h] : [1920, 1080])).map(even)
     D = Math.max(0, ...P.map(c => c.end))

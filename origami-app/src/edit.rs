@@ -52,7 +52,7 @@ impl Origami {
     pub fn store(&mut self) {
         self.dirty = self.clash;
         if !self.clash {
-            let _ = fs::write(&self.script, self.lines.join("\n") + "\n");
+            let _ = fs::write(&self.script, self.lines.iter().map(|l| l.clone() + "\n").collect::<String>());
         }
     }
 
@@ -98,6 +98,7 @@ impl Origami {
     }
 
     pub fn reveal(&mut self, row: usize) {
+        let row = row.min(self.lines.len().saturating_sub(1));
         self.unfold(row);
         let (hidden, mut top) = (self.hidden(), (self.top as usize).min(row));
         while (top..row).filter(|r| !hidden[*r]).count() > self.fit.saturating_sub(1).min(23) {
@@ -299,7 +300,7 @@ impl Origami {
         if self.cull() {
             return;
         }
-        if let Some((_, rows, _)) = self.usage("remove") {
+        if let Some((_, rows, _)) = self.usage("remove").filter(|(c, ..)| !self.alone(c, "remove")) {
             self.change(|this| drop(this.lines.drain(rows)));
         }
     }
@@ -320,5 +321,82 @@ mod tests {
     fn reach() {
         assert_eq!(super::reach(900., 400.), 540.);
         assert_eq!(super::reach(300., 400.), 0.);
+    }
+
+    use gpui::{Entity, TestAppContext, VisualTestContext};
+    use std::fs;
+
+    fn settle(view: &Entity<crate::Origami>, cx: &mut VisualTestContext) {
+        cx.run_until_parked();
+        view.update(cx, |o, cx| o.watch(cx));
+        cx.run_until_parked();
+    }
+
+    // Opening scripts with mistakes should mark the line that is wrong. Undoing back to an empty
+    // script should stay empty and redo should bring the text back, deleting the script file outside the app should keep the code
+    // on screen and offer to save it again, and :e with a name that does not exist opens nothing.
+    #[gpui::test]
+    fn loads_and_marks(cx: &mut TestAppContext) {
+        let dir = std::env::temp_dir().join("origami-loads-test");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("edit.js");
+        fs::write(&path, "stack()\n").unwrap();
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            app.open(path.clone());
+            window.focus(&app.focus);
+            app
+        });
+        settle(&view, cx);
+        fs::write(&path, "while (true) {}").unwrap();
+        settle(&view, cx);
+        assert!(view.update(cx, |o, _| o.err.starts_with("script took too long")));
+        let a = "const a = text(\"a\").for(1)\n";
+        for (src, want) in [
+            (
+                "const b = text(\"b\").for(1)\nstack(a, b,\n  text(\"c\").for(1).opacity(t => NaN))",
+                4,
+            ),
+            ("stack(a,\n  text(\"c\").for(NaN))", 3),
+            ("stack(a,\n  text(\"c\", { size: \"big\" }).for(1))", 3),
+            ("stack(a,\n  5)", 2),
+            ("\n42", 3),
+            ("stack(a,\n  text(\"c\".for(1))", 3),
+            ("const b = text(\"b).for(1)\nstack(a, b)", 2),
+            ("stack(a, color().for(1))", 2),
+            ("stack(a,\n  text(\"c\").for(1).scale(t => { throw new Error(\"x\") }))", 3),
+            ("stack(a.fade(\"a\"))", 2),
+            ("\nstack(a, bb)", 3),
+        ] {
+            fs::write(&path, format!("{a}{src}")).unwrap();
+            settle(&view, cx);
+            assert_eq!(view.update(cx, |o, _| (o.bad, o.err.is_empty())), (want, false), "{src}");
+        }
+        fs::write(&path, "").unwrap();
+        settle(&view, cx);
+        view.update(cx, |o, _| (o.cursor, o.past) = (Some((0, 0)), vec![]));
+        cx.simulate_keystrokes("t cmd-s");
+        settle(&view, cx);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "t\n");
+        cx.simulate_keystrokes("cmd-z");
+        settle(&view, cx);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "");
+        assert_eq!(view.update(cx, |o, _| (o.lines.len(), o.past.len())), (0, 0));
+        cx.simulate_keystrokes("cmd-shift-z");
+        settle(&view, cx);
+        let one = vec!["t".to_string()];
+        fs::remove_file(&path).unwrap();
+        settle(&view, cx);
+        assert_eq!(
+            view.update(cx, |o, _| (o.lines.clone(), o.clash, o.dirty)),
+            (one.clone(), true, true)
+        );
+        view.update(cx, |o, cx| {
+            o.run("e other.js", cx);
+            assert_eq!(
+                (o.script.clone(), o.note.as_str()),
+                (path.clone(), "no script named other.js here, nothing opened")
+            );
+        });
     }
 }

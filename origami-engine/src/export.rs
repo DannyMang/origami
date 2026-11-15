@@ -5,9 +5,33 @@ use origami_lang::{Clip, Kind, Timeline, Val};
 use std::{
     env, fs,
     io::{BufRead, BufReader, Read, Write},
-    process::{Command, Stdio},
+    path::{Path, PathBuf},
+    process::{self, Command, Stdio},
+    sync::atomic::{AtomicUsize, Ordering::Relaxed},
     thread,
 };
+
+static ROOMS: AtomicUsize = AtomicUsize::new(0);
+
+fn room() -> PathBuf {
+    let dir = env::temp_dir().join(format!("origami-{}-{}", process::id(), ROOMS.fetch_add(1, Relaxed)));
+    let _ = fs::create_dir_all(&dir);
+    dir
+}
+
+fn tempo(mut s: f64) -> String {
+    let mut out = vec![];
+    while s < 0.5 {
+        out.push("atempo=0.5".to_string());
+        s *= 2.;
+    }
+    while s > 100. {
+        out.push("atempo=100".into());
+        s /= 100.;
+    }
+    out.push(format!("atempo={s}"));
+    out.join(",")
+}
 
 fn spot(c: &Clip, (w, h): (f64, f64), (tw, th): (f64, f64)) -> (f64, f64, f64, f64) {
     let (at, m) = (
@@ -67,7 +91,7 @@ pub fn alpha(c: &Clip, t: f64) -> f64 {
     side(t - c.start, c.fade.0).min(side(c.end - t, c.fade.1)).clamp(0., 1.)
 }
 
-fn graph(tl: &Timeline, video: bool, from: f64) -> (Vec<String>, String) {
+fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path) -> (Vec<String>, String) {
     let size = (tl.size.0 as f64, tl.size.1 as f64);
     let (mut ins, mut f, mut mix, mut b0) = (vec![], vec![], String::new(), 0);
     if video {
@@ -83,10 +107,11 @@ fn graph(tl: &Timeline, video: bool, from: f64) -> (Vec<String>, String) {
         let (tw, th, x, y) = place(c, size, 1.);
         let own = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let solid = c.kind == Kind::Color && text::rgba(&c.src)[3] == 255;
+        let video = video && tw >= 1. && th >= 1.;
         match c.kind {
             Kind::Image if video => ins.extend(own(&["-loop", "1", "-t", &len.to_string(), "-i", &c.src])),
             Kind::Text | Kind::Rect | Kind::Line | Kind::Color if video && !solid => {
-                let file = env::temp_dir().join(format!("origami-text-{i}.bgra")).to_string_lossy().to_string();
+                let file = dir.join(format!("text-{i}.bgra")).to_string_lossy().to_string();
                 let _ = fs::write(&file, shape::image(c, size, 1.).0);
                 let raw = [
                     "-f",
@@ -117,7 +142,7 @@ fn graph(tl: &Timeline, video: bool, from: f64) -> (Vec<String>, String) {
         }
         if video && c.video {
             let temp = |name: &str, data: &[u8]| {
-                let file = env::temp_dir().join(format!("origami-{i}-{name}")).to_string_lossy().to_string();
+                let file = dir.join(format!("{i}-{name}")).to_string_lossy().to_string();
                 let _ = fs::write(&file, data);
                 file
             };
@@ -172,8 +197,9 @@ fn graph(tl: &Timeline, video: bool, from: f64) -> (Vec<String>, String) {
         }
         if c.audio && c.gain > 0. {
             let mut s = format!(
-                "[{n}:a]asetpts=PTS-STARTPTS,atempo={},volume={},aresample=48000,aformat=channel_layouts=stereo",
-                c.speed, c.gain
+                "[{n}:a]asetpts=PTS-STARTPTS,{},volume={},aresample=48000,aformat=channel_layouts=stereo",
+                tempo(c.speed),
+                c.gain
             );
             if c.fade.0 > skip {
                 s += &format!(",afade=t=in:d={}", c.fade.0 - skip);
@@ -200,7 +226,11 @@ fn graph(tl: &Timeline, video: bool, from: f64) -> (Vec<String>, String) {
 }
 
 pub fn command(tl: &Timeline, out: &str) -> Vec<String> {
-    let (mut a, mut f) = graph(tl, !piped(tl), 0.);
+    args(tl, out, &room())
+}
+
+fn args(tl: &Timeline, out: &str, dir: &Path) -> Vec<String> {
+    let (mut a, mut f) = graph(tl, !piped(tl), 0., dir);
     if piped(tl) {
         let n = a.iter().filter(|a| *a == "-i").count();
         f += &format!(";[{n}:v]scale=out_color_matrix=bt709:out_range=tv,format=yuv420p[v]");
@@ -245,7 +275,7 @@ pub fn command(tl: &Timeline, out: &str) -> Vec<String> {
 }
 
 pub fn audio_args(tl: &Timeline, t: f64, rate: u32, speed: f64) -> Vec<String> {
-    let (mut a, f) = graph(tl, false, t);
+    let (mut a, f) = graph(tl, false, t, &env::temp_dir());
     let f = format!("{f};[a]atempo={speed}[o]");
     let tail = [
         "-filter_complex",
@@ -265,15 +295,19 @@ pub fn audio_args(tl: &Timeline, t: f64, rate: u32, speed: f64) -> Vec<String> {
 }
 
 pub fn render(tl: &Timeline, out: &str, mut progress: impl FnMut(f64)) -> Result<()> {
+    if tl.duration <= 0. {
+        bail!("nothing to export: the timeline is empty");
+    }
     for c in &tl.clips {
         let mut files = c.grade.iter().flat_map(|g| g.input_lut.iter().chain(g.look.iter().map(|l| &l.0)));
         if let Some(file) = files.find(|f| Lut::read(f).is_none()) {
             bail!("line {}: {file} is not a .cube file with a 0 to 1 domain", c.line);
         }
     }
+    let dir = room();
     let mut child = Command::new("ffmpeg")
         .args(["-v", "error", "-nostats", "-progress", "pipe:1"])
-        .args(command(tl, out))
+        .args(args(tl, out, &dir))
         .stdin(if piped(tl) { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -295,8 +329,99 @@ pub fn render(tl: &Timeline, out: &str, mut progress: impl FnMut(f64)) -> Result
     });
     let mut err = String::new();
     child.stderr.take().unwrap().read_to_string(&mut err)?;
-    if !child.wait()?.success() {
-        bail!("ffmpeg: {}", err.trim());
+    let done = child.wait()?.success();
+    let _ = fs::remove_dir_all(dir);
+    if !done {
+        let why = err.lines().find(|l| !l.trim().is_empty()).unwrap_or("ffmpeg failed").trim();
+        let why = why.strip_prefix('[').and_then(|w| w.split_once("] ")).map_or(why, |w| w.1);
+        let clip = tl
+            .clips
+            .iter()
+            .find(|c| matches!(c.kind, Kind::Video | Kind::Sound | Kind::Image) && err.contains(&c.src));
+        let at = clip.map_or(String::new(), |c| format!(" at line {} ({})", c.line, c.label));
+        bail!("export of {out} failed{at}: {}", why.chars().take(200).collect::<String>());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::footprint;
+
+    // Slow and very fast motion with sound, a fade longer than its clip, and layers too small to see
+    // should export and play. Two exports at once should not disturb each other or leave files behind, and a
+    // failing export should say what failed and, when a clip caused it, on which line.
+    #[test]
+    fn exports_odd_timelines() {
+        let dir = env::temp_dir().join("origami-export-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let args = [
+            "-f",
+            "lavfi",
+            "-i",
+            "color=black:s=64x36:r=30:d=10",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=d=10",
+            "-shortest",
+        ];
+        for file in ["a.mp4", "b.mp4"] {
+            let made = Command::new("ffmpeg")
+                .args(["-v", "error", "-y"])
+                .args(args)
+                .arg(dir.join(file))
+                .status();
+            assert!(made.unwrap().success());
+        }
+        let tl = |src: &str| {
+            fs::write(dir.join("edit.js"), src).unwrap();
+            origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap()
+        };
+        let out = |name: &str| dir.join(name).to_string_lossy().to_string();
+        for (i, src) in [
+            "video('a.mp4').trim(0, 2).speed(0.25)",
+            "video('a.mp4').speed(150)",
+            "video('a.mp4').trim(0, 1).fade(5)",
+            "stack(color('#333').for(1), text('').for(1), text('a').for(1).scale(0), video('a.mp4').trim(0, 1).scale(0))",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            render(&tl(src), &out(&format!("{i}.mp4")), |_| {}).unwrap();
+            let heard = Command::new("ffmpeg")
+                .args(["-v", "error"])
+                .args(audio_args(&tl(src), 0., 48000, 1.))
+                .output();
+            assert!(heard.unwrap().status.success(), "{src}");
+        }
+        let (one, two) = (tl("text('one').for(2)"), tl("text('two').for(2)"));
+        thread::scope(|s| {
+            let a = s.spawn(|| render(&one, &out("one.mp4"), |_| {}));
+            render(&two, &out("two.mp4"), |_| {}).unwrap();
+            a.join().unwrap().unwrap();
+        });
+        assert_ne!(fs::read(dir.join("one.mp4")).unwrap(), fs::read(dir.join("two.mp4")).unwrap());
+        let mine = format!("origami-{}-", process::id());
+        let left = fs::read_dir(env::temp_dir())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with(&mine));
+        assert_eq!(left.count(), 0);
+        let gone = tl("text('a').for(1)\nvideo('b.mp4').trim(0, 1)");
+        fs::remove_file(dir.join("b.mp4")).unwrap();
+        let e = render(&gone, &out("gone.mp4"), |_| {}).unwrap_err().to_string();
+        assert!(
+            e.starts_with(&format!("export of {} failed at line 2 (b): ", out("gone.mp4"))),
+            "{e}"
+        );
+        let e = render(&tl("text('a').for(1)"), &out("no/where.mp4"), |_| {})
+            .unwrap_err()
+            .to_string();
+        assert!(e.starts_with(&format!("export of {} failed: ", out("no/where.mp4"))), "{e}");
+        let e = render(&tl("stack()"), &out("empty.mp4"), |_| {}).unwrap_err().to_string();
+        assert_eq!(e, "nothing to export: the timeline is empty");
+    }
 }

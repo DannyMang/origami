@@ -355,7 +355,7 @@ impl Origami {
 
     pub fn grasp(&mut self) {
         let Some((row, col)) = self.cursor else { return };
-        let line = &self.lines[row];
+        let Some(line) = self.lines.get(row) else { return };
         let at = line.char_indices().nth(col).map_or(line.len(), |x| x.0);
         self.knobbed = self.board(row, at).map(|k| (row, k.1));
     }

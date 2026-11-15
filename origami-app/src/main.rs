@@ -214,13 +214,11 @@ impl Origami {
     }
 
     fn load(&mut self, cx: &mut Context<Self>) {
-        let disk: Vec<String> = fs::read_to_string(&self.script)
-            .unwrap_or_default()
-            .lines()
-            .map(String::from)
-            .collect();
+        let read = fs::read_to_string(&self.script);
+        let gone = read.is_err() && !self.fresh;
+        let disk: Vec<String> = read.unwrap_or_default().lines().map(String::from).collect();
         let differs = disk != self.lines;
-        if self.dirty {
+        if self.dirty || gone {
             (self.clash, self.dirty) = (differs, differs);
         } else if differs {
             let old = std::mem::replace(&mut self.lines, disk);

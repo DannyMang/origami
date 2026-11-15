@@ -9,11 +9,13 @@ use std::{
     sync::{Arc, LazyLock, Mutex},
 };
 
+const SPARE: &str = "/System/Library/Fonts/Supplemental/Arial Unicode.ttf";
+
 static FONTS: LazyLock<Mutex<HashMap<String, Arc<Font>>>> = LazyLock::new(Mutex::default);
 
 fn face(path: &str) -> Arc<Font> {
     let load = |p: &str| Font::from_bytes(fs::read(p).ok()?, FontSettings::default()).ok().map(Arc::new);
-    let plain = "/System/Library/Fonts/Helvetica.ttc";
+    let plain = "/System/Library/Fonts/HelveticaNeue.ttc";
     let mut fonts = FONTS.lock().unwrap();
     let font = fonts
         .entry(path.into())
@@ -68,8 +70,18 @@ pub struct Glyph {
 
 pub fn glyphs(c: &Clip, k: f64, ink: bool) -> (Vec<Glyph>, usize, usize) {
     let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
-    let (font, size) = (face(&c.font), c.size * c.scale.max() * k);
-    layout.append(&[&*font], &TextStyle::new(&c.src, size as f32, 0));
+    let (fonts, size) = ([face(&c.font), face(SPARE)], c.size * c.scale.max() * k);
+    let pick = |ch| (fonts[0].lookup_glyph_index(ch) == 0 && fonts[1].lookup_glyph_index(ch) != 0) as usize;
+    let mut runs: Vec<(usize, usize)> = vec![];
+    for (i, ch) in c.src.char_indices() {
+        if runs.last().is_none_or(|r| r.1 != pick(ch)) {
+            runs.push((i, pick(ch)));
+        }
+    }
+    for (n, &(a, f)) in runs.iter().enumerate() {
+        let b = runs.get(n + 1).map_or(c.src.len(), |r| r.0);
+        layout.append(&fonts, &TextStyle::with_user_data(&c.src[a..b], size as f32, f, a));
+    }
     let rows: Vec<(usize, usize)> = layout.lines().into_iter().flatten().map(|l| (l.glyph_start, l.glyph_end)).collect();
     let wide = |r: &(usize, usize)| {
         let row = layout.glyphs().get(r.0..=r.1).into_iter().flatten();
@@ -84,14 +96,14 @@ pub fn glyphs(c: &Clip, k: f64, ink: bool) -> (Vec<Glyph>, usize, usize) {
             ((size * 0.3) as usize, (size * 0.12) as usize)
         },
     );
-    let glyph = |(n, p): (usize, &GlyphPosition)| Glyph {
-        i: c.src[..p.byte_offset].chars().count(),
+    let glyph = |(n, p): (usize, &GlyphPosition<usize>)| Glyph {
+        i: c.src[..p.user_data + p.byte_offset].chars().count(),
         x: p.x as usize + pad.0 + rows.iter().find(|r| n <= r.1).map_or(0, |r| (w - wide(r)) * lean / 2),
         y: p.y as usize + pad.1,
         w: p.width,
         h: p.height,
         px: Arc::new(
-            ink.then(|| font.rasterize_config(p.key).1)
+            ink.then(|| fonts[p.font_index].rasterize_config(p.key).1)
                 .into_iter()
                 .flatten()
                 .flat_map(|v| [b, g, r, (v as u32 * a as u32 / 255) as u8])
@@ -156,5 +168,21 @@ mod tests {
         let mut clear = [7, 7, 7, 0];
         over(&mut clear, &[10, 20, 30, 51]);
         assert_eq!(clear, [10, 20, 30, 51]);
+    }
+
+    // The default font should draw accented letters as themselves, and a letter it lacks (Chinese)
+    // should be drawn from a second font, with every glyph still pointing at its own character.
+    #[test]
+    fn accents_and_fallback() {
+        let c: Clip = serde_json::from_str(
+            r#"{"kind":"text","src":"eé日b","w":0,"h":0,"start":0,"end":1,"src_in":0,"speed":1,"z":0,"scale":1,"pos":[null,null],
+            "gain":1,"fade":[0,0],"label":"","line":1,"video":true,"audio":false,"size":50,"color":"white","opacity":1,"rotate":0,"shown":1}"#,
+        )
+        .unwrap();
+        let (g, ..) = glyphs(&c, 1., true);
+        let wide = face(SPARE).metrics('日', 50.);
+        assert_eq!(g.iter().map(|g| g.i).collect::<Vec<_>>(), [0, 1, 2, 3]);
+        assert!(g[1].w == g[0].w && g[1].h > g[0].h);
+        assert_eq!((g[2].w, g[2].h), (wide.width, wide.height));
     }
 }

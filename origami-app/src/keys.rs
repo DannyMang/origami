@@ -1,4 +1,4 @@
-use crate::{Mode, Origami, knob::close};
+use crate::{Mode, Origami, clip::set, knob::close};
 use gpui::{ClipboardItem, Context, KeyDownEvent, Window};
 use origami_engine::{command, render};
 use origami_lang::Clip;
@@ -29,7 +29,7 @@ pub fn rewrite(lines: &mut [String], line: u32, op: &str, arg: impl Fn(&str) -> 
     };
     let s = &mut lines[link(lines, line, op).unwrap_or(last)];
     if let Some(a) = s.find(&key).map(|a| a + key.len()) {
-        let b = close(s.as_bytes(), a - 1).unwrap_or(a);
+        let Some(b) = close(s.as_bytes(), a - 1) else { return };
         let new = arg(&s[a..b]);
         s.replace_range(a..b, &new);
     } else if let Some(a) = s.rfind(')') {
@@ -94,7 +94,10 @@ impl Origami {
             }
             (true, "0") => self.reset(),
             (true, "[" | "]") if key.modifiers.alt => {
-                let row = self.cursor.map(|c| c.0).or(self.focused().map(|c| c.line as usize - 1));
+                let row = self
+                    .cursor
+                    .map(|c| c.0)
+                    .or(self.focused().map(|c| (c.line as usize).saturating_sub(1)));
                 self.fold(row.unwrap_or(0), Some(key.key == "["));
             }
             (true, "q") => self.leave(window, cx),
@@ -184,7 +187,7 @@ impl Origami {
             match (p, k) {
                 ('g', "g") => self.seek(0.),
                 ('g', "d") => self.editor(),
-                ('z', "a") => self.fold(self.focused().map_or(0, |c| c.line as usize - 1), None),
+                ('z', "a") => self.fold(self.focused().map_or(0, |c| (c.line as usize).saturating_sub(1)), None),
                 ('z', "M") => self.fold_all(false),
                 ('z', "R") => self.folded.clear(),
                 ('m', _) => drop(self.marks.insert(c, t)),
@@ -216,11 +219,7 @@ impl Origami {
             "g" | "m" | "'" | "z" => self.pending = k.chars().next(),
             "j" => self.layer = self.layer.saturating_sub(1),
             "k" => self.layer = (self.layer + 1).min(self.under().len().saturating_sub(1)),
-            "<" | ">" => {
-                if let Some(line) = self.focused().map(|c| c.line) {
-                    self.shift(line, if k == "<" { -n / f } else { n / f });
-                }
-            }
+            "<" | ">" => self.shift(if k == "<" { -n / f } else { n / f }),
             "space" => self.toggle(),
             "x" => self.delete(),
             "i" => (self.mouse, self.mode) = (true, Mode::Normal),
@@ -263,16 +262,10 @@ impl Origami {
         self.seek(hit.copied().unwrap_or(self.t));
     }
 
-    pub fn shift(&mut self, line: u32, dt: f64) {
-        self.patch(line, "shift", |old| format!("{:.4}", old.trim().parse::<f64>().unwrap_or(0.) + dt));
-    }
-
-    pub fn rewrite(&mut self, line: u32, op: &str, arg: impl Fn(&str) -> String) {
-        rewrite(&mut self.lines, line, op, arg);
-    }
-
-    pub fn patch(&mut self, line: u32, op: &str, arg: impl Fn(&str) -> String) {
-        self.change(|this| this.rewrite(line, op, arg));
+    pub fn shift(&mut self, dt: f64) {
+        let Some((c, ..)) = self.usage("move") else { return };
+        let moved = |old: &str| format!("{:.4}", old.trim().parse::<f64>().unwrap_or(0.) + dt);
+        self.change(|this| set(&mut this.lines, c.line, "shift", moved));
     }
 
     fn editor(&self) {
@@ -289,6 +282,7 @@ impl Origami {
             "q" | "q!" => cx.quit(),
             "goto" => self.seek(secs(arg).unwrap_or(self.t)),
             "f" => self.seek(arg.parse::<f64>().map_or(self.t, |n| n / self.fps())),
+            "e" if !dir.join(arg).is_file() => self.note = format!("no script named {arg} here, nothing opened"),
             "e" => self.open(dir.join(arg)),
             "set" => self.looping = arg == "loop",
             "help" => self.help = !self.help,

@@ -35,9 +35,28 @@ fn top(l: &String) -> bool {
     !l.starts_with([' ', '\t', ')', ']', '}', '.'])
 }
 
+fn bare(l: &str) -> usize {
+    let mut quote = None;
+    for (i, c) in l.char_indices() {
+        match (quote, c) {
+            (Some(q), _) if c == q => quote = None,
+            (Some(_), _) => {}
+            (_, '"' | '\'' | '`') => quote = Some(c),
+            (_, '/') if l[i..].starts_with("//") => return l[..i].trim_end().len(),
+            _ => {}
+        }
+    }
+    l.trim_end().len()
+}
+
 pub fn placed(lines: &mut Vec<String>, from: usize, item: &str, groups: &[&str]) -> usize {
     let code = |l: &String| !l.trim().is_empty() && !l.trim_start().starts_with("//");
-    let Some(head) = lines[from..].iter().rposition(|l| top(l) && code(l)).map(|i| i + from) else {
+    let odd = |l: &String| l.matches('`').count() % 2 == 1;
+    let free: Vec<bool> = lines
+        .iter()
+        .scan(true, |free, l| Some(std::mem::replace(free, *free != odd(l))))
+        .collect();
+    let Some(head) = (from..lines.len()).rfind(|i| free[*i] && top(&lines[*i]) && code(&lines[*i])) else {
         lines.push(item.into());
         return lines.len() - 1;
     };
@@ -46,7 +65,8 @@ pub fn placed(lines: &mut Vec<String>, from: usize, item: &str, groups: &[&str])
     let Some(end) = group.and_then(|k| close(body.as_bytes(), k.len() - 1)) else {
         let last = lines.iter().rposition(code).unwrap_or(head);
         lines[head].insert_str(0, "stack(");
-        lines[last] = format!("{}, {item})", lines[last].trim_end().trim_end_matches(';'));
+        let (body, note) = lines[last].split_at(bare(&lines[last]));
+        lines[last] = format!("{}, {item}){note}", body.trim_end_matches(';'));
         return last;
     };
     let (row, col) = (
@@ -63,8 +83,8 @@ pub fn placed(lines: &mut Vec<String>, from: usize, item: &str, groups: &[&str])
         lines[row].insert_str(col, &item);
         return row;
     }
-    if let Some(prev) = lines[..row].iter_mut().rfind(|l| code(l)).filter(|l| !open(l)) {
-        prev.push(',');
+    if let Some(prev) = lines[..row].iter_mut().rfind(|l| code(l)).filter(|l| !open(&l[..bare(l)])) {
+        prev.insert(bare(prev), ',');
     }
     lines.insert(row, format!("{}{item},", " ".repeat(col + 2)));
     row
@@ -277,6 +297,27 @@ mod tests {
             "DEF\nstack(video(\"a.mp4\").trim(0, 5), voice_1.at(1))"
         );
         assert_eq!(after("", 1.), "DEF\nvoice_1.at(1)");
+        for (src, want) in [
+            ("v.trim(1, 5) // the clip", "DEF\nstack(v.trim(1, 5), voice_1.at(1)) // the clip"),
+            ("v.trim(1, 5); // the clip", "DEF\nstack(v.trim(1, 5), voice_1.at(1)) // the clip"),
+            (
+                "stack(\n  a.trim(0, 2), // first\n  b.trim(0, 2) // second\n) // end",
+                "DEF\nstack(\n  a.trim(0, 2), // first\n  b.trim(0, 2), // second\n  voice_1.at(1),\n) // end",
+            ),
+            (
+                "const out = stack(a)\nout // result",
+                "DEF\nconst out = stack(a)\nstack(out, voice_1.at(1)) // result",
+            ),
+            (
+                "stack(\n  a,\n  text(`two\nlines`),\n)",
+                "DEF\nstack(\n  a,\n  text(`two\nlines`),\n  voice_1.at(1),\n)",
+            ),
+        ] {
+            assert_eq!(after(src, 1.), want);
+        }
+        let mut lines = vec!["cat(a, b); // x".to_string()];
+        placed(&mut lines, 0, "c.at(2)", &["stack("]);
+        assert_eq!(lines, ["stack(cat(a, b), c.at(2)) // x"]);
     }
 
     // Stopping a recording should add the take to the script and save it, undo should remove it, and

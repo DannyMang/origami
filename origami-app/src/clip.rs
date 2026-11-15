@@ -67,19 +67,23 @@ fn named(line: &str) -> Option<&str> {
     Some(rest.split_once('=')?.0.trim())
 }
 
-fn set(lines: &mut [String], line: u32, op: &str, arg: String) {
+pub fn set(lines: &mut [String], line: u32, op: &str, arg: impl Fn(&str) -> String) {
     let row = &mut lines[line as usize - 1];
     if row.contains(')') {
-        return rewrite(lines, line, op, |_| arg.clone());
+        return rewrite(lines, line, op, arg);
     }
     let end = plain(row).len() + row.len() - row.trim_start().len();
-    row.insert_str(end, &format!(".{op}({arg})"));
+    row.insert_str(end, &format!(".{op}({})", arg("")));
 }
 
 impl Origami {
     pub fn usage(&mut self, verb: &str) -> Option<(Clip, Range<usize>, String)> {
         self.note.clear();
-        let mut c = self.focused()?.clone();
+        let c = self.focused()?.clone();
+        self.used(c, verb)
+    }
+
+    pub fn used(&mut self, mut c: Clip, verb: &str) -> Option<(Clip, Range<usize>, String)> {
         let last = (c.line as usize).checked_sub(1).filter(|i| *i < self.lines.len())?;
         let first = (0..=last).rev().find(|i| !self.lines[*i].trim_start().starts_with('.'))?;
         let twins: Vec<u32> = self.tl.clips.iter().filter(|o| o.line == c.line).map(|o| o.z).collect();
@@ -97,6 +101,14 @@ impl Origami {
         }
         c.line = last as u32 + 1;
         Some((c, first..last + 1, item.into()))
+    }
+
+    pub fn alone(&mut self, c: &Clip, verb: &str) -> bool {
+        let alone = self.tl.clips.iter().all(|o| o.z == c.z);
+        if alone {
+            self.note = format!("{} is the last clip, edit the script to {verb} it", c.label);
+        }
+        alone
     }
 
     fn cuts(&self, c: &Clip) -> Option<(f64, f64, f64)> {
@@ -124,11 +136,11 @@ impl Origami {
         };
         self.change(|this| {
             if let Some((a, m, b)) = cut {
-                set(&mut next, n, "trim", format!("{m:.3}, {b:.3}"));
-                set(&mut this.lines, c.line, "trim", format!("{a:.3}, {m:.3}"));
+                set(&mut next, n, "trim", |_| format!("{m:.3}, {b:.3}"));
+                set(&mut this.lines, c.line, "trim", |_| format!("{a:.3}, {m:.3}"));
             }
             if !(cat && c.video && timed.is_none()) {
-                set(&mut next, n, "at", (((old + by) * 1000.).round() / 1000.).to_string());
+                set(&mut next, n, "at", |_| (((old + by) * 1000.).round() / 1000.).to_string());
             }
             let last = &mut this.lines[rows.end - 1];
             if !last.trim_end().ends_with(',') {
@@ -154,7 +166,8 @@ impl Origami {
     }
 
     pub fn copy(&mut self, cut: bool, cx: &mut Context<Self>) {
-        let Some((_, rows, item)) = self.usage(if cut { "cut" } else { "copy" }) else {
+        let verb = if cut { "cut" } else { "copy" };
+        let Some((_, rows, item)) = self.usage(verb).filter(|(c, ..)| !(cut && self.alone(c, verb))) else {
             return;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(item.clone()));
@@ -167,6 +180,10 @@ impl Origami {
     pub fn lay(&mut self) {
         if self.copied.is_empty() {
             return self.note = "nothing copied yet: select a clip and press cmd+C".into();
+        }
+        let name: String = self.copied.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+        if !self.copied[name.len()..].starts_with('(') && !self.lines.iter().any(|l| named(l) == Some(&name)) {
+            return self.note = format!("{name} is no longer defined in the script, nothing pasted");
         }
         let keep = |l: &String| !l.starts_with(".at(") && !l.starts_with(".shift(");
         let chain: String = links(&self.copied).into_iter().filter(keep).collect();
@@ -426,6 +443,20 @@ mod tests {
         same(run(cx, held, &[("split", 0, 1.)]), held, inside);
         view.update(cx, |o, _| o.copied.clear());
         same(run(cx, SRC, &[("lay", 0, 1.)]), SRC, "nothing copied yet");
+        view.update(cx, |o, _| o.copied = "voice_9.at(1)".into());
+        same(
+            run(cx, SRC, &[("lay", 0, 1.)]),
+            SRC,
+            "voice_9 is no longer defined in the script, nothing pasted",
+        );
+        let only = "stack(\n  v.trim(0, 4),\n)";
+        for verb in ["delete", "cut"] {
+            same(run(cx, only, &[(verb, 0, 1.)]), only, "v is the last clip, edit the script to ");
+        }
+        let spread = "stack(\n  v.trim(\n    0, 4),\n  v.trim(4, 8).at(\n    1),\n)";
+        for (verb, z) in [("split", 0), ("twin", 1)] {
+            same(run(cx, spread, &[(verb, z, 2.)]), spread, "holds more than v, edit the script to");
+        }
     }
 
     // The right-click menu on a timeline clip and its keyboard shortcuts should do the same things,

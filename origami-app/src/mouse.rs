@@ -1,5 +1,6 @@
 use crate::{
     Origami,
+    clip::set,
     scene::{FOOT, LEAD, sink},
     view::{HEAD, RULER},
 };
@@ -150,15 +151,19 @@ impl Origami {
         let last = |n: f64| format!("{:.2}", n.max(0.04));
         let moved = |old: &str| format!("{:.4}", old.trim().parse::<f64>().unwrap_or(0.) + dt);
         let media = matches!(c.kind, Kind::Video | Kind::Sound);
+        let verb = if *grab == Grab::Move { "move" } else { "trim" };
+        let Some((c, ..)) = self.used(c.clone(), verb).filter(|_| dt != 0.) else {
+            return;
+        };
+        let lines = &mut self.lines;
         match grab {
-            _ if dt == 0. => {}
-            Grab::Move => self.rewrite(c.line, "shift", moved),
-            Grab::Left if media => self.rewrite(c.line, "trim", |_| trim(a + d, b)),
-            Grab::Right if media => self.rewrite(c.line, "trim", |_| trim(a, b + d)),
-            Grab::Right => self.rewrite(c.line, "for", |_| last(len + dt)),
+            Grab::Move => set(lines, c.line, "shift", moved),
+            Grab::Left if media => set(lines, c.line, "trim", |_| trim(a + d, b)),
+            Grab::Right if media => set(lines, c.line, "trim", |_| trim(a, b + d)),
+            Grab::Right => set(lines, c.line, "for", |_| last(len + dt)),
             Grab::Left => {
-                self.rewrite(c.line, "for", |_| last(len - dt));
-                self.rewrite(c.line, "shift", moved);
+                set(lines, c.line, "for", |_| last(len - dt));
+                set(lines, c.line, "shift", moved);
             }
         }
     }
@@ -223,6 +228,9 @@ impl Origami {
         if self.scrubbing && self.player.is_some() {
             self.play();
         }
+        if self.turning.is_some() && self.past.last() == Some(&self.lines) {
+            self.past.pop();
+        }
         (self.scrubbing, self.pull, self.picking, self.turning, self.held, self.push) = (false, None, false, None, None, None);
         if self.slip.take().is_some() && self.lines != self.base {
             self.past.push(mem::take(&mut self.base));
@@ -245,10 +253,11 @@ impl Origami {
                 self.sel = Some(c.z);
                 self.reveal((c.line as usize).saturating_sub(1));
             }
-            false => {
+            false if self.lines != self.base => {
                 self.past.push(mem::take(&mut self.base));
                 self.future.clear();
             }
+            false => {}
         }
     }
 
@@ -340,5 +349,96 @@ mod tests {
         assert!(wheel(cx, 200.) > 2.);
         view.update(cx, |o, _| o.mouse = false);
         assert_eq!(wheel(cx, -400.), 1.);
+    }
+
+    fn window<'a>(cx: &'a mut gpui::TestAppContext, name: &str, src: &str) -> (gpui::Entity<Origami>, &'a mut gpui::VisualTestContext) {
+        let path = env::temp_dir().join(format!("origami-{name}-test.js"));
+        fs::write(&path, src).unwrap();
+        let tl = origami_lang::eval(&path, false, origami_engine::footprint).unwrap();
+        cx.add_window_view(|_, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            (app.script, app.lines, app.tl) = (path, src.lines().map(String::from).collect(), std::sync::Arc::new(tl));
+            app
+        })
+    }
+
+    // Clicking a clip that the timeline still shows after its lines were deleted from the script,
+    // or picking its layer in the Motion tab, should select it without crashing.
+    #[gpui::test]
+    fn stale_clips_still_click(cx: &mut gpui::TestAppContext) {
+        let src = "stack(\n  color(\"#203040\").for(4),\n  text(\"a\").for(4),\n  text(\"b\").for(4),\n)";
+        let (view, cx) = window(cx, "stale", src);
+        cx.run_until_parked();
+        view.update(cx, |o, _| o.lines = vec!["stack(".into()]);
+        let (x, top, h) = view.update_in(cx, |o, window, _| {
+            let h = f32::from(window.viewport_size().height);
+            (o.lead() + (2. / o.per_px(window)) as f32, h - 28. - o.dock + RULER, h)
+        });
+        let mut picked = None;
+        for y in (0..((h - 30. - top) / 6.) as usize).map(|i| top + 6. * i as f32) {
+            let at = gpui::point(px(x), px(y));
+            cx.simulate_mouse_down(at, gpui::MouseButton::Left, Default::default());
+            cx.simulate_mouse_up(at, gpui::MouseButton::Left, Default::default());
+            picked = picked.or(view.update(cx, |o, _| o.sel));
+        }
+        assert!(picked.is_some());
+        view.update(cx, |o, _| {
+            o.lines.clear();
+            (o.motion, o.sel) = (true, None);
+            o.pick(2);
+            assert_eq!((o.sel, o.top), (Some(2), 0.));
+        });
+    }
+
+    // Dragging a clip that shares its line with another clip, or whose call is spread over several
+    // lines, should leave the script alone with a note, and should not add an undo step. A clip on
+    // its own line still moves. Pressing a knob without turning it adds no undo step either.
+    #[gpui::test]
+    fn drags_refuse_unsafe_rewrites(cx: &mut gpui::TestAppContext) {
+        let shared = "stack(text(\"a\").for(2), text(\"b\").for(2).at(1))";
+        let (view, cx) = window(cx, "shared", shared);
+        let drag = |cx: &mut gpui::VisualTestContext, grab: Grab, z: usize, dt: f64| {
+            view.update(cx, |o, _| {
+                let c = o.tl.clips[z].clone();
+                o.base = o.lines.clone();
+                o.reshape(&grab, &c, dt);
+                o.drag = Some((grab, c, 0., dt));
+                o.release();
+                (o.lines.join("\n"), o.past.len(), o.note.clone())
+            })
+        };
+        let says = "line 1 holds more than b, edit the script to";
+        for grab in [Grab::Move, Grab::Left, Grab::Right] {
+            let got = drag(cx, grab, 1, 0.5);
+            assert_eq!((got.0.as_str(), got.1), (shared, 0));
+            assert!(got.2.starts_with(says), "{}", got.2);
+        }
+        view.update(cx, |o, _| {
+            (o.sel, o.note) = (Some(1), String::new());
+            o.shift(0.5);
+            assert_eq!((o.lines.join("\n").as_str(), o.past.len()), (shared, 0));
+            assert!(o.note.starts_with(says), "{}", o.note);
+        });
+        let spread = "stack(\n  text(\"a\").for(\n    2\n  ),\n  text(\"b\").for(2),\n)";
+        let (view, cx) = window(cx, "spread", spread);
+        let got = view.update(cx, |o, _| {
+            let c = o.tl.clips[0].clone();
+            o.base = o.lines.clone();
+            o.reshape(&Grab::Right, &c, 0.5);
+            o.drag = Some((Grab::Right, c, 0., 0.5));
+            o.release();
+            (o.lines.join("\n"), o.past.len(), o.note.clone())
+        });
+        assert_eq!((got.0.as_str(), got.1), (spread, 0));
+        assert_eq!(got.2, "line 2 holds more than a, edit the script to trim it");
+        view.update(cx, |o, _| {
+            let c = o.tl.clips[1].clone();
+            o.base = o.lines.clone();
+            o.reshape(&Grab::Move, &c, 0.5);
+            assert_eq!(o.lines[4], "  text(\"b\").for(2).shift(0.5000),");
+            (o.past, o.turning) = (vec![o.lines.clone()], Some(crate::knob::Turn::Wheel));
+            o.release();
+            assert!(o.past.is_empty());
+        });
     }
 }

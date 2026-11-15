@@ -2,7 +2,9 @@ mod error;
 mod grade;
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use boa_engine::{Context, JsError, JsNativeError, JsResult, JsString, JsValue, NativeFunction, Source, js_string, property::Attribute};
+use boa_engine::{
+    Context, JsError, JsNativeError, JsResult, JsString, JsValue, NativeFunction, Source, js_string, property::Attribute, script::Script,
+};
 pub use error::Error;
 pub use grade::{Curves, Grade, Secondary, Vignette, Wheels};
 use serde::{Deserialize, Serialize};
@@ -13,10 +15,16 @@ use std::{
     fs,
     io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
+    pin::pin,
     process::Command,
-    sync::{LazyLock, mpsc},
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering::Relaxed},
+        mpsc,
+    },
+    task::{self, Poll, Waker},
     thread,
-    time::UNIX_EPOCH,
+    time::{Duration, Instant, UNIX_EPOCH},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -155,6 +163,7 @@ pub type Measure = fn(&Clip, (f64, f64)) -> (f64, f64);
 thread_local! {
     static ST: RefCell<(PathBuf, Lock, Lock, bool, Option<Measure>)> = RefCell::default();
     static FAIL: RefCell<Option<Error>> = RefCell::default();
+    static COLD: RefCell<(bool, Vec<(String, PathBuf)>, Lock)> = RefCell::default();
 }
 
 fn find(dir: &Path, rel: &str) -> Option<PathBuf> {
@@ -206,42 +215,70 @@ fn face(dir: &Path, name: &str) -> Option<PathBuf> {
     files.into_iter().find(|p| p.is_file())
 }
 
-fn media(path: &Path, old: &Lock, new: &mut Lock, relock: bool, rel: &str) -> Result<String> {
+fn stat(path: &Path) -> Result<(u64, u64)> {
     let meta = fs::metadata(path)?;
-    let (size, mtime) = (meta.len(), meta.modified()?.duration_since(UNIX_EPOCH)?.as_secs());
+    Ok((meta.len(), meta.modified()?.duration_since(UNIX_EPOCH)?.as_secs()))
+}
+
+fn scan(path: &Path, prev: Option<&Media>, relock: bool, rel: &str) -> Result<Media> {
+    let ((size, mtime), mut hash, mut file) = (stat(path)?, Sha256::new(), fs::File::open(path)?);
+    BUSY.store(true, Relaxed);
+    hash.update(size.to_le_bytes());
+    for at in [0, size.saturating_sub(1 << 20)] {
+        file.seek(SeekFrom::Start(at))?;
+        io::copy(&mut (&file).take(1 << 20), &mut hash)?;
+    }
+    let sha = format!("{:x}", hash.finalize());
+    if prev.is_some_and(|p| p.sha != sha) && !relock {
+        bail!("{rel} changed since origami.lock (use --relock)");
+    }
+    let out = Command::new("ffprobe")
+        .args(["-v", "error", "-of", "json", "-show_entries"])
+        .arg("format=duration:stream=codec_type,width,height:stream_side_data=rotation")
+        .arg(path)
+        .output()
+        .context("ffprobe not found")?;
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    let streams = v["streams"].as_array().cloned().unwrap_or_default();
+    let has = |t| streams.iter().any(|s| s["codec_type"] == t);
+    let dim = |k| streams.iter().find_map(|s| s[k].as_u64()).unwrap_or(0) as u32;
+    let sides = streams.iter().flat_map(|s| s["side_data_list"].as_array().into_iter().flatten());
+    let turn = sides.filter_map(|d| d["rotation"].as_f64()).any(|r| r.abs() % 180. == 90.);
+    Ok(Media {
+        size,
+        mtime,
+        sha,
+        dur: v["format"]["duration"].as_str().and_then(|d| d.parse().ok()).unwrap_or(0.),
+        w: dim(if turn { "height" } else { "width" }),
+        h: dim(if turn { "width" } else { "height" }),
+        video: has("video"),
+        audio: has("audio"),
+    })
+}
+
+fn media(path: &Path, old: &Lock, new: &mut Lock, relock: bool, rel: &str) -> Result<String> {
+    let (size, mtime) = stat(path)?;
+    let same = |m: &Media| m.size == size && m.mtime == mtime;
     let m = match old.get(rel) {
-        Some(m) if m.size == size && m.mtime == mtime => m.clone(),
+        Some(m) if same(m) => m.clone(),
         prev => {
-            let (mut hash, mut file) = (Sha256::new(), fs::File::open(path)?);
-            hash.update(size.to_le_bytes());
-            for at in [0, size.saturating_sub(1 << 20)] {
-                file.seek(SeekFrom::Start(at))?;
-                io::copy(&mut (&file).take(1 << 20), &mut hash)?;
-            }
-            let sha = format!("{:x}", hash.finalize());
-            if prev.is_some_and(|p| p.sha != sha) && !relock {
-                bail!("{rel} changed since origami.lock (use --relock)");
-            }
-            let out = Command::new("ffprobe")
-                .args(["-v", "error", "-of", "json", "-show_entries"])
-                .arg("format=duration:stream=codec_type,width,height")
-                .arg(path)
-                .output()
-                .context("ffprobe not found")?;
-            let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
-            let streams = v["streams"].as_array().cloned().unwrap_or_default();
-            let has = |t| streams.iter().any(|s| s["codec_type"] == t);
-            let dim = |k| streams.iter().find_map(|s| s[k].as_u64()).unwrap_or(0) as u32;
-            Media {
-                size,
-                mtime,
-                sha,
-                dur: v["format"]["duration"].as_str().and_then(|d| d.parse().ok()).unwrap_or(0.),
-                w: dim("width"),
-                h: dim("height"),
-                video: has("video"),
-                audio: has("audio"),
-            }
+            let known = COLD.with_borrow_mut(|(first, missed, probed)| match first {
+                true => {
+                    missed.push((rel.into(), path.into()));
+                    Some(Media {
+                        size,
+                        mtime,
+                        sha: String::new(),
+                        dur: 0.,
+                        w: 0,
+                        h: 0,
+                        video: true,
+                        audio: true,
+                    })
+                }
+                false => probed.remove(rel).filter(same),
+            });
+            known.map_or_else(|| scan(path, prev, relock, rel), Ok)?
         }
     };
     new.insert(rel.into(), m.clone());
@@ -255,7 +292,7 @@ fn host(args: &[JsValue], cx: &mut Context, find: Find, f: impl FnOnce(&str, &Pa
     let (path, call) = (text(0)?, text(1)?);
     let line = args.get(2).and_then(JsValue::as_number).unwrap_or(0.) as u32;
     let out = match ST.with_borrow(|st| find(&st.0, &path)) {
-        Some(file) => f(&path, &file),
+        Some(file) => f(&path, &file).map_err(|e| anyhow!("line {line}: {call}(\"{path}\"): {e}")),
         None => Err(Error::Missing { call, path, line }.into()),
     };
     let fail = |e: anyhow::Error| {
@@ -295,10 +332,15 @@ fn extent(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> 
 fn tag(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
     let mut text = |i: usize| -> JsResult<String> { Ok(args.get(i).cloned().unwrap_or_default().to_string(cx)?.to_std_string_escaped()) };
     let (src, made, bare, called) = (text(0)?, text(1)?, text(2)?, text(3)?);
-    let (mut out, mut line, mut from) = (String::new(), 1, 0);
-    for (i, c) in src.match_indices(['(', '\n']) {
-        if c == "\n" {
-            line += 1;
+    let (mut out, mut line, mut from, mut quote) = (String::new(), 1, 0, None);
+    for (i, c) in src.match_indices(['(', '\n', '"', '\'', '`']) {
+        match (quote, c) {
+            (_, "\n") => (line, quote) = (line + 1, quote.filter(|q| *q == "`")),
+            (Some(q), _) if q == c && !src[..i].ends_with('\\') => quote = None,
+            (None, "\"" | "'" | "`") => quote = Some(c),
+            _ => {}
+        }
+        if quote.is_some() || c != "(" {
             continue;
         }
         let at = src[..i].trim_end_matches(|c: char| c.is_ascii_alphanumeric() || c == '_').len();
@@ -314,23 +356,50 @@ fn tag(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
 
 type Job = Box<dyn FnOnce(&mut Context) + Send>;
 
-static VM: LazyLock<mpsc::Sender<Job>> = LazyLock::new(|| {
+static VM: Mutex<Option<mpsc::Sender<Job>>> = Mutex::new(None);
+static BUSY: AtomicBool = AtomicBool::new(false);
+const LIMIT: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 10 });
+
+fn spawn() -> mpsc::Sender<Job> {
     let (jobs, queue) = mpsc::channel::<Job>();
-    thread::spawn(move || {
+    let work = move || {
         queue.iter().fold(boot(), |mut cx, job| {
             job(&mut cx);
             boot()
         });
-    });
+    };
+    thread::Builder::new().stack_size(256 << 20).spawn(work).unwrap();
     jobs
-});
+}
 
 fn js(e: JsError) -> anyhow::Error {
     anyhow!("{e}")
 }
 
+fn timed(cx: &mut Context, code: &str, path: Option<&Path>) -> Result<JsResult<JsValue>> {
+    let from = Instant::now();
+    let script = match Script::parse(Source::from_reader(code.as_bytes(), path), None, cx) {
+        Ok(script) => script,
+        Err(e) => return Ok(Err(e)),
+    };
+    let (mut run, mut poll) = (
+        pin!(script.evaluate_async_with_budget(cx, 1 << 16)),
+        task::Context::from_waker(Waker::noop()),
+    );
+    loop {
+        match run.as_mut().poll(&mut poll) {
+            Poll::Ready(v) => return Ok(v),
+            Poll::Pending if from.elapsed() > LIMIT && !BUSY.swap(false, Relaxed) => {
+                bail!("script took too long: stopped after {} seconds", LIMIT.as_secs())
+            }
+            Poll::Pending => {}
+        }
+    }
+}
+
 fn boot() -> Context {
     let mut cx = Context::default();
+    cx.runtime_limits_mut().set_loop_iteration_limit(10_000_000);
     for (name, f) in [
         (
             js_string!("__probe"),
@@ -352,12 +421,24 @@ fn boot() -> Context {
 fn ask(script: &Path, relock: bool, src: Option<&str>, measure: Measure) -> Result<Timeline> {
     let (script, src, (back, got)) = (script.to_path_buf(), src.map(String::from), mpsc::channel());
     let job = move |cx: &mut Context| {
-        FAIL.take();
         let tl = build(cx, &script, relock, src.as_deref(), measure);
         drop(back.send(tl.map_err(|e| FAIL.take().filter(|_| src.is_none()).map_or(e, Into::into))));
     };
-    let _ = VM.send(Box::new(job));
-    got.recv()?
+    let mut vm = VM.lock().unwrap();
+    let _ = vm.get_or_insert_with(spawn).send(Box::new(job));
+    loop {
+        match got.recv_timeout(LIMIT * 3) {
+            Ok(tl) => return tl,
+            Err(mpsc::RecvTimeoutError::Timeout) if BUSY.swap(false, Relaxed) => {}
+            Err(e) => {
+                vm.take();
+                match e {
+                    mpsc::RecvTimeoutError::Timeout => bail!("script took too long: stopped after {} seconds", LIMIT.as_secs() * 3),
+                    mpsc::RecvTimeoutError::Disconnected => bail!("script evaluation crashed: edit the script and try again"),
+                }
+            }
+        }
+    }
 }
 
 pub fn eval(script: &Path, relock: bool, measure: Measure) -> Result<Timeline> {
@@ -378,29 +459,71 @@ fn build(cx: &mut Context, script: &Path, relock: bool, src: Option<&str>, measu
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default();
-    ST.set((dir, old.clone(), Lock::new(), relock, Some(measure)));
+    let text = src.map_or_else(|| fs::read_to_string(&script), |s| Ok(s.into()))?;
+    let mut depth = 0;
+    let nest = |b| {
+        depth += matches!(b, b'(' | b'[' | b'{') as i32 - matches!(b, b')' | b']' | b'}') as i32;
+        depth > 100
+    };
+    if let Some(i) = text.bytes().position(nest) {
+        bail!(
+            "line {}: brackets are nested more than 100 deep",
+            text[..i].matches('\n').count() + 1
+        );
+    }
     let run = |cx: &mut Context, code: &str| cx.eval(Source::from_bytes(code)).map_err(js);
     let set = |cx: &mut Context, k: JsString, v: JsValue| cx.register_global_property(k, v, Attribute::all()).map_err(js);
-    set(
-        cx,
-        js_string!("__src"),
-        JsString::from(src.map_or_else(|| fs::read_to_string(&script), |s| Ok(s.into()))?).into(),
-    )?;
-    let code = run(cx, "__prep(__src)")?.to_string(cx).map_err(js)?.to_std_string_escaped();
-    let root = match run(cx, &code) {
-        Ok(root) => root,
-        Err(e) => {
-            set(cx, js_string!("__err"), JsString::from(e.to_string()).into())?;
-            bail!("{}", run(cx, "__late(__err)")?.to_string(cx).map_err(js)?.to_std_string_escaped());
-        }
+    let say = |cx: &mut Context, v: JsValue| Ok::<_, anyhow::Error>(v.to_string(cx).map_err(js)?.to_std_string_escaped());
+    let fault = |cx: &mut Context, e: JsError| -> Result<JsValue> {
+        set(cx, js_string!("__err"), JsString::from(e.to_string()).into())?;
+        let told = run(cx, "__late(__err)")?;
+        bail!("{}", say(cx, told)?);
     };
-    set(cx, js_string!("__root"), root)?;
-    let out = run(cx, "__out(__root)")?.to_string(cx).map_err(js)?.to_std_string_escaped();
+    let load = |cx: &mut Context| {
+        FAIL.take();
+        ST.set((dir.clone(), old.clone(), Lock::new(), relock, Some(measure)));
+        set(cx, js_string!("__src"), JsString::from(text.as_str()).into())?;
+        let code = run(cx, "__prep(__src)")?;
+        let code = say(cx, code)?;
+        timed(cx, &code, Some("script".as_ref()))?.or_else(|e| fault(cx, e))
+    };
+    COLD.set((true, vec![], Lock::new()));
+    let mut root = load(cx);
+    let mut missed = COLD.take().1;
+    if !missed.is_empty() {
+        missed.sort();
+        missed.dedup();
+        let probe = |part: &[(String, PathBuf)]| {
+            let known = |(rel, path): &(String, PathBuf)| Some((rel.clone(), scan(path, old.get(rel), relock, rel).ok()?));
+            part.iter().filter_map(known).collect::<Vec<_>>()
+        };
+        let probed = thread::scope(|s| {
+            let jobs: Vec<_> = missed
+                .chunks(missed.len().div_ceil(8))
+                .map(|part| s.spawn(move || probe(part)))
+                .collect();
+            jobs.into_iter().flat_map(|j| j.join().unwrap_or_default()).collect()
+        });
+        COLD.set((false, vec![], probed));
+        *cx = boot();
+        root = load(cx);
+    }
+    set(cx, js_string!("__root"), root?)?;
+    let out = timed(cx, "__out(__root)", None)?.or_else(|e| fault(cx, e))?;
+    let out = say(cx, out)?;
     let new = ST.take().2;
     if new != old && src.is_none() {
-        fs::write(lock, serde_json::to_string_pretty(&new)?)?;
+        let _ = fs::write(lock, serde_json::to_string_pretty(&new)?);
     }
-    Ok(serde_json::from_str(&out)?)
+    serde_json::from_str(&out).or_else(|_| {
+        let all: serde_json::Value = serde_json::from_str(&out)?;
+        for c in all["clips"].as_array().into_iter().flatten() {
+            if let Err(e) = Clip::deserialize(c) {
+                bail!("line {}: {e}", c["line"]);
+            }
+        }
+        Ok(serde_json::from_value(all)?)
+    })
 }
 
 #[cfg(test)]
@@ -706,5 +829,177 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         let t = tl("stack(text('x').for(2).loop(2).shift(1), color('red'))");
         let span: Vec<_> = t.clips.iter().map(|c| (c.start, c.end)).collect();
         assert_eq!(span, [(1., 3.), (3., 5.), (0., 5.)]);
+    }
+
+    fn fails(dir: &Path, src: &str) -> String {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(dir.join("edit.js"), src).unwrap();
+        eval(&dir.join("edit.js"), false, size).unwrap_err().to_string()
+    }
+
+    // Values that make no sense (a negative length, zero speed, a frame rate of 0, a loop without end,
+    // a day-long timeline) and common slips (a number among clips, an unclosed string or bracket, an
+    // error thrown by a function of time) should be refused with a message that names the line.
+    #[test]
+    fn slips_name_the_line() {
+        let deep = format!("{}text('a'){}", "\nstack(".repeat(101), ")".repeat(101));
+        for (src, line, says) in [
+            (
+                "text('a')\n  .for(NaN)",
+                2,
+                "for takes a time above 0, in seconds or \"m:ss\", up to 24 hours",
+            ),
+            ("text('a').for(-3)", 1, "for takes a time above 0"),
+            ("text('a')\n  .for(1e9)", 2, "for takes a time above 0"),
+            ("text('a')\n  .at('x')", 2, "at takes a time, in seconds"),
+            ("const a = text('a')\n  .speed(0)", 2, "speed takes a number above 0"),
+            ("text('a').speed(-1)", 1, "speed takes a number above 0"),
+            ("text('a')\n  .loop(Infinity)", 2, "loop takes a number"),
+            ("text('a')\n  .loop(1e9)", 2, "loop takes a whole number from 1 to 1000"),
+            ("text('a')\n  .fade('a')", 2, "fade takes seconds, 0 or more"),
+            ("text('a')\ntext('c', { size: 'big' })", 2, "size takes a number, 0 or more"),
+            ("\nsettings({ fps: 0 })\ntext('a')", 2, "fps takes a whole number from 1 to 240"),
+            ("settings({ fps: 1e9 })\ntext('a')", 1, "fps takes a whole number from 1 to 240"),
+            ("settings({\n  size: [0, 0] })\ntext('a')", 1, "size is written [1920, 1080]"),
+            (
+                "const a = text('a')\nstack(a,\n  5)",
+                2,
+                "stack takes clips, but item 2 is not a clip",
+            ),
+            ("const a = text('a')\n\n42\n", 3, "script must end with a clip"),
+            ("const a = text('a')\nstack(a,\n  text('c'.for(1))\n", 3, "SyntaxError: abrupt end"),
+            (
+                "const a = text('a')\nconst b = text(\"b).for(1)\nstack(a, b)",
+                2,
+                "SyntaxError: unterminated string literal",
+            ),
+            ("text('a')\ncolor()", 2, "color is written color(\"#203040\")"),
+            ("stack(text('a'),\n  text('c').scale(t => { throw new Error('x') }))", 2, "x"),
+            ("const a = text('a')\n\nstack(a, bb)", 3, "ReferenceError: bb is not defined"),
+            ("text('a')\n  .opacity(t => NaN)", 2, "a function of time must return a number"),
+            (
+                "cat(text('a').for(80000),\n  text('b').for(80000))",
+                2,
+                "b would end more than 24 hours in",
+            ),
+            (
+                "const a = text('a')\nconst f = () => f()\nstack(a, f())",
+                2,
+                "script took too long: a loop, or a function",
+            ),
+            (deep.as_str(), 102, "brackets are nested more than 100 deep"),
+        ] {
+            let e = fails(&std::env::temp_dir().join(format!("origami-slip-{line}-{}", src.len())), src);
+            assert!(e.starts_with(&format!("line {line}: {says}")), "{e}");
+        }
+        let fine = format!("{}text('a'){}", "stack(".repeat(99), ")".repeat(99));
+        assert_eq!(tl(&fine).clips.len(), 1);
+    }
+
+    // Words such as cat( or text( inside a quoted piece of text should be shown exactly as written.
+    #[test]
+    fn quoted_words_stay_as_written() {
+        let t = tl("stack(text('my cat(s), see text(1)').for(1), text(\"it's a stack(2)\").for(1), text(`line(3)`))");
+        let said: Vec<_> = t.clips.iter().map(|c| c.src.as_str()).collect();
+        assert_eq!(said, ["my cat(s), see text(1)", "it's a stack(2)", "line(3)"]);
+    }
+
+    fn boom(_: &Clip, _: (f64, f64)) -> (f64, f64) {
+        panic!("boom")
+    }
+
+    // A script that never finishes should be stopped with a message instead of hanging, a crash while
+    // evaluating should be reported, and the next script should evaluate normally either way.
+    #[test]
+    fn runaway_scripts_stop() {
+        let dir = std::env::temp_dir().join("origami-runaway");
+        let spin = "const spin = () => { for (let i = 0; i < 1e6; i++); }\nfor (let i = 0; i < 1e6; i++) spin()";
+        assert_eq!(fails(&dir, spin), "script took too long: stopped after 2 seconds");
+        assert_eq!(tl("text('a').for(3)").duration, 3.);
+        fs::write(dir.join("edit.js"), "const a = text('a')\ntext('b').pos(a.pos)").unwrap();
+        let e = eval(&dir.join("edit.js"), false, boom).unwrap_err().to_string();
+        assert_eq!(e, "script evaluation crashed: edit the script and try again");
+        assert_eq!(tl("text('a').for(4)").duration, 4.);
+    }
+
+    fn media(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("origami-{name}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let make = |args: &[&str]| {
+            let made = Command::new("ffmpeg")
+                .args(["-v", "error", "-y"])
+                .args(args)
+                .current_dir(&dir)
+                .status();
+            assert!(made.unwrap().success());
+        };
+        make(&["-f", "lavfi", "-i", "color=black:s=64x36:r=30:d=2", "v.mp4"]);
+        make(&["-display_rotation", "90", "-i", "v.mp4", "-c", "copy", "tall.mp4"]);
+        make(&["-f", "lavfi", "-i", "sine=d=2", "a.wav"]);
+        make(&["-f", "lavfi", "-i", "color=red:s=8x8", "-frames:v", "1", "i.png"]);
+        fs::write(dir.join("bad.mp4"), "not a film").unwrap();
+        fs::write(dir.join("bad.srt"), "1\n00:00:01,000 --> 00:00:02,000\nfine\n\n2\nxx --> yy\nodd\n").unwrap();
+        dir
+    }
+
+    // Opening a project for the first time should read every media file, give the same timeline as
+    // the next open and remember what it read, even when the folder cannot be written to. Footage
+    // turned on its side keeps its turned size, a trim past the end of a file stops at the end, and a
+    // file that changed since it was remembered is refused until asked to read it again.
+    #[test]
+    fn media_is_read_and_remembered() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, at) = (media("probe"), |c: &Clip| (c.src_in, c.end, c.w, c.h));
+        let (script, lock) = (dir.join("edit.js"), dir.join("origami.lock"));
+        let src = "const at = '.'\nconst v = video(at + '/v.mp4')\nstack(v.trim(1.5, 9), video('tall.mp4'), sound('a.wav').trim(-1, 1),\n  image('i.png').for(1))";
+        fs::write(&script, src).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+        let shut = eval(&script, false, size);
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!lock.exists());
+        let cold = eval(&script, false, size).unwrap();
+        let seen = fs::read_to_string(&lock).unwrap();
+        assert_eq!((shut.unwrap(), eval(&script, false, size).unwrap()), (cold.clone(), cold.clone()));
+        assert_eq!(fs::read_to_string(&lock).unwrap(), seen);
+        let c = &cold.clips;
+        assert_eq!((cold.size, at(&c[0]), at(&c[1])), ((64, 36), (1.5, 0.5, 64, 36), (0., 2., 36, 64)));
+        assert_eq!((at(&c[2]), at(&c[3])), ((0., 1., 0, 0), (0., 1., 8, 8)));
+        let seen: Lock = serde_json::from_str(&seen).unwrap();
+        assert_eq!(seen.keys().collect::<Vec<_>>(), ["./v.mp4", "a.wav", "i.png", "tall.mp4"]);
+        assert_eq!((seen["tall.mp4"].w, seen["tall.mp4"].dur, seen["a.wav"].audio), (36, 2., true));
+        fs::write(dir.join("i.png"), "changed").unwrap();
+        let e = eval(&script, false, size).unwrap_err().to_string();
+        assert_eq!(e, "line 4: image(\"i.png\"): i.png changed since origami.lock (use --relock)");
+        assert_eq!(
+            fails(&dir, src.replace("i.png", "none.png").as_str()),
+            "line 4: image(\"none.png\") points to a file that does not exist"
+        );
+    }
+
+    // A file that is not what the script says it is (a broken film, a film used as a picture, a
+    // picture used as sound, a subtitle file with a bad time) should be refused with a message that
+    // names the line and the file.
+    #[test]
+    fn odd_files_name_the_line() {
+        let dir = media("odd");
+        for (src, says) in [
+            ("video('bad.mp4')", "line 1: video(\"bad.mp4\") cannot be read as video"),
+            (
+                "text('a')\nimage('v.mp4')",
+                "line 2: image(\"v.mp4\") cannot be read as a still image",
+            ),
+            ("sound('i.png')", "line 1: sound(\"i.png\") cannot be read as sound"),
+            (
+                "stack(text('a'),\n  captions('bad.srt'))",
+                "line 2: captions(\"bad.srt\") line 6: xx --> yy is not a time range like 00:00:01,000 --> 00:00:04,000",
+            ),
+            (
+                "text('a')\n\ncaptions('i.png')",
+                "line 3: captions(\"i.png\"): stream did not contain valid UTF-8",
+            ),
+        ] {
+            assert_eq!(fails(&dir, src), says);
+        }
     }
 }

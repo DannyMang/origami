@@ -54,7 +54,9 @@ fn main() -> Result<()> {
                 .stdin(Stdio::piped())
                 .spawn()?;
             child.stdin.take().unwrap().write_all(&px)?;
-            child.wait()?;
+            if !child.wait()?.success() {
+                bail!("could not write {out}");
+            }
         }
         _ => bail!(
             "usage: origami render <script> <out.mp4> [--dry-run] [--relock] | origami frame <script> <seconds> <out.png> | origami ir <script>"
