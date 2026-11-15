@@ -556,9 +556,19 @@ impl Origami {
                     .child("Name"),
             )
             .child(ruler);
-        let (mut cells, mut lanes) = (vec![], vec![]);
+        let (mut cells, mut lanes, mut y, mut skip) = (vec![], vec![], 0., 0.);
         for c in &tl.clips {
-            let (z, on) = (c.z, self.sel == Some(c.z));
+            let (z, on, open) = (c.z, self.sel == Some(c.z), self.open.contains(&c.z));
+            let rows = if open { self.rows(c) } else { vec![] };
+            let tall = LAYER + if open { rows.len().max(count(c.kind)) as f32 * ATTR } else { 0. };
+            y += tall;
+            if y <= self.lift {
+                skip = y;
+                continue;
+            }
+            if y - tall >= self.lift + self.dock {
+                break;
+            }
             let bar = div()
                 .absolute()
                 .top(px(3.))
@@ -588,13 +598,12 @@ impl Origami {
                     .on_mouse_down(MouseButton::Left, Self::tap(cx, move |this, _, _| this.pick(z)))
                     .child(track().child(bar)),
             );
-            if self.open.contains(&z) {
-                let rows = self.rows(c);
+            if open {
                 cells.extend(self.cells(c, &rows, cx));
                 lanes.extend(self.lanes(c, &rows, per, cx));
             }
         }
-        let column = |rows: Vec<Div>| div().mt(px(-self.lift)).flex().flex_col().children(rows);
+        let column = |rows: Vec<Div>| div().mt(px(skip - self.lift)).flex().flex_col().children(rows);
         let time = div()
             .relative()
             .flex_1()

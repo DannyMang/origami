@@ -23,7 +23,7 @@ type Key = (String, usize, usize);
 type Px = Arc<Vec<u8>>;
 type Laid = Arc<(Vec<Glyph>, usize, usize)>;
 
-type Info = (&'static [&'static str], f64, f64, f64, f64);
+type Info = (&'static [&'static str], &'static str, f64, f64, f64, f64);
 
 static KNOWN: LazyLock<Mutex<HashMap<String, Info>>> = LazyLock::new(Mutex::default);
 
@@ -35,26 +35,39 @@ fn probe(path: &str) -> Info {
             "-select_streams",
             "v:0",
             "-show_entries",
-            "stream=codec_name,avg_frame_rate,time_base,duration",
+            "stream=codec_name,pix_fmt,avg_frame_rate,time_base,duration",
             "-of",
             "csv=p=0",
         ];
         let out = ffprobe().args(show).arg(path).output().map(|o| o.stdout).unwrap_or_default();
         let text = String::from_utf8_lossy(&out);
         let mut cols = text.lines().next().unwrap_or_default().split(',');
-        let (codec, rate) = (cols.next().unwrap_or_default(), cols.next().unwrap_or_default());
-        let (tb, dur) = (cols.next().and_then(|b| b.strip_prefix("1/")), cols.next());
+        let mut col = || cols.next().unwrap_or_default();
+        let (codec, pix, rate) = (col(), col(), col());
+        let (tb, dur) = (col().strip_prefix("1/"), col());
         let (n, d) = rate.split_once('/').unwrap_or_default();
-        let lead: &[&str] = match codec {
-            "h264" => &[],
-            "hevc" => &["-hwaccel", "videotoolbox", "-threads", "1"],
-            _ => &["-hwaccel", "videotoolbox"],
+        let (lead, down): (&[&str], &str) = match (codec, pix) {
+            ("h264", _) => (&[], ""),
+            ("hevc", "yuv420p10le") if cfg!(target_arch = "aarch64") => (
+                &[
+                    "-hwaccel",
+                    "videotoolbox",
+                    "-hwaccel_output_format",
+                    "videotoolbox_vld",
+                    "-threads",
+                    "1",
+                ],
+                "hwdownload,format=p010le,",
+            ),
+            ("hevc", _) => (&["-hwaccel", "videotoolbox", "-threads", "1"], ""),
+            _ => (&["-hwaccel", "videotoolbox"], ""),
         };
         (
             lead,
+            down,
             n.parse().unwrap_or(0.),
             d.parse().unwrap_or(0.),
-            dur.and_then(|t| t.parse().ok()).unwrap_or(0.),
+            dur.parse().unwrap_or(0.),
             tb.and_then(|b| b.parse().ok()).unwrap_or(0.),
         )
     };
@@ -72,8 +85,8 @@ fn still(path: &str, t: f64, w: usize, h: usize) -> Option<Vec<u8>> {
 }
 
 pub fn thumb(path: &str, t: f64, w: usize, h: usize) -> Option<Vec<u8>> {
-    let fast = ["-skip_frame", "nokey", "-ss", &t.to_string(), "-i", path];
-    raw(&[probe(path).0, &fast, &["-vf", &format!("scale={w}:{h}")]].concat(), w * h * 4)
+    let ((lead, down, ..), fast) = (probe(path), ["-skip_frame", "nokey", "-ss", &t.to_string(), "-i", path]);
+    raw(&[lead, &fast, &["-vf", &format!("{down}scale={w}:{h}")]].concat(), w * h * 4)
 }
 
 pub fn peaks(path: &str) -> Vec<f32> {
@@ -263,10 +276,10 @@ impl Preview {
             c.src.clone()
         };
         let (n, d, tb) = match probe(&src) {
-            (_, n, d, _, tb) if n > 0. && d > 0. => (n, d, tb),
+            (_, _, n, d, _, tb) if n > 0. && d > 0. => (n, d, tb),
             _ => (fps, 1., 0.),
         };
-        ((src, tw, th), index(c, t, fps, (n, d, tb), probe(&c.src).3), (n, d))
+        ((src, tw, th), index(c, t, fps, (n, d, tb), probe(&c.src).4), (n, d))
     }
 
     pub fn seam(c: &Clip, t: f64, fps: u32) -> f64 {
@@ -334,10 +347,15 @@ impl Preview {
             Some(i) => self.decoders.remove(i),
             None => {
                 let seek = (from - 1).max(0);
-                let args = ["-ss", &(seek as f64 * d / n).to_string(), "-i", &key.0];
+                let (args, (lead, down, ..)) = (["-ss", &(seek as f64 * d / n).to_string(), "-i", &key.0], probe(&key.0));
                 let out = [
                     "-vf",
-                    &format!("fps={n}/{d}:start_time={},scale={}:{}", (from - seek) as f64 * d / n, key.1, key.2),
+                    &format!(
+                        "fps={n}/{d}:start_time={},{down}scale={}:{}",
+                        (from - seek) as f64 * d / n,
+                        key.1,
+                        key.2
+                    ),
                     "-fps_mode",
                     "passthrough",
                     "-f",
@@ -352,7 +370,7 @@ impl Preview {
                 };
                 let child = ffmpeg()
                     .args(["-v", "error"])
-                    .args(probe(&key.0).0)
+                    .args(lead)
                     .args(lrf)
                     .args(args)
                     .args(out)
