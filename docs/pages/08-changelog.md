@@ -42,7 +42,7 @@ What changed in each version of Origami. The launch screen shows the version you
   - A huge size or scale is an error on its line instead of crashing the app.
   - A take or paste no longer lands in the wrong group when a comment contains an apostrophe.
   - An `ffmpeg` that can't run, early on your PATH, no longer hides a working one.
-  - A colour that doesn't parse is an error instead of black. Only `"white"`, `"black"` and hex colours work.
+  - Colours are hex only, such as `"#ffffff"`. Anything else is an error on its line instead of black. Click a colour in the script to pick it on the colour wheel.
   - Odd frame sizes are rounded up to even numbers, because video files need even sizes, and the status bar says so.
   - An export that stops making progress for 30 seconds is stopped and reported. Exports stop when the app quits. A second export waits for the first.
 

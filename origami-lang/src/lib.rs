@@ -808,7 +808,7 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         );
         assert_eq!(
             (c[1].kind, c[1].ends, c[1].size, c[1].color.as_str()),
-            (Kind::Line, [0.1, 0.5, 0.9, 0.5], 4., "white")
+            (Kind::Line, [0.1, 0.5, 0.9, 0.5], 4., "#ffffff")
         );
         assert!(matches!((c[2].size, &c[2].rotate), (9., Val::Frames(4, _))));
         assert_eq!((c[3].background.as_str(), c[3].align.as_str()), ("#00000080", "left"));
@@ -1047,13 +1047,14 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
             fs::write(dir.join("edit.js"), src).unwrap();
             eval(&dir.join("edit.js"), true, size).map_err(|e| e.to_string())
         };
-        let ok = "stack(color('white').for(1), color('#abc'), color('#abcd'), color('ABCDEF'), color('#aabbcc80'), text('a', { color: 'black', background: '#0008' }), rect(9, 9, { color: '#fff' }), line(0, 0, 1, 1, { color: '#000' }), text('b').hslSecondary({ key: { color: '#f00' } }))";
+        let ok = "stack(color('#ffffff').for(1), color('#abc'), color('#abcd'), color('ABCDEF'), color('#aabbcc80'), text('a', { color: '#000000', background: '#0008' }), rect(9, 9, { color: '#fff' }), line(0, 0, 1, 1, { color: '#000' }), text('b').hslSecondary({ key: { color: '#f00' } }))";
         assert!(run(ok).is_ok());
         for (src, want) in [
             ("text('a')\nrect(9, 9, { color: 'bleu' })", "line 2: \"bleu\" is not a colour"),
             ("text('a', { color: '#ff000' })", "line 1: \"#ff000\" is not a colour"),
             ("text('a',\n  { background: 'nope' })", "line 1: \"nope\" is not a colour"),
             ("text('a')\ncolor('red')", "line 2: \"red\" is not a colour"),
+            ("text('a', { color: 'white' })", "line 1: \"white\" is not a colour: write hex"),
             (
                 "text('a').hslSecondary({ key: { color: '+fffff' } })",
                 "line 1: \"+fffff\" is not a colour",

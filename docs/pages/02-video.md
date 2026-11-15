@@ -83,7 +83,7 @@ settings({ size: [640, 360] })
 color("#74ade8").for(2)
 ```
 
-Colours are `"white"`, `"black"`, or hex: `"#rgb"`, `"#rrggbb"`, and with transparency `"#rgba"` or `"#rrggbbaa"`. `"#0008"` is half-see-through black. Anything else, such as `"red"`, is an error on its line.
+Colours are hex: `"#rgb"`, `"#rrggbb"`, and with transparency `"#rgba"` or `"#rrggbbaa"`. `"#0008"` is half-see-through black. Click a colour in the script to pick it on a colour wheel. Anything else, such as `"red"`, is an error on its line.
 
 ## rect
 
@@ -105,6 +105,6 @@ Draws a line from one point to another. Points are shares of the frame: `0, 0` i
 settings({ size: [640, 360] })
 stack(
   color("#203040").for(3),
-  line(0.1, 0.5, 0.9, 0.5, { color: "white", width: 4 }).for(3),
+  line(0.1, 0.5, 0.9, 0.5, { color: "#ffffff", width: 4 }).for(3),
 )
 ```

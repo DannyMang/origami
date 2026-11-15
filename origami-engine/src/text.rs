@@ -24,11 +24,7 @@ fn face(path: &str) -> Arc<Font> {
 }
 
 pub fn tone(s: &str) -> Option<[u8; 4]> {
-    let hex = match s {
-        "white" => "ffffff",
-        "black" => "000000",
-        s => s.strip_prefix('#').unwrap_or(s),
-    };
+    let hex = s.strip_prefix('#').unwrap_or(s);
     let wide: String = match hex.len() {
         3 | 4 => hex.chars().flat_map(|c| [c, c]).collect(),
         _ => hex.into(),
@@ -143,14 +139,14 @@ pub fn raster(c: &Clip, k: f64) -> (Vec<u8>, usize, usize) {
 mod tests {
     use super::*;
 
-    // Colours written as names or hex codes, with or without transparency, should be read correctly,
+    // Colours written as hex codes, with or without transparency, should be read correctly,
     // and anything unrecognised rejected. Drawing a see-through colour over another should mix the two
     // properly.
     #[test]
     fn colours_carry_alpha() {
         let all = [
-            "white",
-            "black",
+            "#fff",
+            "#000000",
             "#f80",
             "#f808",
             "#ff8800",
@@ -180,8 +176,8 @@ mod tests {
     #[test]
     fn accents_and_fallback() {
         let c: Clip = serde_json::from_str(
-            r#"{"kind":"text","src":"eé日b","w":0,"h":0,"start":0,"end":1,"src_in":0,"speed":1,"z":0,"scale":1,"pos":[null,null],
-            "gain":1,"fade":[0,0],"label":"","line":1,"video":true,"audio":false,"size":50,"color":"white","opacity":1,"rotate":0,"shown":1}"#,
+            r##"{"kind":"text","src":"eé日b","w":0,"h":0,"start":0,"end":1,"src_in":0,"speed":1,"z":0,"scale":1,"pos":[null,null],
+            "gain":1,"fade":[0,0],"label":"","line":1,"video":true,"audio":false,"size":50,"color":"#ffffff","opacity":1,"rotate":0,"shown":1}"##,
         )
         .unwrap();
         let (g, ..) = glyphs(&c, 1., true);

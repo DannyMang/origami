@@ -7,7 +7,7 @@
   const DAY = 86400
   const must = (ok, say) => { if (!ok) throw new Error(`line ${at}: ${say}`) }
   const paint = c => {
-    must(/^(white|black|#?([\da-f]{3,4}|[\da-f]{6}|[\da-f]{8}))$/i.test(c), `${JSON.stringify(c)} is not a colour: write "white", "black", "#rgb", "#rrggbb" or "#rrggbbaa"`)
+    must(/^#?([\da-f]{3,4}|[\da-f]{6}|[\da-f]{8})$/i.test(c), `${JSON.stringify(c)} is not a colour: write hex, like "#ffffff" or "#ffffff80", and click it for the colour wheel`)
     return c
   }
   const span = (k, t, some) => {
@@ -119,18 +119,18 @@
     return { kind, src: m.path, w: m.w, h: m.h, label: stem(p), ...pick(m) }
   })
   const words = (size, pos) => leaf((s, o = {}) => {
-    if (typeof o !== 'object') throw new Error(`line ${at}: options are written { size: 72, color: "white" }`)
+    if (typeof o !== 'object') throw new Error(`line ${at}: options are written { size: 72, color: "#ffffff" }`)
     if (!['left', 'center', 'right'].includes(o.align ?? 'center')) throw new Error(`line ${at}: align is "left", "center" or "right"`)
     must(Number.isFinite(o.size ?? size) && (o.size ?? size) >= 0, 'size takes a number, 0 or more')
     return {
-      kind: 'text', src: String(s), video: true, audio: false, size: o.size ?? size, color: paint(o.color ?? 'white'), font: o.font == null ? '' : __font(o.font, 'font', at), pos, label: String(s),
+      kind: 'text', src: String(s), video: true, audio: false, size: o.size ?? size, color: paint(o.color ?? '#ffffff'), font: o.font == null ? '' : __font(o.font, 'font', at), pos, label: String(s),
       background: o.background == null ? o.background : paint(o.background), align: o.align,
     }
   })
   const shape = (kind, n, how, make) => leaf((...a) => {
     const o = a[n] ?? {}
     if (!(a.length >= n && a.slice(0, n).every(Number.isFinite)) || typeof o !== 'object') throw new Error(`line ${at}: ${kind} is written ${how}`)
-    return { kind, src: '', video: true, audio: false, color: paint(o.color ?? 'white'), label: kind, ...make(a, o) }
+    return { kind, src: '', video: true, audio: false, color: paint(o.color ?? '#ffffff'), label: kind, ...make(a, o) }
   })
   const group = (cat, k) => line(n => (...kids) => {
     at = n || at
@@ -211,7 +211,7 @@
       return { kind: 'color', src: paint(c), video: true, audio: false, label: c }
     }),
     rect: shape('rect', 2, 'rect(400, 120, { color: "#0008", radius: 12 })', ([w, h], o) => ({ w: Math.max(1, Math.round(w)), h: Math.max(1, Math.round(h)), radius: o.radius ?? 0 })),
-    line: shape('line', 4, 'line(0.1, 0.5, 0.9, 0.5, { color: "white", width: 4 })', (a, o) => ({ ends: a.slice(0, 4), size: o.width ?? 4 })),
+    line: shape('line', 4, 'line(0.1, 0.5, 0.9, 0.5, { color: "#ffffff", width: 4 })', (a, o) => ({ ends: a.slice(0, 4), size: o.width ?? 4 })),
     cat: group(true, 'cat'),
     stack: pile,
   })

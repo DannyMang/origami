@@ -149,8 +149,7 @@ fn scan(line: &str, call: &str, from: usize, end: usize) -> Vec<Knob> {
             b'"' | b'\'' => {
                 i = line[i + 1..end].find(c as char).map_or(end, |n| i + 1 + n);
                 let text = &line[from + 1..i.min(end)];
-                let named = ["white", "black"].contains(&text) && (key == "color" || key == "background" || call == "color");
-                if let Some([r, g, b, a]) = tone(text).filter(|_| named || text.starts_with('#')) {
+                if let Some([r, g, b, a]) = tone(text).filter(|_| text.starts_with('#')) {
                     let rgb = u32::from_be_bytes([0, r, g, b]) as f64;
                     for (label, value, hi) in [("#", rgb, 16777215.), ("strength", a as f64 / 255., 1.)] {
                         out.push(Knob {
@@ -649,7 +648,7 @@ mod tests {
             labels("color(\"#282c33\").for(5)", 2),
             [("#".into(), 0x282c33 as f64), ("strength".into(), 1.)]
         );
-        let tag = "text(\"a\", { size: 28, color: \"white\", background: \"#0008\" })";
+        let tag = "text(\"a\", { size: 28, color: \"#ffffff\", background: \"#0008\" })";
         assert_eq!(labels(tag, 2).len(), 5);
         assert_eq!(
             labels(tag, tag.find("\"#0008").unwrap()),
