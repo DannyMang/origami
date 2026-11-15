@@ -10,6 +10,7 @@ mod lint;
 mod motion;
 mod mouse;
 mod peek;
+mod release;
 mod scene;
 mod search;
 mod stage;
@@ -147,6 +148,7 @@ struct Origami {
     mic: Option<String>,
     mics: Vec<String>,
     stir: Instant,
+    latest: Option<(String, String)>,
     focus: FocusHandle,
 }
 
@@ -488,6 +490,7 @@ fn fresh(focus: FocusHandle, recent: Vec<PathBuf>) -> Origami {
         mic: None,
         mics: vec![],
         stir: Instant::now(),
+        latest: None,
         focus,
     }
 }
@@ -533,6 +536,14 @@ fn main() {
                     while this.update(cx, |this, cx| this.tick(cx)).is_ok() {
                         cx.background_executor().timer(Duration::from_millis(16)).await;
                     }
+                })
+                .detach();
+                cx.spawn(async move |this, cx| {
+                    let latest = cx.background_executor().spawn(async { release::latest() }).await;
+                    this.update(cx, |this, cx| {
+                        this.latest = latest;
+                        cx.notify();
+                    })
                 })
                 .detach();
                 let mut app = fresh(focus, recent);

@@ -2,6 +2,7 @@ use crate::{
     Asset, Mode, Origami,
     full::corners,
     keys::stamp,
+    release::VERSION,
     stage::{draw, letterbox},
 };
 use gpui::{
@@ -978,7 +979,24 @@ impl Origami {
             .bg(rgb(BG))
             .text_color(rgb(TEXT))
             .font_family("Menlo")
-            .child(div().text_size(px(22.)).child("origami"))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(div().text_size(px(22.)).child("origami"))
+                    .child(match self.latest.clone() {
+                        Some((tag, url)) => div()
+                            .text_size(px(12.))
+                            .text_color(rgb(BLUE))
+                            .underline()
+                            .cursor_pointer()
+                            .on_mouse_down(MouseButton::Left, move |_, _, cx| cx.open_url(&url))
+                            .child(format!("v{VERSION} \u{b7} v{tag} available")),
+                        None => div().text_size(px(12.)).text_color(rgb(DIM)).child(format!("v{VERSION}")),
+                    }),
+            )
             .child(
                 div()
                     .flex()
