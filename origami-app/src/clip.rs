@@ -95,7 +95,11 @@ impl Origami {
         let (first, last) = bare.map_or((first, last), |i| (i, i));
         let item: String = self.lines[first..=last].iter().map(|l| l.trim()).collect();
         let item = item.strip_suffix(',').unwrap_or(&item);
-        if bare.is_none() && twins.len() > 1 || !whole(item) {
+        let body = match named(item) {
+            Some(_) if ["move", "trim"].contains(&verb) => item.split_once('=').map_or(item, |p| p.1.trim()),
+            _ => item,
+        };
+        if bare.is_none() && twins.len() > 1 || !whole(body) {
             self.note = format!("line {} holds more than {}, edit the script to {verb} it", c.line, c.label);
             return None;
         }

@@ -70,8 +70,10 @@ pub struct Glyph {
 
 pub fn glyphs(c: &Clip, k: f64, ink: bool) -> (Vec<Glyph>, usize, usize) {
     let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
-    let (fonts, size) = ([face(&c.font), face(SPARE)], c.size * c.scale.max() * k);
-    let pick = |ch| (fonts[0].lookup_glyph_index(ch) == 0 && fonts[1].lookup_glyph_index(ch) != 0) as usize;
+    let (main, size) = (face(&c.font), c.size * c.scale.max() * k);
+    let lack = c.src.chars().any(|ch| main.lookup_glyph_index(ch) == 0);
+    let fonts: Vec<Arc<Font>> = [main].into_iter().chain(lack.then(|| face(SPARE))).collect();
+    let pick = |ch| (fonts[0].lookup_glyph_index(ch) == 0 && fonts.get(1).is_some_and(|f| f.lookup_glyph_index(ch) != 0)) as usize;
     let mut runs: Vec<(usize, usize)> = vec![];
     for (i, ch) in c.src.char_indices() {
         if runs.last().is_none_or(|r| r.1 != pick(ch)) {

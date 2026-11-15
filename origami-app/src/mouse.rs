@@ -456,4 +456,18 @@ mod tests {
             assert!(o.past.is_empty());
         });
     }
+
+    // A named clip used inside a stack on another line should still trim and move from the
+    // timeline, while the clip menu, which copies whole lines, still leaves its definition alone.
+    #[gpui::test]
+    fn named_clips_still_drag(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = window(cx, "named", "const a = text(\"a\").for(2)\nstack(text(\"b\").for(4), a)");
+        view.update(cx, |o, _| {
+            let c = o.tl.clips.iter().find(|c| c.label == "a").unwrap().clone();
+            o.reshape(&Grab::Right, &c, 0.5);
+            o.reshape(&Grab::Move, &c, 0.5);
+            assert_eq!(o.lines[0], "const a = text(\"a\").for(2.50).shift(0.5000)");
+            assert!(o.used(c, "duplicate").is_none());
+        });
+    }
 }

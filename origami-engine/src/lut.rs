@@ -24,18 +24,28 @@ fn mix(a: [f32; 3], b: [f32; 3], f: f32) -> [f32; 3] {
     array::from_fn(|i| a[i] + (b[i] - a[i]) * f)
 }
 
+fn spread<T: Send>(out: &mut [T], unit: usize, f: impl Fn(usize, &mut [T]) + Sync) {
+    let band = out.len().div_ceil(unit).div_ceil(64).max(1) * unit;
+    let parts = Mutex::new(out.chunks_mut(band).enumerate());
+    let next = || parts.lock().unwrap().next();
+    thread::scope(|s| {
+        for _ in 0..thread::available_parallelism().map_or(1, usize::from) {
+            s.spawn(|| {
+                while let Some((i, part)) = next() {
+                    f(i * band, part)
+                }
+            });
+        }
+    });
+}
+
 impl Lut {
     pub fn bake(n: usize, f: impl Fn(Rgb) -> Rgb + Sync) -> Self {
         let at = |i: usize| (i % n) as f64 / (n - 1) as f64;
-        let (mut t, band) = (vec![[0.; 3]; n * n * n], (n * n * n).div_ceil(8));
-        thread::scope(|s| {
-            for (k, part) in t.chunks_mut(band).enumerate() {
-                let f = &f;
-                s.spawn(move || {
-                    for (i, c) in (k * band..).zip(part) {
-                        *c = f([at(i), at(i / n), at(i / n / n)]).map(|v| v as f32);
-                    }
-                });
+        let mut t = vec![[0.; 3]; n * n * n];
+        spread(&mut t, 1, |from, part| {
+            for (i, c) in (from..).zip(part) {
+                *c = f([at(i), at(i / n), at(i / n / n)]).map(|v| v as f32);
             }
         });
         Self { n, cube: true, t }
@@ -98,16 +108,11 @@ impl Lut {
 
     pub fn apply(&self, px: &[u8]) -> Vec<u8> {
         let cells: [(usize, f32); 256] = array::from_fn(|v| self.cell(v as f64 / 255.));
-        let mut out = px.to_vec();
-        let band = (out.len() / 4).div_ceil(8).max(1) * 4;
-        thread::scope(|s| {
-            for part in out.chunks_mut(band) {
-                s.spawn(|| {
-                    for p in part.chunks_exact_mut(4) {
-                        let [r, g, b] = self.blend([cells[p[2] as usize], cells[p[1] as usize], cells[p[0] as usize]]);
-                        (p[0], p[1], p[2]) = ((b * 255.) as u8, (g * 255.) as u8, (r * 255.) as u8);
-                    }
-                });
+        let mut out = vec![0; px.len()];
+        spread(&mut out, 4, |from, part| {
+            for (p, s) in part.chunks_exact_mut(4).zip(px[from..].chunks_exact(4)) {
+                let [r, g, b] = self.blend([cells[s[2] as usize], cells[s[1] as usize], cells[s[0] as usize]]);
+                p.copy_from_slice(&[(b * 255.) as u8, (g * 255.) as u8, (r * 255.) as u8, s[3]]);
             }
         });
         out
