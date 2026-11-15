@@ -850,6 +850,8 @@ stack(shot, title.shift(1), tag, note, text(\"inline\").for(2))";
         edit(src, row, Kind::Text, name, |_| new.into())
     }
 
+    // A keys(...) expression in the script should be read into its separate keys and written back
+    // exactly as it was. Anything that is not a plain list of keys is left alone.
     #[test]
     fn reads_and_writes_keys() {
         let src = "keys([0, 0], [0.9, 1, \"slowOut\"], [-0.6, 1], [\"100%\", 0, bezier(0.3, 0, 0.6, 1)])";
@@ -874,6 +876,9 @@ stack(shot, title.shift(1), tag, note, text(\"inline\").for(2))";
         }
     }
 
+    // Dragging a key in the Motion tab should change its time and value, snap to whole frames, keep
+    // the way its time is written (seconds, from the end, or percent), and never pass the keys beside
+    // it. Values are kept within what each property allows.
     #[test]
     fn moves_a_key() {
         let mut k = keys("keys([0, 0], [0.9, 1, \"slowOut\"], [-0.6, 1], [\"100%\", 0])");
@@ -903,6 +908,9 @@ stack(shot, title.shift(1), tag, note, text(\"inline\").for(2))";
         );
     }
 
+    // Clicking the key diamond should add a key at the playhead or remove the one already there;
+    // removing the last key turns the property back into a plain number. Changing a value while
+    // animated updates the key at the playhead or adds one.
     #[test]
     fn toggles_a_key_at_the_playhead() {
         assert_eq!(toggle("", 1.5, 0.5, 4., 30.), "keys([1.5, 0.5])");
@@ -916,6 +924,9 @@ stack(shot, title.shift(1), tag, note, text(\"inline\").for(2))";
         assert_eq!(assign("null", 3.9, 0.2, 4., 30.), "0.2");
     }
 
+    // Changing a property in the Motion tab should edit the matching call in the clip's script, or add
+    // the call when it is missing, without disturbing the rest. A script too unusual to edit safely is
+    // left unchanged.
     #[test]
     fn patches_the_chain() {
         let row = |s: &str, n: usize| s.lines().nth(n).unwrap().to_string();
@@ -949,6 +960,8 @@ stack(shot, title.shift(1), tag, note, text(\"inline\").for(2))";
         assert_eq!(set("text(\"a\").pos()", 0, "y", "0.6"), "text(\"a\").pos(null, 0.6)");
     }
 
+    // Changing text size, colour, font or background in the Motion tab should update the options
+    // written in the script, whether they sit on one line or several.
     #[test]
     fn rewrites_text_options() {
         let row = |s: &str, n: usize| s.lines().nth(n).unwrap().to_string();
@@ -982,6 +995,8 @@ stack(shot, title.shift(1), tag, note, text(\"inline\").for(2))";
         assert_eq!(row(&set(wide, 0, "y", "0.5"), 5), "  .pos(0.1, 0.5)");
     }
 
+    // Changing a rectangle's or line's width, height, radius or colour should update its numbers and
+    // options in the script.
     #[test]
     fn rewrites_shapes() {
         let src =
@@ -1031,6 +1046,8 @@ stack(shot, title.at(1), tag, twin, text(\"inline\"))";
         TIED.lines().take(row).map(|l| l.len() + 1).sum()
     }
 
+    // The app should recognise when a property follows another clip's, with an optional offset or
+    // multiplier, and treat anything more complicated as not a connection.
     #[test]
     fn reads_links() {
         let l = |clip: &str, attr, wire| Link {
@@ -1077,6 +1094,9 @@ stack(shot, title.at(1), tag, twin, text(\"inline\"))";
         assert_eq!(name("const k = () => text(\"a\")", 0, Kind::Text), None);
     }
 
+    // Connecting a property to another clip's should write the reference into the script, and refuse
+    // with a reason when the other clip is defined later or has no name. Breaking a connection writes
+    // the current value back as a plain number.
     #[test]
     fn connects_and_breaks() {
         let row = |s: &str, n: usize| s.lines().nth(n).unwrap().to_string();
@@ -1119,6 +1139,8 @@ stack(shot, title.at(1), tag, twin, text(\"inline\"))";
         );
     }
 
+    // Dragging a curve handle in the graph view should be stored as a bezier ease, and reading that
+    // ease back should put the handle where it was.
     #[test]
     fn handles_round_trip() {
         let (a, b) = ((1., 0.2), (3., 0.6));
@@ -1137,6 +1159,8 @@ stack(shot, title.at(1), tag, twin, text(\"inline\"))";
         assert_eq!(bent("", false, a, (3., 0.2), (0., 5.)), "bezier(0.33, 0.33, 0, 0.67)");
     }
 
+    // After a long run of Motion tab edits to one script, the script should still run and give the
+    // values that were set.
     #[test]
     fn rewrites_still_evaluate() {
         let mut src = SRC.to_string();

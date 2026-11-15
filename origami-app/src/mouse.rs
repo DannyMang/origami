@@ -120,13 +120,6 @@ impl Origami {
         self.pan = within(self.t - self.span() / 2., self.tl.duration, self.span());
     }
 
-    pub fn fullscreen(&mut self, window: &Window) {
-        self.full = !self.full;
-        if window.is_fullscreen() != self.full {
-            window.toggle_fullscreen();
-        }
-    }
-
     pub fn scrub(&mut self, x: Pixels, window: &Window) {
         if self.mouse {
             self.scrubbing = true;
@@ -260,9 +253,6 @@ impl Origami {
     }
 
     pub fn scroll(&mut self, e: &ScrollWheelEvent, window: &Window) {
-        if !self.mouse {
-            return;
-        }
         let (d, t, per) = (e.delta.pixel_delta(px(16.)), self.at(e.position.x, window), self.per_px(window));
         if self.web {
             return self.roam = (self.roam.0 - f32::from(d.x), self.roam.1 - f32::from(d.y));
@@ -295,6 +285,7 @@ impl Origami {
 mod tests {
     use super::*;
 
+    // Timeline zoom, scroll position and panel sizes should stay inside sensible limits.
     #[test]
     fn limits() {
         assert_eq!((deep(0.2, 60., 30.), deep(500., 60., 30.)), (1., 64.));
@@ -308,5 +299,46 @@ mod tests {
             (pane(900., 380., 260.), pane(100., 380., 260.), pane(900., 100., 260.)),
             (380., 260., 260.)
         );
+    }
+
+    // Scrolling the wheel over the timeline should zoom in, and scrolling back should never zoom out
+    // further than showing the whole timeline.
+    #[gpui::test]
+    fn zooms(cx: &mut gpui::TestAppContext) {
+        let path = env::temp_dir().join("origami-zoom-test.js");
+        fs::write(&path, "stack(color(\"#203040\").for(40))\n").unwrap();
+        let tl = origami_lang::eval(&path, false, origami_engine::footprint).unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            (app.script, app.lines, app.tl) = (
+                path.clone(),
+                vec!["stack(color(\"#203040\").for(40))".into()],
+                std::sync::Arc::new(tl),
+            );
+            app
+        });
+        cx.run_until_parked();
+        let h = view.update_in(cx, |_, window, _| f32::from(window.viewport_size().height));
+        let wheel = |cx: &mut gpui::VisualTestContext, y: f32| {
+            cx.simulate_event(ScrollWheelEvent {
+                position: gpui::point(px(300.), px(h - 100.)),
+                delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(y))),
+                ..Default::default()
+            });
+            view.update(cx, |o, _| o.zoom)
+        };
+        let spot = gpui::point(px(300.), px(h - 40.));
+        cx.simulate_event(gpui::MouseDownEvent {
+            button: gpui::MouseButton::Left,
+            position: spot,
+            modifiers: Default::default(),
+            click_count: 2,
+            first_mouse: false,
+        });
+        let (t, want) = view.update_in(cx, |o, window, _| (o.t, o.at(spot.x, window)));
+        assert!(t > 0. && (t - want).abs() < 0.04);
+        assert!(wheel(cx, 200.) > 2.);
+        view.update(cx, |o, _| o.mouse = false);
+        assert_eq!(wheel(cx, -400.), 1.);
     }
 }

@@ -231,6 +231,8 @@ mod tests {
     use super::*;
     use origami_lang::Kind;
 
+    // In the Graph tab, a clip that follows another should be drawn one column to its right, so
+    // connections read left to right.
     #[test]
     fn lays_out_by_depth() {
         let src = "const shot = color(\"#203040\").for(6)

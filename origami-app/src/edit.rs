@@ -6,7 +6,7 @@ fn reach(wide: f32, room: f32) -> f32 {
     (wide - room + 40.).max(0.)
 }
 
-fn links(chain: &str) -> Vec<String> {
+pub fn links(chain: &str) -> Vec<String> {
     let (mut out, mut depth, mut quote) = (vec![String::new()], 0, None);
     for c in chain.chars() {
         match (quote, c) {
@@ -299,24 +299,23 @@ impl Origami {
         if self.cull() {
             return;
         }
-        let Some(c) = self.focused().cloned() else { return };
-        let i = (c.line as usize).saturating_sub(1);
-        let shared = self.tl.clips.iter().filter(|o| o.line == c.line).count() > 1;
-        if shared || self.lines.get(i).is_none_or(|l| l.contains('=')) {
-            return self.note = format!("line {} holds more than {}, edit the script to remove it", c.line, c.label);
+        if let Some((_, rows, _)) = self.usage("remove") {
+            self.change(|this| drop(this.lines.drain(rows)));
         }
-        self.change(|this| drop(this.lines.remove(i)));
     }
 }
 
 #[cfg(test)]
 mod tests {
+    // A chain such as .trim(...).exposure(...) should be split into its separate calls.
     #[test]
     fn links() {
         let got = super::links(".trim(0, 39.673).inputLut(\"a.cube\").exposure(0.3),");
         assert_eq!(got, [".trim(0, 39.673)", ".inputLut(\"a.cube\")", ".exposure(0.3),"]);
     }
 
+    // A row wider than its panel can scroll sideways by the overflow plus a little spare room; a row
+    // that fits cannot scroll.
     #[test]
     fn reach() {
         assert_eq!(super::reach(900., 400.), 540.);

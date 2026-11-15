@@ -31,13 +31,13 @@ pub fn floor(hidden: &[bool], rows: usize) -> usize {
 }
 
 impl Origami {
-    pub fn regions(&self) -> Vec<Region> {
-        let (mut out, mut i) = (vec![], 0);
-        while i < self.lines.len() {
-            let same = |l: &String| kind(l).is_some() && kind(l) == kind(&self.lines[i]);
-            let n = self.lines[i..].iter().take_while(|l| same(l)).count().max(1);
+    fn spans(&self, want: impl Fn(&String) -> bool) -> Vec<Region> {
+        let (lines, mut out) = (&self.lines, vec![]);
+        for (i, l) in lines.iter().enumerate().filter(|(_, l)| want(l)) {
+            let k = kind(l).filter(|k| i == 0 || kind(&lines[i - 1]) != Some(*k));
+            let n = lines[i..].iter().take_while(|l| k.is_some() && kind(l) == k).count();
             if n >= 3 {
-                let note = format!("\u{2026} {} more {}s", n - 1, kind(&self.lines[i]).unwrap_or_default());
+                let note = format!("\u{2026} {} more {}s", n - 1, k.unwrap_or_default());
                 out.push(Region {
                     start: i,
                     end: i + n - 1,
@@ -45,16 +45,15 @@ impl Origami {
                     run: true,
                 });
             }
-            i += n;
         }
-        for (i, _) in self.lines.iter().enumerate().filter(|(_, l)| depth(l) > 0) {
+        for (i, _) in lines.iter().enumerate().filter(|(_, l)| want(l) && depth(l) > 0) {
             let mut d = 0;
-            let close = self.lines[i..].iter().position(|l| {
+            let close = lines[i..].iter().position(|l| {
                 d += depth(l);
                 d <= 0
             });
             if let Some(n) = close.filter(|n| *n > 0) {
-                let note = format!("\u{2026} {} lines {}", n - 1, self.lines[i + n].trim());
+                let note = format!("\u{2026} {} lines {}", n - 1, lines[i + n].trim());
                 out.push(Region {
                     start: i,
                     end: i + n,
@@ -66,13 +65,17 @@ impl Origami {
         out
     }
 
-    fn shut(&self, r: &Region) -> bool {
-        self.folded.contains(&self.lines[r.start])
+    pub fn regions(&self) -> Vec<Region> {
+        self.spans(|_| true)
+    }
+
+    fn shut(&self) -> Vec<Region> {
+        self.spans(|l| self.folded.contains(l))
     }
 
     pub fn hidden(&self) -> Vec<bool> {
         let mut hidden = vec![false; self.lines.len()];
-        for r in self.regions().iter().filter(|r| self.shut(r)) {
+        for r in self.shut() {
             hidden[r.start + 1..=r.end].fill(true);
         }
         hidden
@@ -94,7 +97,7 @@ impl Origami {
     }
 
     pub fn unfold(&mut self, row: usize) {
-        for r in self.regions().iter().filter(|r| r.start < row && row <= r.end) {
+        for r in self.shut().iter().filter(|r| r.start < row && row <= r.end) {
             self.folded.retain(|l| *l != self.lines[r.start]);
         }
     }
@@ -117,6 +120,8 @@ impl Origami {
 
 #[cfg(test)]
 mod tests {
+    // The furthest the script can scroll should count only visible lines, so folded (hidden) lines
+    // never let you scroll past the end.
     #[test]
     fn floor() {
         let folded = [false, false, true, true, false, false];

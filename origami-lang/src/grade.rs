@@ -54,6 +54,7 @@ pub struct Secondary {
     pub color: String,
     pub range: f64,
     pub soft: f64,
+    pub exposure: f64,
     pub temperature: f64,
     pub tint: f64,
     pub contrast: f64,

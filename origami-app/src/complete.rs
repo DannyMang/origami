@@ -430,7 +430,10 @@ impl Origami {
             div()
                 .absolute()
                 .left(px((w - self.side + self.inset() + *start as f32 * glyph - 9.).min(w - wide - 4.)))
-                .top(px(if y + row + tall > h - 28. { y - tall } else { y + row }))
+                .map(|d| match y + row + tall + 18. > h - 28. {
+                    true => d.bottom(px(h - y)),
+                    false => d.top(px(y + row)),
+                })
                 .w(px(wide))
                 .p_1()
                 .flex()
@@ -463,6 +466,9 @@ mod tests {
         offers(&lines, (lines.len() - 1, col), &dir).1.into_iter().map(|o| o.0).collect()
     }
 
+    // Autocomplete should offer only what makes sense where you are typing: methods that suit the kind
+    // of clip, clip names, properties that can be followed, and nothing inside comments, strings or
+    // numbers.
     #[test]
     fn names() {
         assert_eq!(at("clip.te"), ["temperature"]);
@@ -506,6 +512,7 @@ mod tests {
         }
     }
 
+    // Inside a file path, autocomplete should offer the matching files and folders.
     #[test]
     fn paths() {
         assert_eq!(at("video(\"ma"), ["main.rs"]);
@@ -514,6 +521,8 @@ mod tests {
         assert!(at("sound('../").contains(&"Cargo.toml".to_string()));
     }
 
+    // Accepting a suggestion should replace the part already typed and leave the cursor in the right
+    // place.
     #[test]
     fn accept() {
         assert_eq!(fill("  clip.te", 7, 9, "temperature", "("), ("  clip.temperature(".into(), 19));

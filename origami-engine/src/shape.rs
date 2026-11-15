@@ -48,6 +48,8 @@ mod tests {
         serde_json::from_str(&format!("{{\"kind\":\"{kind}\",{base}{more}}}")).unwrap()
     }
 
+    // A rectangle should fill its whole box, with the corners cut away when a radius is set, and
+    // should shrink correctly when drawn for the smaller preview.
     #[test]
     fn rect_covers_inside_its_corners() {
         let (px, w, h) = image(&clip("rect", r#","radius":8"#), (200., 100.), 1.);
@@ -69,6 +71,8 @@ mod tests {
         assert!((sum(&clip("rect", "")) - 800.).abs() < 1e-9 && (sum(&clip("rect", r#","radius":8"#)) - 800. + cut).abs() < 2.);
     }
 
+    // A line should be drawn from one end to the other at the right thickness, with nothing drawn away
+    // from it.
     #[test]
     fn line_runs_between_its_ends() {
         let c = clip("line", r#","ends":[0.2,0.8,0.7,0.3]"#);

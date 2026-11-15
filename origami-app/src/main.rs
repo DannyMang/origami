@@ -1,6 +1,8 @@
+mod clip;
 mod complete;
 mod edit;
 mod fold;
+mod full;
 mod graph;
 mod keys;
 mod knob;
@@ -12,10 +14,12 @@ mod scene;
 mod search;
 mod stage;
 mod view;
+mod voice;
 mod web;
 
 use gpui::{
-    App, AppContext, Application, Bounds, Context, FocusHandle, Pixels, RenderImage, TitlebarOptions, WindowBounds, WindowOptions, px, size,
+    App, AppContext, Application, Bounds, Context, FocusHandle, Pixels, Point, RenderImage, TitlebarOptions, WindowBounds, WindowOptions,
+    px, size,
 };
 use image::{Frame, RgbaImage};
 use mouse::Grab;
@@ -114,6 +118,8 @@ struct Origami {
     font: f32,
     pull: Option<bool>,
     menu: &'static str,
+    pin: Point<Pixels>,
+    copied: String,
     shut: &'static str,
     count: String,
     pending: Option<char>,
@@ -134,15 +140,25 @@ struct Origami {
     jobs: Vec<(String, String, Option<f64>)>,
     loading: usize,
     export: Option<Arc<Mutex<(String, bool)>>>,
+    take: Option<voice::Take>,
+    mic: Option<String>,
+    mics: Vec<String>,
+    stir: Instant,
     focus: FocusHandle,
 }
+
+static SAVED: Mutex<(u64, String)> = Mutex::new((u64::MAX, String::new()));
 
 fn clock(script: &Path) -> String {
     let mtime = fs::metadata(script).and_then(|m| m.modified()).ok();
     let secs = mtime.and_then(|m| m.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
-    let out = Command::new("date").args(["-r", &secs.to_string(), "+%H:%M"]).output();
-    out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default()
+    let mut saved = SAVED.lock().unwrap();
+    if saved.0 != secs / 60 {
+        let out = Command::new("date").args(["-r", &secs.to_string(), "+%H:%M"]).output();
+        let text = out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+        *saved = (secs / 60, text.unwrap_or_default());
+    }
+    saved.1.clone()
 }
 
 fn bitmap(px: Vec<u8>, w: usize, h: usize) -> Arc<RenderImage> {
@@ -244,12 +260,15 @@ impl Origami {
                         this.unfold((this.bad as usize).saturating_sub(1));
                     }
                 }
+                this.watch(cx);
                 cx.notify();
             })?;
             let saved = saved.await;
             this.update(cx, |this, cx| {
-                this.saved = saved;
-                cx.notify();
+                if this.saved != saved {
+                    this.saved = saved;
+                    cx.notify();
+                }
             })
         })
         .detach();
@@ -288,18 +307,25 @@ impl Origami {
         self.assets.entry(key).or_default().as_ref()
     }
 
-    fn tick(&mut self, cx: &mut Context<Self>) {
+    fn watch(&mut self, cx: &mut Context<Self>) {
         let mtime = fs::metadata(&self.script).and_then(|m| m.modified()).ok();
         if mtime != self.mtime && !self.reading {
             self.mtime = mtime;
             self.load(cx);
         }
+    }
+
+    fn tick(&mut self, cx: &mut Context<Self>) {
+        self.watch(cx);
         if self.dwell() {
             cx.notify();
         }
         self.gaze(cx);
         if self.push.is_some() {
             self.again = true;
+            cx.notify();
+        }
+        if self.take.is_some() || self.full && (2.0..2.1).contains(&self.stir.elapsed().as_secs_f32()) {
             cx.notify();
         }
         let was = (self.t, self.player.is_some());
@@ -309,6 +335,7 @@ impl Origami {
             let (a, b) = mark('a').zip(mark('b')).filter(|_| self.looping).unwrap_or((0., self.tl.duration));
             if t < b && !player.as_ref().is_some_and(Player::done) {
                 self.t = (t * self.fps()).round() / self.fps();
+                self.sync(t);
             } else if self.looping {
                 self.t = a;
                 self.play();
@@ -349,6 +376,107 @@ impl Origami {
             })
             .detach();
         }
+    }
+}
+
+fn fresh(focus: FocusHandle, recent: Vec<PathBuf>) -> Origami {
+    Origami {
+        script: PathBuf::new(),
+        lines: vec![],
+        mtime: None,
+        tl: Arc::default(),
+        rev: 0,
+        err: String::new(),
+        bad: 0,
+        note: String::new(),
+        t: 0.,
+        mode: Mode::Normal,
+        mouse: true,
+        scrubbing: false,
+        drag: None,
+        base: vec![],
+        sel: None,
+        held: None,
+        push: None,
+        again: false,
+        zoom: 1.,
+        pan: 0.,
+        cursor: None,
+        anchor: None,
+        picking: false,
+        offers: (0, vec![]),
+        pick: 0,
+        slide: 0.,
+        left: 0.,
+        folded: vec![],
+        hover: None,
+        since: Instant::now(),
+        tipped: false,
+        knobbed: None,
+        kept: None,
+        turning: None,
+        motion: false,
+        graph: false,
+        web: false,
+        roam: (0., 0.),
+        open: vec![],
+        tie: None,
+        cord: None,
+        lift: 0.,
+        key: None,
+        slip: None,
+        stage: Bounds::default(),
+        disc: bitmap(knob::disc(), 300, 300),
+        strips: [0, 1, 2].map(|kind| bitmap(knob::strip(kind), 150, 150)),
+        finding: None,
+        hit: 0,
+        modes: [false; 3],
+        peek: None,
+        scout: Arc::default(),
+        eyeing: false,
+        seeker: None,
+        fresh: false,
+        past: vec![],
+        future: vec![],
+        full: false,
+        dirty: false,
+        saved: String::new(),
+        top: 0.,
+        fit: 24,
+        recent,
+        rate: 1.,
+        side: 520.,
+        dock: 214.,
+        font: 13.,
+        pull: None,
+        menu: "",
+        pin: Point::default(),
+        copied: String::new(),
+        shut: "",
+        count: String::new(),
+        pending: None,
+        marks: HashMap::new(),
+        layer: 0,
+        query: String::new(),
+        last: String::new(),
+        looping: false,
+        help: false,
+        preview: Arc::default(),
+        image: None,
+        shown: None,
+        busy: false,
+        reading: false,
+        clash: false,
+        player: None,
+        assets: HashMap::new(),
+        jobs: vec![],
+        loading: 0,
+        export: None,
+        take: None,
+        mic: None,
+        mics: vec![],
+        stir: Instant::now(),
+        focus,
     }
 }
 
@@ -395,98 +523,7 @@ fn main() {
                     }
                 })
                 .detach();
-                let mut app = Origami {
-                    script: PathBuf::new(),
-                    lines: vec![],
-                    mtime: None,
-                    tl: Arc::default(),
-                    rev: 0,
-                    err: String::new(),
-                    bad: 0,
-                    note: String::new(),
-                    t: 0.,
-                    mode: Mode::Normal,
-                    mouse: true,
-                    scrubbing: false,
-                    drag: None,
-                    base: vec![],
-                    sel: None,
-                    held: None,
-                    push: None,
-                    again: false,
-                    zoom: 1.,
-                    pan: 0.,
-                    cursor: None,
-                    anchor: None,
-                    picking: false,
-                    offers: (0, vec![]),
-                    pick: 0,
-                    slide: 0.,
-                    left: 0.,
-                    folded: vec![],
-                    hover: None,
-                    since: Instant::now(),
-                    tipped: false,
-                    knobbed: None,
-                    kept: None,
-                    turning: None,
-                    motion: false,
-                    graph: false,
-                    web: false,
-                    roam: (0., 0.),
-                    open: vec![],
-                    tie: None,
-                    cord: None,
-                    lift: 0.,
-                    key: None,
-                    slip: None,
-                    stage: Bounds::default(),
-                    disc: bitmap(knob::disc(), 300, 300),
-                    strips: [0, 1, 2].map(|kind| bitmap(knob::strip(kind), 150, 150)),
-                    finding: None,
-                    hit: 0,
-                    modes: [false; 3],
-                    peek: None,
-                    scout: Arc::default(),
-                    eyeing: false,
-                    seeker: None,
-                    fresh: false,
-                    past: vec![],
-                    future: vec![],
-                    full: false,
-                    dirty: false,
-                    saved: String::new(),
-                    top: 0.,
-                    fit: 24,
-                    recent,
-                    rate: 1.,
-                    side: 520.,
-                    dock: 214.,
-                    font: 13.,
-                    pull: None,
-                    menu: "",
-                    shut: "",
-                    count: String::new(),
-                    pending: None,
-                    marks: HashMap::new(),
-                    layer: 0,
-                    query: String::new(),
-                    last: String::new(),
-                    looping: false,
-                    help: false,
-                    preview: Arc::default(),
-                    image: None,
-                    shown: None,
-                    busy: false,
-                    reading: false,
-                    clash: false,
-                    player: None,
-                    assets: HashMap::new(),
-                    jobs: vec![],
-                    loading: 0,
-                    export: None,
-                    focus,
-                };
+                let mut app = fresh(focus, recent);
                 if !script.as_os_str().is_empty() {
                     app.open(script);
                 }

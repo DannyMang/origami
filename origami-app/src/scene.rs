@@ -826,6 +826,8 @@ impl Origami {
 mod tests {
     use super::*;
 
+    // The time ruler in the Motion tab should pick tick spacing that suits the zoom level, so labels
+    // are neither crowded nor sparse.
     #[test]
     fn ticks() {
         assert_eq!((tick(18. / 630., 64.), tick(60. / 600., 64.)), ((2., 4), (10., 4)));
@@ -833,6 +835,8 @@ mod tests {
         assert_eq!((tick(1. / 64., 64.), tick(0.75 / 210., 40.)), ((1., 4), (0.2, 4)));
     }
 
+    // Given how far down the Motion tab the pointer is, find the clip row or property row under it,
+    // and nothing when it is outside the list.
     #[test]
     fn finds_the_row_under_the_pointer() {
         let slots = [
@@ -861,6 +865,7 @@ mod tests {
         );
     }
 
+    // Scrolling the Motion tab should stop at the top and at the bottom of its content.
     #[test]
     fn sinks() {
         assert_eq!(

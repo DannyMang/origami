@@ -12,7 +12,7 @@ pub fn stamp(t: f64) -> String {
     format!("{}:{:05.2}", (t / 60.) as u32, t % 60.)
 }
 
-fn secs(s: &str) -> Option<f64> {
+pub fn secs(s: &str) -> Option<f64> {
     s.split(':').try_fold(0., |a, x| x.parse::<f64>().ok().map(|x| a * 60. + x))
 }
 
@@ -58,6 +58,14 @@ impl Origami {
             self.blink(cx);
             return cx.notify();
         }
+        if k == "escape" && self.menu == "clip" {
+            self.menu = "";
+            return cx.notify();
+        }
+        if self.take.is_some() && matches!(k.as_str(), "escape" | "space") {
+            self.finish(k == "space");
+            return cx.notify();
+        }
         let again = key.modifiers.platform && key.key == "g";
         if self.finding.is_some() && (again || !(key.modifiers.platform || save)) {
             self.search(if again { "enter" } else { &k }, key.modifiers.shift);
@@ -72,6 +80,7 @@ impl Origami {
         if k == "escape" && self.key.take().is_some() {
             return cx.notify();
         }
+        let free = self.cursor.is_none() && self.finding.is_none();
         match (key.modifiers.platform || save, key.key.as_str()) {
             (true, "s") => {
                 self.store();
@@ -101,6 +110,9 @@ impl Origami {
                     self.draft(Self::cut);
                 }
             }
+            (true, "c" | "x") if free => self.copy(key.key == "x", cx),
+            (true, "v") if free => self.lay(),
+            (true, "d") if free && self.mouse => self.twin(),
             (true, arrow @ ("left" | "right" | "up" | "down")) if self.cursor.is_some() => {
                 let to = ["home", "end", "top", "bottom"][["left", "right", "up", "down"].iter().position(|a| *a == arrow).unwrap_or(0)];
                 self.edit(to, key.modifiers.shift);
@@ -110,8 +122,8 @@ impl Origami {
                 self.draft(|this| this.edit(&k, key.modifiers.shift));
                 self.suggest(&k);
             }
-            (_, "escape") if self.full => self.fullscreen(window),
-            (_, "f") if self.mouse && self.mode == Mode::Normal => self.fullscreen(window),
+            (_, "escape") if self.full => self.fullscreen(),
+            (_, "f") if self.mouse && self.mode == Mode::Normal => self.fullscreen(),
             _ => return self.press(&k, cx),
         }
         cx.notify();
@@ -153,6 +165,7 @@ impl Origami {
                     _ if !self.mouse => self.normal(k, cx),
                     "space" => self.toggle(),
                     "backspace" | "delete" => self.delete(),
+                    "s" | "S" => self.split(),
                     "left" => self.seek(self.t - 1. / f),
                     "right" => self.seek(self.t + 1. / f),
                     ":" => self.mode = Mode::Command(String::new()),

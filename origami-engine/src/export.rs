@@ -36,7 +36,7 @@ pub fn place(c: &Clip, (w, h): (f64, f64), k: f64) -> (f64, f64, f64, f64) {
     let r = (bw / c.w as f64).min(bh / c.h as f64);
     match c.kind {
         Kind::Text => {
-            let (_, tw, th) = text::raster(c, k);
+            let (_, tw, th) = text::glyphs(c, k, false);
             spot(c, (w, h), (tw as f64, th as f64))
         }
         Kind::Rect | Kind::Line => {
@@ -283,6 +283,7 @@ pub fn render(tl: &Timeline, out: &str, mut progress: impl FnMut(f64)) -> Result
     thread::scope(|s| {
         s.spawn(move || {
             let (mut pv, mut pipe) = (Preview::default(), pipe?);
+            pv.room = 1 << 26;
             (0..(tl.duration * tl.fps as f64).round() as u32)
                 .try_for_each(|k| pipe.write_all(&pv.frame(tl, k as f64 / tl.fps as f64, size)).ok())
         });

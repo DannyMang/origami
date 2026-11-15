@@ -148,6 +148,7 @@ pub struct Preview {
     frames: LruCache<(Key, i64), Px>,
     stills: HashMap<String, Option<Px>>,
     texts: HashMap<String, Arc<(Vec<Glyph>, usize, usize)>>,
+    pub room: usize,
 }
 
 impl Default for Preview {
@@ -157,6 +158,7 @@ impl Default for Preview {
             frames: LruCache::new(NonZeroUsize::new(600).unwrap()),
             stills: HashMap::new(),
             texts: HashMap::new(),
+            room: 1 << 30,
         }
     }
 }
@@ -216,7 +218,7 @@ impl Preview {
             d.next += 1;
         }
         for (n, px) in read {
-            while self.frames.len() * px.len() > 1 << 30 {
+            while self.frames.len() * px.len() > self.room {
                 self.frames.pop_lru();
             }
             self.frames.put((key.clone(), n), px);
@@ -274,7 +276,7 @@ impl Preview {
             g
         };
         let laid = || {
-            let (glyphs, tw, th) = text::glyphs(c, k);
+            let (glyphs, tw, th) = text::glyphs(c, k, true);
             Arc::new((glyphs.into_iter().map(tint).collect(), tw, th))
         };
         let text = self.texts.entry(key).or_insert_with(laid).clone();

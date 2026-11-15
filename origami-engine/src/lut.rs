@@ -1,4 +1,15 @@
-use std::{array, fs, thread};
+use std::{
+    array,
+    collections::HashMap,
+    fs,
+    sync::{Arc, LazyLock, Mutex},
+    thread,
+    time::SystemTime,
+};
+
+type Files = HashMap<(String, Option<SystemTime>), Option<Arc<Lut>>>;
+
+static FILES: LazyLock<Mutex<Files>> = LazyLock::new(Mutex::default);
 
 pub type Rgb = [f64; 3];
 
@@ -14,11 +25,19 @@ fn mix(a: [f32; 3], b: [f32; 3], f: f32) -> [f32; 3] {
 }
 
 impl Lut {
-    pub fn bake(n: usize, f: impl Fn(Rgb) -> Rgb) -> Self {
+    pub fn bake(n: usize, f: impl Fn(Rgb) -> Rgb + Sync) -> Self {
         let at = |i: usize| (i % n) as f64 / (n - 1) as f64;
-        let t = (0..n * n * n)
-            .map(|i| f([at(i), at(i / n), at(i / n / n)]).map(|v| v as f32))
-            .collect();
+        let (mut t, band) = (vec![[0.; 3]; n * n * n], (n * n * n).div_ceil(8));
+        thread::scope(|s| {
+            for (k, part) in t.chunks_mut(band).enumerate() {
+                let f = &f;
+                s.spawn(move || {
+                    for (i, c) in (k * band..).zip(part) {
+                        *c = f([at(i), at(i / n), at(i / n / n)]).map(|v| v as f32);
+                    }
+                });
+            }
+        });
         Self { n, cube: true, t }
     }
 
@@ -41,8 +60,10 @@ impl Lut {
         (n > 1 && t.len() == if cube { n * n * n } else { n }).then_some(Self { n, cube, t })
     }
 
-    pub fn read(path: &str) -> Option<Self> {
-        Self::parse(&fs::read_to_string(path).ok()?)
+    pub fn read(path: &str) -> Option<Arc<Self>> {
+        let key = (path.to_string(), fs::metadata(path).and_then(|m| m.modified()).ok());
+        let load = || Self::parse(&fs::read_to_string(path).ok()?).map(Arc::new);
+        FILES.lock().unwrap().entry(key).or_insert_with(load).clone()
     }
 
     pub fn text(&self) -> String {

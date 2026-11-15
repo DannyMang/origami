@@ -66,7 +66,7 @@ pub struct Glyph {
     pub px: Arc<Vec<u8>>,
 }
 
-pub fn glyphs(c: &Clip, k: f64) -> (Vec<Glyph>, usize, usize) {
+pub fn glyphs(c: &Clip, k: f64, ink: bool) -> (Vec<Glyph>, usize, usize) {
     let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
     let (font, size) = (face(&c.font), c.size * c.scale.max() * k);
     layout.append(&[&*font], &TextStyle::new(&c.src, size as f32, 0));
@@ -91,9 +91,9 @@ pub fn glyphs(c: &Clip, k: f64) -> (Vec<Glyph>, usize, usize) {
         w: p.width,
         h: p.height,
         px: Arc::new(
-            font.rasterize_config(p.key)
-                .1
+            ink.then(|| font.rasterize_config(p.key).1)
                 .into_iter()
+                .flatten()
                 .flat_map(|v| [b, g, r, (v as u32 * a as u32 / 255) as u8])
                 .collect(),
         ),
@@ -106,7 +106,7 @@ pub fn glyphs(c: &Clip, k: f64) -> (Vec<Glyph>, usize, usize) {
 }
 
 pub fn raster(c: &Clip, k: f64) -> (Vec<u8>, usize, usize) {
-    let (glyphs, w, h) = glyphs(c, k);
+    let (glyphs, w, h) = glyphs(c, k, true);
     let mut px = flat(&c.background, w * h);
     if c.background.is_empty() {
         px.chunks_exact_mut(4).for_each(|p| p.copy_from_slice(&[0; 4]));
@@ -126,6 +126,9 @@ pub fn raster(c: &Clip, k: f64) -> (Vec<u8>, usize, usize) {
 mod tests {
     use super::*;
 
+    // Colours written as names or hex codes, with or without transparency, should be read correctly,
+    // and anything unrecognised rejected. Drawing a see-through colour over another should mix the two
+    // properly.
     #[test]
     fn colours_carry_alpha() {
         let all = [

@@ -398,7 +398,7 @@ impl Origami {
         let (Some(turn), Some((x, y, _, _)), Some((_, _, _, found))) = (self.turning, self.origin(window), self.panel()) else {
             return;
         };
-        let (dx, dy) = (f32::from(at.x) - x - 10. - PAD / 2., f32::from(at.y) - y - 10. - PAD / 2.);
+        let (dx, dy) = (f32::from(at.x) - x - 11. - PAD / 2., f32::from(at.y) - y - 11. - PAD / 2.);
         let spot = |label: &str| found.iter().position(|k| k.label == label);
         match turn {
             Turn::Slide(i, x0, v0, _) if found[i].label == "#" => {
@@ -516,12 +516,13 @@ impl Origami {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, e: &MouseDownEvent, window, cx| {
+                    this.knobbed = this.kept;
                     let Some(((x, y, _, _), (row, call, _, found))) = this.origin(window).zip(this.panel()) else {
                         return;
                     };
                     let (fx, fy) = (
-                        (f32::from(e.position.x) - x - 10.) / PAD,
-                        1. - (f32::from(e.position.y) - y - 10.) / PAD,
+                        (f32::from(e.position.x) - x - 11.) / PAD,
+                        1. - (f32::from(e.position.y) - y - 11.) / PAD,
                     );
                     let near = |p: &[Knob]| (part(&p[0]) - fx).hypot(part(&p[1]) - fy);
                     let nearest = found.chunks_exact(2).enumerate().min_by(|a, b| near(a.1).total_cmp(&near(b.1)));
@@ -613,6 +614,9 @@ mod tests {
         knobs(line, at).map_or(vec![], |k| k.3.into_iter().map(|k| (k.label, k.value)).collect())
     }
 
+    // Pointing at a value in the script should offer the right drag controls for it: one per number in
+    // a call, a colour and strength for colours, points for curves. Nothing is offered for names,
+    // keyframes, or values that follow another clip.
     #[test]
     fn finds() {
         let tied = "  .pos(title.pos.x, add(title2.pos.y, -0.06)).opacity(mul(title.opacity, 2)).scale(a1.scale)";
@@ -682,6 +686,8 @@ mod tests {
         found
     }
 
+    // Drag controls should stop at sensible limits: a trim cannot go past the clip's length or cross
+    // its other end, and sliders stay inside their range.
     #[test]
     fn bounds() {
         for free in ["a.for(5)", "a.at(2)", "a.shift(-1)", "a.loop(3)", "a.trim(0, 9)", "a.fade(1)"] {
@@ -695,5 +701,52 @@ mod tests {
         let hot = slides("a.temperature(250)", 3, None);
         assert_eq!((limit("temperature", 0, &hot), part(&hot[0])), ((-100., 100.), 1.));
         assert_eq!(part(&slides("a.temperature(-250)", 3, None)[0]), 0.);
+    }
+
+    // On the curve pad, dragging a point should move it, clicking empty space should add one, and
+    // double-clicking a point should remove it, each rewriting the curve in the script.
+    #[gpui::test]
+    fn pad(cx: &mut gpui::TestAppContext) {
+        use gpui::{Modifiers, MouseButton, point};
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            app.script = "/tmp/origami-pad-test.js".into();
+            app.lines = vec![
+                "stack(".into(),
+                "  color(\"#203040\").for(2).curve(\"red\", [[0, 0], [0.45, 0.53], [1, 1]]),".into(),
+                ")".into(),
+            ];
+            app
+        });
+        let base = view.update_in(cx, |o, window, cx| {
+            o.cursor = Some((1, 30));
+            o.grasp();
+            cx.notify();
+            o.origin(window).map(|p| (p.0 + 11., p.1 + 11.))
+        });
+        let (bx, by) = base.unwrap();
+        cx.run_until_parked();
+        let at = |fx: f32, fy: f32| point(px(bx + fx * PAD), px(by + (1. - fy) * PAD));
+        cx.simulate_mouse_move(at(0.45, 0.53), None, Modifiers::default());
+        cx.simulate_mouse_down(at(0.45, 0.53), MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_move(at(0.6, 0.3), Some(MouseButton::Left), Modifiers::default());
+        cx.simulate_mouse_up(at(0.6, 0.3), MouseButton::Left, Modifiers::default());
+        let line = view.update(cx, |o, _| o.lines[1].clone());
+        assert!(line.contains("[0.6, 0.3]"), "{line}");
+        cx.simulate_mouse_down(at(0.2, 0.8), MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_up(at(0.2, 0.8), MouseButton::Left, Modifiers::default());
+        let line = view.update(cx, |o, _| o.lines[1].clone());
+        assert!(line.contains("[[0, 0], [0.2, 0.8], [0.6, 0.3], [1, 1]]"), "{line}");
+        let twice = |position| gpui::MouseDownEvent {
+            button: MouseButton::Left,
+            position,
+            modifiers: Modifiers::default(),
+            click_count: 2,
+            first_mouse: false,
+        };
+        cx.simulate_event(twice(at(0.2, 0.8)));
+        cx.simulate_mouse_up(at(0.2, 0.8), MouseButton::Left, Modifiers::default());
+        let line = view.update(cx, |o, _| o.lines[1].clone());
+        assert!(line.contains("[[0, 0], [0.6, 0.3], [1, 1]]"), "{line}");
     }
 }

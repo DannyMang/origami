@@ -1,5 +1,6 @@
 use crate::{
     Asset, Mode, Origami,
+    full::corners,
     keys::stamp,
     stage::{draw, letterbox},
 };
@@ -33,7 +34,9 @@ pub const HEAD: f32 = 48.;
 pub const RULER: f32 = 22.;
 const HELP: &str =
     "mouse: drag the ruler to move the playhead, click a clip to select, drag to move, drag edges to trim, delete removes it, cmd+z undo, cmd+shift+z redo, f full screen
+right-click (two-finger click) a clip for a menu: s splits it at the playhead, cmd+x cut, cmd+c copy, cmd+v paste at the playhead, cmd+d duplicate
 click the script to type in it, cmd+s saves and applies, esc leaves     scroll zooms the timeline     drag pane edges to resize     cmd+ cmd-  code size     cmd+0  reset layout     cmd+f  search
+the red dot records a voiceover from the playhead while it plays: space or the stop square keeps it, esc discards it; the microphone picks the input
 Motion tab: click a clip to open its properties, drag a number sideways to change it, click a diamond to add or remove a key at the playhead
 click a key for its time, value and ease, drag it to move it, delete removes it     Graph Editor: drag keys and curve handles
 drag a property's dot onto another clip's property to make it follow, or click the dot to pick one; click the chip to break it     Graph tab: what follows what
@@ -89,6 +92,24 @@ fn tokens(s: &str) -> Vec<(Range<usize>, HighlightStyle)> {
     out
 }
 
+pub fn wave(bars: Vec<f32>, ink: u32) -> Div {
+    let draw = move |b: Bounds<Pixels>, _, window: &mut Window, _: &mut App| {
+        let w = b.size.width / bars.len().max(1) as f32;
+        let edge = |i: usize, side: f32| {
+            let y = b.origin.y + b.size.height * (0.5 + side * bars[i].max(0.04) / 2.);
+            [point(b.origin.x + w * i as f32, y), point(b.origin.x + w * (i + 1) as f32, y)]
+        };
+        let top = (0..bars.len()).flat_map(|i| edge(i, -1.));
+        let bottom = (0..bars.len()).rev().flat_map(|i| edge(i, 1.).into_iter().rev());
+        let mut shape = PathBuilder::fill();
+        shape.add_polygon(&top.chain(bottom).collect::<Vec<_>>(), true);
+        if let Ok(shape) = shape.build() {
+            window.paint_path(shape, rgba(ink << 8 | 0xb0));
+        }
+    };
+    div().flex().size_full().child(canvas(|_, _, _| (), draw).size_full())
+}
+
 pub fn tint(kind: Kind) -> u32 {
     match kind {
         Kind::Video | Kind::Image => BLUE,
@@ -112,7 +133,7 @@ impl Origami {
     }
 
     fn clip(&mut self, c: &Clip, focused: bool, per: f64, cx: &mut Context<Self>) -> Div {
-        let (len, d, held) = (c.end - c.start, self.span(), c.clone());
+        let (len, d, held, z) = (c.end - c.start, self.span(), c.clone(), c.z);
         let wide = len / per;
         let (a, b) = (c.start, c.end);
         let edge = || div().absolute().top_0().bottom_0().w(px(8.)).cursor_col_resize();
@@ -136,7 +157,12 @@ impl Origami {
                         .child(img(i.clone()).size_full().object_fit(ObjectFit::Cover)),
                     _ => div().flex_1(),
                 };
-                Some(div().children((0..n).map(|i| thumb(self, at(i))).collect::<Vec<_>>()))
+                Some(
+                    div()
+                        .flex()
+                        .size_full()
+                        .children((0..n).map(|i| thumb(self, at(i))).collect::<Vec<_>>()),
+                )
             }
             Kind::Sound => {
                 let a = (c.src_in * 20.) as usize;
@@ -148,21 +174,7 @@ impl Origami {
                         .collect(),
                     _ => vec![],
                 };
-                let draw = move |b: Bounds<Pixels>, _, window: &mut Window, _: &mut App| {
-                    let w = b.size.width / bars.len().max(1) as f32;
-                    let edge = |i: usize, side: f32| {
-                        let y = b.origin.y + b.size.height * (0.5 + side * bars[i].max(0.04) / 2.);
-                        [point(b.origin.x + w * i as f32, y), point(b.origin.x + w * (i + 1) as f32, y)]
-                    };
-                    let top = (0..bars.len()).flat_map(|i| edge(i, -1.));
-                    let bottom = (0..bars.len()).rev().flat_map(|i| edge(i, 1.).into_iter().rev());
-                    let mut shape = PathBuilder::fill();
-                    shape.add_polygon(&top.chain(bottom).collect::<Vec<_>>(), true);
-                    if let Ok(shape) = shape.build() {
-                        window.paint_path(shape, rgba(GREEN << 8 | 0xb0));
-                    }
-                };
-                Some(div().child(canvas(|_, _, _| (), draw).size_full()))
+                Some(wave(bars, GREEN))
             }
             _ => None,
         };
@@ -188,7 +200,17 @@ impl Origami {
                     cx.stop_propagation();
                 }),
             )
-            .children(body.map(|b| b.flex().size_full()))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                    if this.mouse {
+                        (this.sel, this.menu, this.pin) = (Some(z), "clip", e.position);
+                    }
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            )
+            .children(body)
             .map(|d| match wide < 16. {
                 true => d.cursor_col_resize(),
                 false => d.child(edge().left_0()).child(edge().right_0()),
@@ -207,7 +229,12 @@ impl Origami {
             }))
     }
 
-    fn tool(&self, label: &'static str, cx: &mut Context<Self>, f: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static) -> Div {
+    pub fn tool(
+        &self,
+        label: impl IntoElement,
+        cx: &mut Context<Self>,
+        f: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) -> Div {
         div()
             .h(px(26.))
             .px(px(8.))
@@ -243,11 +270,10 @@ impl Origami {
         }
     }
 
-    fn menu(&self, label: &'static str, items: Vec<Div>, cx: &mut Context<Self>) -> Div {
-        let list = div()
+    pub fn list(items: Vec<Div>) -> Div {
+        div()
             .absolute()
             .bottom(px(26.))
-            .right_0()
             .p_1()
             .flex()
             .flex_col()
@@ -256,10 +282,13 @@ impl Origami {
             .border_color(rgb(BORDER))
             .rounded(px(6.))
             .text_size(px(13.))
-            .children(items);
+            .children(items)
+    }
+
+    fn menu(&self, label: &'static str, items: Vec<Div>, cx: &mut Context<Self>) -> Div {
         self.tool(label, cx, move |t, _, _| t.menu = if t.shut == label { "" } else { label })
             .relative()
-            .children((self.menu == label).then(|| deferred(list)))
+            .children((self.menu == label).then(|| deferred(Self::list(items).right_0())))
     }
 
     fn tools(&self, tl: &Timeline, cx: &mut Context<Self>) -> Div {
@@ -275,7 +304,7 @@ impl Origami {
         let more = vec![
             self.tool("zoom in", cx, |t, _, _| t.magnify(2.)),
             self.tool("zoom out", cx, |t, _, _| t.magnify(0.5)),
-            self.tool("full screen", cx, |t, w, _| t.fullscreen(w)),
+            self.tool("full screen", cx, |t, _, _| t.fullscreen()),
             self.tool("bigger code", cx, |t, _, _| t.scale(1.)),
             self.tool("smaller code", cx, |t, _, _| t.scale(-1.)),
             self.tool("reset layout", cx, |t, _, _| t.reset()),
@@ -309,7 +338,8 @@ impl Origami {
                     .pl_4()
                     .child(self.tool("\u{21a9}", cx, |t, _, _| t.undo()))
                     .child(self.tool("\u{21aa}", cx, |t, _, _| t.redo()))
-                    .child(self.tool("\u{2715}", cx, |t, _, _| t.delete())),
+                    .child(self.tool("\u{2715}", cx, |t, _, _| t.delete()))
+                    .child(self.mic(cx)),
             )
             .child(
                 div()
@@ -321,7 +351,8 @@ impl Origami {
                     .text_size(px(16.))
                     .child(self.tool("|\u{25c0}", cx, |t, _, _| t.step(-1.)))
                     .child(self.tool(if self.player.is_some() { "||" } else { "\u{25b6}" }, cx, |t, _, _| t.toggle()))
-                    .child(self.tool("\u{25b6}|", cx, |t, _, _| t.step(1.))),
+                    .child(self.tool("\u{25b6}|", cx, |t, _, _| t.step(1.)))
+                    .child(self.recorder(cx)),
             )
             .child(
                 side()
@@ -329,11 +360,14 @@ impl Origami {
                     .child(self.tool(pace, cx, |t, _, _| t.pace()).text_size(px(13.)))
                     .child(self.menu("+", add, cx))
                     .child(self.menu("\u{22ef}", more, cx))
-                    .child(div().pl_3().text_size(px(13.)).text_color(rgb(MUTED)).child(format!(
-                        "{} / {}",
-                        self.timecode(),
-                        stamp(tl.duration)
-                    ))),
+                    .child(
+                        self.tool(format!("{} / {}", self.timecode(), stamp(tl.duration)), cx, |t, _, cx| {
+                            let s = ((t.t * t.fps()).round() / t.fps() * 100.).round() / 100.;
+                            cx.write_to_clipboard(ClipboardItem::new_string(s.to_string()));
+                            t.note = format!("copied {s}");
+                        })
+                        .text_size(px(13.)),
+                    ),
             )
     }
 
@@ -360,7 +394,9 @@ impl Origami {
         rows.reverse();
         rows.extend(audio);
         let tall = |video: bool| if video { 56. } else { 46. };
-        let fit = ((self.dock - 30.) / rows.iter().map(|r| tall(r.0)).sum::<f32>()).min(1.);
+        let live = self.growing();
+        let room = rows.iter().map(|r| tall(r.0)).sum::<f32>() + live.iter().map(|_| tall(false)).sum::<f32>();
+        let fit = ((self.dock - 30.) / room).min(1.);
         let step = [1., 2., 5., 10., 15., 30., 60., 120., 300., 600.]
             .into_iter()
             .find(|s| d / s <= 10.)
@@ -389,6 +425,16 @@ impl Origami {
                 .text_color(rgb(DIM))
                 .child(s)
         };
+        let lane = |name: String, video: bool, clips: Vec<Div>| {
+            div()
+                .h(px(tall(video) * fit))
+                .flex_none()
+                .flex()
+                .pr_3()
+                .child(label(name))
+                .child(div().relative().flex_1().overflow_hidden().children(clips))
+        };
+        let voice = live.map(|clip| lane(format!("A{}", rows.len() - videos + 1), false, vec![clip]));
         let rows = rows.into_iter().enumerate().map(|(i, (video, clips))| {
             let name = if video {
                 format!("V{}", videos - i)
@@ -400,17 +446,12 @@ impl Origami {
                 .filter(|c| c.end > pan && c.start < pan + d)
                 .map(|c| self.clip(c, focus.is_some_and(|f| f.z == c.z), per, cx))
                 .collect();
-            div()
-                .h(px(tall(video) * fit))
-                .flex_none()
-                .flex()
-                .pr_3()
-                .child(label(name))
-                .child(div().relative().flex_1().overflow_hidden().children(clips))
+            lane(name, video, clips)
         });
-        let rows: Vec<Div> = rows.collect();
+        let rows: Vec<Div> = rows.chain(voice).collect();
+        let ink = if self.take.is_some() { RED } else { TEXT };
         let k = ((self.t - pan) / d) as f32;
-        let wedge = |w: f32| div().w(px(w)).h(px(3.)).bg(rgb(TEXT));
+        let wedge = |w: f32| div().w(px(w)).h(px(3.)).bg(rgb(ink));
         let head = (0. ..=1.).contains(&k).then(|| {
             div()
                 .absolute()
@@ -472,7 +513,7 @@ impl Origami {
             .right_3()
             .overflow_hidden()
             .children(select)
-            .child(div().absolute().top_0().bottom_0().left(x(self.t)).w(px(1.)).bg(rgb(TEXT)));
+            .child(div().absolute().top_0().bottom_0().left(x(self.t)).w(px(1.)).bg(rgb(ink)));
         let flag = div().absolute().top_0().left(px(self.lead())).right_3().children(head);
         [ruler].into_iter().chain(rows).chain([line, flag]).collect()
     }
@@ -503,6 +544,15 @@ impl Origami {
                         this.scroll(e, window);
                         cx.notify();
                     }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, e: &MouseDownEvent, window, cx| {
+                            if e.click_count == 2 && this.mouse && !this.motion && !this.web {
+                                this.seek(this.at(e.position.x, window));
+                                cx.notify();
+                            }
+                        }),
+                    )
                     .children(body),
             )
             .child(self.grip(false, cx))
@@ -819,6 +869,7 @@ impl Origami {
 
     fn status(&self, focus: Option<&Clip>, cx: &mut Context<Self>) -> Div {
         let mode = match &self.mode {
+            _ if self.take.is_some() => "-- REC --".into(),
             Mode::Command(s) => format!(":{s}"),
             Mode::Search(s) => format!("/{s}"),
             Mode::Visual(_) => "-- VISUAL --".into(),
@@ -826,11 +877,12 @@ impl Origami {
             Mode::Normal if self.mouse => "-- MOUSE --".into(),
             Mode::Normal => "-- NORMAL --".into(),
         };
-        let (color, info) = match focus {
+        let (color, info) = match (&self.take, focus) {
+            (Some(take), _) => (RED, take.about()),
             _ if !self.err.is_empty() => (RED, self.err.clone()),
             _ if !self.note.is_empty() => (TEXT, self.note.clone()),
-            Some(c) => (MUTED, format!("{}  line {}", self.code(c, c.start, c.end), c.line)),
-            None => (MUTED, String::new()),
+            (_, Some(c)) => (MUTED, format!("{}  line {}", self.code(c, c.start, c.end), c.line)),
+            _ => (MUTED, String::new()),
         };
         let keys = format!("{}{}", self.count, self.pending.map(String::from).unwrap_or_default());
         div()
@@ -1047,6 +1099,10 @@ impl Render for Origami {
                 cx.notify();
             }))
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, window, cx| {
+                if this.full {
+                    this.stir = Instant::now();
+                    cx.notify();
+                }
                 let out = f32::from(e.position.x) < f32::from(window.viewport_size().width) - this.side;
                 if out && this.hover.take().is_some() {
                     cx.notify();
@@ -1059,18 +1115,24 @@ impl Render for Origami {
                     cx.notify();
                 } else if this.turning.is_some() {
                     this.turn(e.position, window);
+                    this.watch(cx);
                     cx.notify();
                 } else if this.cord.is_some() {
                     this.haul(e.position, window);
                     cx.notify();
                 } else if this.slip.is_some() {
                     this.slide(e.position);
+                    this.watch(cx);
                     cx.notify();
                 } else if this.picking {
                     this.place(e.position, window);
                     cx.notify();
+                } else if this.full && this.scrubbing {
+                    this.glide(e.position.x, window);
+                    cx.notify();
                 } else if this.scrubbing || this.drag.is_some() {
                     this.drag_to(e.position.x, window);
+                    this.watch(cx);
                     cx.notify();
                 }
             }))
@@ -1082,7 +1144,7 @@ impl Render for Origami {
                 }),
             );
         if self.full {
-            return root.child(stage);
+            return root.child(stage).children(self.bar(window, cx));
         }
         root.child(
             div()
@@ -1109,7 +1171,11 @@ impl Render for Origami {
                         .flex_col()
                         .flex_1()
                         .min_w_0()
-                        .child(tab("Program"))
+                        .child(
+                            tab("Program")
+                                .child(div().flex_1())
+                                .child(self.tool(corners(true), cx, |t, _, _| t.fullscreen())),
+                        )
                         .child(stage)
                         .child(self.timeline(
                             &tl,
@@ -1131,6 +1197,7 @@ impl Render for Origami {
         .children(self.knobs(window, cx))
         .children(self.keyed(window, cx))
         .children(self.fonts(window, cx))
+        .children(self.actions(window, cx))
         .children(self.wires(window, cx))
         .children(self.cable())
         .children(self.tip(window).map(|(tip, text)| {

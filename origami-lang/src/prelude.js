@@ -3,13 +3,14 @@
   const S = { fps: 30, size: null }
   let L = {}, at = 0, N = 0, P = [], D = 0, W = [1, 1]
   const M = new Map(), reads = ['x', 'y', 'scale', 'rotate', 'opacity']
-  const digits = /^\d+$/, named = /(?:const|let|var)\s+(\w+)\s*=/, made = /\b(video|sound|image|text|captions|caption|color|(?<!\.)(?:keys|rect|line|add|mul))\(/g
+  const digits = /^\d+$/, named = /(?:const|let|var)\s+(\w+)\s*=/, made = 'video sound image text captions caption color', bare = 'keys rect line add mul'
   const line = g => new Proxy(g(0), { get: (t, n) => digits.test(String(n)) ? g(+n) : t[n] })
   const anim = (k, v) => {
     if (v?.of) {
       const { of, k: p } = v, name = `${of.label ?? 'a group'}.${p === 'x' || p === 'y' ? 'pos.' : ''}${p}`
       if (of.kids || !reads.includes(p) || k.startsWith('each')) throw new Error(`line ${at}: ${k} cannot follow ${name} (pos.x, pos.y, scale, rotate and opacity of one clip can be followed, outside each)`)
-      v = (t, d, T) => read(of, p, T)
+      let f
+      v = (t, d, T) => (f ??= read(of, p))(T)
     }
     if (typeof v !== 'number' && typeof v !== 'function') throw new Error(`line ${at}: ${k} takes a number or a function of time`)
     return typeof v === 'number' ? v : Object.assign((t, d, T) => v(t, d, T), { line: at })
@@ -62,7 +63,7 @@
     hslSecondary: (d, { key, correction: c = {} }) => grade(d, {
       hslSecondary: {
         color: key.color, range: key.range ?? 20, soft: key.soft ?? 10,
-        temperature: c.temperature ?? 0, tint: c.tint ?? 0, contrast: c.contrast ?? 0, saturation: c.saturation ?? 100,
+        exposure: c.exposure ?? 0, temperature: c.temperature ?? 0, tint: c.tint ?? 0, contrast: c.contrast ?? 0, saturation: c.saturation ?? 100,
       },
     }),
     vignette: (d, o) => grade(d, { vignette: { amount: o.amount ?? 0, midpoint: o.midpoint ?? 50, roundness: o.roundness ?? 0, feather: o.feather ?? 50 } }),
@@ -74,7 +75,7 @@
   Object.assign(ops, tone)
   const deep = ['speed', 'volume', 'mute', 'fade', 'scale', 'pos', 'opacity', 'rotate', 'shown', 'each', ...Object.keys(tone)]
   const nums = ['speed', 'volume', 'loop', 'temperature', 'tint', 'saturation', 'exposure', 'contrast', 'highlights', 'shadows', 'whites', 'blacks', 'fadedFilm', 'vibrance', 'tintBalance']
-  const called = new RegExp(`\\.(${Object.keys(ops).join('|')})\\(`, 'g')
+  const called = Object.keys(ops).join(' ')
   const clip = d => new Proxy(d, {
     get: (d, k) => k === '$' ? d : k in ops ? line(n => Object.assign((...a) => {
       at = n || at
@@ -138,8 +139,10 @@
         if (typeof e !== 'function' && !eases[e]) throw new Error(`line ${at}: "${e}" is not an ease (${Object.keys(eases).join(', ')}, bezier)`)
         return eases[e] ?? e
       })
+      let D, T
       return (t, d) => {
-        const T = k.map(([s]) => typeof s === 'string' ? parseFloat(s) / 100 * d : s < 0 ? d + s : s), i = T.findIndex(s => t < s)
+        if (d !== D) [D, T] = [d, k.map(([s]) => typeof s === 'string' ? parseFloat(s) / 100 * d : s < 0 ? d + s : s)]
+        const i = T.findIndex(s => t < s)
         return i < 1 ? k.at(i)[1] : k[i - 1][1] + (k[i][1] - k[i - 1][1]) * e[i]((t - T[i - 1]) / (T[i] - T[i - 1]))
       }
     }),
@@ -193,13 +196,11 @@
   }
   globalThis.__prep = src => {
     L = {}
-    return src.split('\n').map((s, i) => {
+    src.split('\n').forEach((s, i) => {
       const m = s.match(named)
       if (m) L[i + 1] = m[1]
-      return s
-        .replace(made, `$1[${i + 1}](`)
-        .replace(called, `.$1[${i + 1}](`)
-    }).join('\n')
+    })
+    return __tag(src, made, bare, called)
   }
   globalThis.__late = m => {
     const [, name, n] = m.match(/(\w+) is not defined.*?:(\d+):/) ?? [], below = Object.keys(L).find(l => L[l] === name && +l > +n)
@@ -220,24 +221,30 @@
     opacity: sample(c, c.opacity), rotate: sample(c, c.rotate), shown: sample(c, c.shown),
     parts: c.parts?.map(p => Object.fromEntries(Object.entries(p).map(([k, v]) => [k, sample(c, v)]))),
   })
-  const read = (d, k, T) => {
-    const s = P.find(c => c.id === d.id) ?? { start: 0, end: own(d) ?? D }, n = s.end - s.start
-    const j = Math.min(Math.max(Math.round((T - s.start) * S.fps), 0), frames(n) - 1)
+  const read = (d, k) => {
+    const s = P.find(c => c.id === d.id) ?? { start: 0, end: own(d) ?? D }, n = s.end - s.start, seen = []
     const get = (v, j) => num(v, j / S.fps, n, s.start + j / S.fps)
     const i = ['x', 'y'].indexOf(k), v = i < 0 ? d[k] : d.pos?.[i]
-    if (v != null) return get(v, j)
-    if (!M.has(d)) {
-      const top = Math.max(...Array.from({ length: frames(n) }, (_, j) => get(d.scale, j)))
-      const still = JSON.stringify(ir({ ...d, start: 0, end: n, scale: top, pos: null, opacity: 1, rotate: 0, shown: 1, parts: null }, 0))
-      M.set(d, [top, [0, 1].map(a => __measure(still, ...W, a))])
+    const look = j => {
+      if (v != null) return get(v, j)
+      if (!M.has(d)) {
+        const top = Math.max(...Array.from({ length: frames(n) }, (_, j) => get(d.scale, j)))
+        const still = JSON.stringify(ir({ ...d, start: 0, end: n, scale: top, pos: null, opacity: 1, rotate: 0, shown: 1, parts: null }, 0))
+        M.set(d, [top, [0, 1].map(a => __measure(still, ...W, a))])
+      }
+      const [top, box] = M.get(d), mid = d.kind === 'line' ? (d.ends[i] + d.ends[i + 2]) / 2 : 0.5
+      return mid - box[i] * get(d.scale, j) / top / 2 / W[i]
     }
-    const [top, box] = M.get(d), mid = d.kind === 'line' ? (d.ends[i] + d.ends[i + 2]) / 2 : 0.5
-    return mid - box[i] * get(d.scale, j) / top / 2 / W[i]
+    return T => {
+      const j = Math.min(Math.max(Math.round((T - s.start) * S.fps), 0), frames(n) - 1)
+      return seen[j] ??= look(j)
+    }
   }
   globalThis.__out = r => {
     if (!r || !r.$) throw new Error('script must end with a clip')
     const root = r.$, even = n => Math.round(n / 2) * 2
     place(root, 0, len(root) ?? 5, P)
+    P = P.filter(c => c.video || c.gain > 0)
     const first = P.find(c => c.kind === 'video' && c.w)
     W = (S.size ?? (first ? [first.w, first.h] : [1920, 1080])).map(even)
     D = Math.max(0, ...P.map(c => c.end))

@@ -153,6 +153,8 @@ mod tests {
         Bounds::new(point(px(x), px(y)), size(px(w), px(h)))
     }
 
+    // The preview picture is fitted inside its panel with empty bars beside or above it. A pointer
+    // position on screen should translate to the right spot in the picture.
     #[test]
     fn pointer_maps_through_the_letterbox() {
         let wide = letterbox(room(0., 68., 1000., 520.), 10., (800, 400));
@@ -170,6 +172,8 @@ mod tests {
         assert_eq!((portrait, at(portrait, 400., 150.)), (room(231.25, 0., 337.5, 600.), (0.5, 0.25)));
     }
 
+    // Clicking in the preview should count as hitting a clip only inside its box, including when the
+    // box is rotated.
     #[test]
     fn hits_turned_boxes() {
         let flat = ((100., 50.), (80., 20.), 0.);
@@ -180,6 +184,8 @@ mod tests {
         assert!(inside(tilted, (30., 30.)) && !inside(tilted, (30., -30.)));
     }
 
+    // A clip dragged in the preview cannot be dropped completely outside the frame, and its position
+    // is rounded to three decimals.
     #[test]
     fn drops_stay_in_the_frame() {
         assert_eq!(
@@ -189,6 +195,9 @@ mod tests {
         assert_eq!((rest(0.1, 0., 0.), rest(0.5, 2., 3.)), (0.1, -0.5));
     }
 
+    // Dragging a clip in the preview should rewrite its .pos(...) in the script: a plain position when
+    // it has no keys, a new or updated key at the playhead when it does. A drag that changes nothing
+    // leaves the script alone.
     #[test]
     fn drags_rewrite_pos() {
         let src = "const shot = color(\"#203040\").for(6)

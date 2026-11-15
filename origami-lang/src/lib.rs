@@ -14,6 +14,8 @@ use std::{
     io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     process::Command,
+    sync::{LazyLock, mpsc},
+    thread,
     time::UNIX_EPOCH,
 };
 
@@ -286,16 +288,83 @@ fn extent(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> 
     Ok(if num(3) == 0. { w } else { h }.into())
 }
 
+fn tag(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
+    let mut text = |i: usize| -> JsResult<String> { Ok(args.get(i).cloned().unwrap_or_default().to_string(cx)?.to_std_string_escaped()) };
+    let (src, made, bare, called) = (text(0)?, text(1)?, text(2)?, text(3)?);
+    let (mut out, mut line, mut from) = (String::new(), 1, 0);
+    for (i, c) in src.match_indices(['(', '\n']) {
+        if c == "\n" {
+            line += 1;
+            continue;
+        }
+        let at = src[..i].trim_end_matches(|c: char| c.is_ascii_alphanumeric() || c == '_').len();
+        let list = if src[..at].ends_with('.') { &called } else { &bare };
+        if [&made, list].iter().any(|l| l.split(' ').any(|n| n == &src[at..i])) {
+            out += &src[from..i];
+            out += &format!("[{line}]");
+            from = i;
+        }
+    }
+    Ok(JsString::from(out + &src[from..]).into())
+}
+
+type Job = Box<dyn FnOnce(&mut Context) + Send>;
+
+static VM: LazyLock<mpsc::Sender<Job>> = LazyLock::new(|| {
+    let (jobs, queue) = mpsc::channel::<Job>();
+    thread::spawn(move || {
+        queue.iter().fold(boot(), |mut cx, job| {
+            job(&mut cx);
+            boot()
+        });
+    });
+    jobs
+});
+
+fn js(e: JsError) -> anyhow::Error {
+    anyhow!("{e}")
+}
+
+fn boot() -> Context {
+    let mut cx = Context::default();
+    for (name, f) in [
+        (
+            js_string!("__probe"),
+            probe as fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>,
+        ),
+        (js_string!("__read"), read),
+        (js_string!("__lut"), lut),
+        (js_string!("__font"), font),
+        (js_string!("__measure"), extent),
+        (js_string!("__tag"), tag),
+    ] {
+        cx.register_global_builtin_callable(name, 1, NativeFunction::from_fn_ptr(f))
+            .unwrap();
+    }
+    cx.eval(Source::from_bytes(include_str!("prelude.js"))).unwrap();
+    cx
+}
+
+fn ask(script: &Path, relock: bool, src: Option<&str>, measure: Measure) -> Result<Timeline> {
+    let (script, src, (back, got)) = (script.to_path_buf(), src.map(String::from), mpsc::channel());
+    let job = move |cx: &mut Context| {
+        FAIL.take();
+        let tl = build(cx, &script, relock, src.as_deref(), measure);
+        drop(back.send(tl.map_err(|e| FAIL.take().filter(|_| src.is_none()).map_or(e, Into::into))));
+    };
+    let _ = VM.send(Box::new(job));
+    got.recv()?
+}
+
 pub fn eval(script: &Path, relock: bool, measure: Measure) -> Result<Timeline> {
-    FAIL.take();
-    build(script, relock, None, measure).map_err(|e| FAIL.take().map_or(e, Into::into))
+    ask(script, relock, None, measure)
 }
 
 pub fn peek(script: &Path, src: &str, measure: Measure) -> Result<Timeline> {
-    build(script, false, Some(src), measure)
+    ask(script, false, Some(src), measure)
 }
 
-fn build(script: &Path, relock: bool, src: Option<&str>, measure: Measure) -> Result<Timeline> {
+fn build(cx: &mut Context, script: &Path, relock: bool, src: Option<&str>, measure: Measure) -> Result<Timeline> {
     let script = script
         .canonicalize()
         .with_context(|| format!("missing script: {}", script.display()))?;
@@ -306,24 +375,8 @@ fn build(script: &Path, relock: bool, src: Option<&str>, measure: Measure) -> Re
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default();
     ST.set((dir, old.clone(), Lock::new(), relock, Some(measure)));
-    let js = |e: JsError| anyhow!("{e}");
-    let cx = &mut Context::default();
     let run = |cx: &mut Context, code: &str| cx.eval(Source::from_bytes(code)).map_err(js);
     let set = |cx: &mut Context, k: JsString, v: JsValue| cx.register_global_property(k, v, Attribute::all()).map_err(js);
-    for (name, f) in [
-        (
-            js_string!("__probe"),
-            probe as fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>,
-        ),
-        (js_string!("__read"), read),
-        (js_string!("__lut"), lut),
-        (js_string!("__font"), font),
-        (js_string!("__measure"), extent),
-    ] {
-        cx.register_global_builtin_callable(name, 1, NativeFunction::from_fn_ptr(f))
-            .map_err(js)?;
-    }
-    run(cx, include_str!("prelude.js"))?;
     set(
         cx,
         js_string!("__src"),
@@ -361,6 +414,9 @@ mod tests {
         eval(&dir.join("edit.js"), true, size).unwrap()
     }
 
+    // Clips placed one after another (cat) or on top of each other (stack) should start and end at the
+    // right times. A time written as '0:02' means two seconds, and each clip remembers its name and
+    // the script line it came from.
     #[test]
     fn times_and_nesting() {
         let t = tl("const a = text('a').for('0:02')\ncat(a, stack(color('#000').for(3), text('b').at('0:01')), text('c'))");
@@ -369,6 +425,9 @@ mod tests {
         assert_eq!((t.duration, t.clips[0].label.as_str(), t.clips[3].line), (10., "a", 2));
     }
 
+    // A colour setting applied to a whole group should reach every clip inside it, and setting the
+    // same thing twice keeps the last value. A look file that does not exist should point at the line
+    // that asked for it.
     #[test]
     fn grade_reaches_leaves() {
         let t = tl(
@@ -388,6 +447,8 @@ mod tests {
         assert_eq!(e.downcast_ref::<Error>().map(Error::line), Some(2));
     }
 
+    // Keyframes should give the right value on every frame: between keys, before the first and after
+    // the last, with times counted from the clip's end or as a percentage, and with each easing style.
     #[test]
     fn keys_sample_per_frame() {
         let t = tl("settings({ fps: 10 })
@@ -414,6 +475,8 @@ stack(
         assert!(matches!(t.clips[0].opacity, Val::Frames(2, ref s) if s.len() == 10));
     }
 
+    // Animated text (per-word motion, typewriter reveal, scale, rotation) should survive being saved
+    // to the timeline file and loaded back unchanged. A clip with no animation stays as plain numbers.
     #[test]
     fn motion_round_trip() {
         let t = tl("text('ab cd\\nef').for(1).pos(null, t => t)
@@ -435,6 +498,8 @@ stack(
         assert!(plain["clips"][0].get("parts").is_none());
     }
 
+    // When an animation or shape call is written wrongly, the error should name the script line where
+    // the mistake is, so the author can find it.
     #[test]
     fn motion_errors_name_the_line() {
         for (src, line) in [
@@ -455,6 +520,9 @@ stack(
         }
     }
 
+    // A clip that follows another clip's position or opacity should read it at the same moment on the
+    // timeline, even when the two clips start at different times, and with an offset or multiplier
+    // applied.
     #[test]
     fn follows_on_the_timeline_clock() {
         let t = tl("settings({ fps: 10 })
@@ -482,6 +550,9 @@ stack(title.at(1), tag, both.at(1.5), far.at(2), title.at(9))");
         assert!(matches!((&c[1].pos.1, &c[3].opacity), (Some(Val::Frames(3, _)), Val::Frames(5, _))));
     }
 
+    // Following a property the other clip never set should use where that clip sits by default
+    // (centred in the frame). Following a clip that was never placed on the timeline should still
+    // work.
     #[test]
     fn follows_defaults_and_unplaced_clips() {
         let t = tl("settings({ fps: 10 })
@@ -516,6 +587,8 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         );
     }
 
+    // Trying to follow something that cannot be followed (the wrong kind of property, a group, a clip
+    // defined further down) should give a clear message that names the line.
     #[test]
     fn follow_errors_name_the_line() {
         for (src, line, says) in [
@@ -561,6 +634,8 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         }
     }
 
+    // Rectangles, lines, and text with a background plate or alignment should carry their settings
+    // into the timeline. Timeline files saved before these existed should still load.
     #[test]
     fn shapes_and_plates() {
         let t = tl("stack(
@@ -594,6 +669,8 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         assert_eq!(serde_json::from_value::<Timeline>(json).unwrap(), t);
     }
 
+    // A looped clip should repeat back to back, and shift should move all of its repeats later by the
+    // same amount.
     #[test]
     fn shift_loop_speed() {
         let t = tl("stack(text('x').for(2).loop(2).shift(1), color('red'))");

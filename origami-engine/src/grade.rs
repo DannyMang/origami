@@ -148,9 +148,10 @@ fn pipe(g: &Grade) -> impl Fn(Rgb) -> Rgb + '_ {
         if let Some((s, (kh, ks, kl))) = &key {
             let near = |d: f64, unit: f64| 1. - smooth(s.range * unit, (s.range + s.soft) * unit, d);
             let (h, sat, l) = hsv(c);
-            let around = (h - kh).abs().min(1. - (h - kh).abs());
+            let around = (h - kh).abs().min(1. - (h - kh).abs()) * (sat.min(*ks) * 10.).min(1.);
             let mask = near(around, 0.005) * near((sat - ks).abs(), 0.015) * near((l - kl).abs(), 0.025);
-            let fixed = saturate(contrast(balance(c, s.temperature, s.tint), s.contrast), s.saturation / 100.);
+            let lit = balance(c, s.temperature, s.tint).map(|v| v * 2f64.powf(s.exposure / 2.2));
+            let fixed = saturate(contrast(lit, s.contrast), s.saturation / 100.);
             c = blend(c, fixed, mask);
         }
         c.map(|v| v.clamp(0., 1.))
@@ -225,6 +226,8 @@ mod tests {
         luma(pipe(&with(json))([0.5; 3]))
     }
 
+    // A grade with every setting left at its default should do nothing at all: no colour table is
+    // built and the picture is untouched.
     #[test]
     fn defaults_are_identity() {
         assert!(lut(&Grade::default()).is_none());
@@ -236,6 +239,8 @@ mod tests {
         );
     }
 
+    // Each colour slider should push the picture the way its name says: more exposure is brighter,
+    // more temperature is warmer, zero saturation is grey, and so on.
     #[test]
     fn sliders_move_the_right_way() {
         for k in ["exposure", "highlights", "shadows", "whites", "blacks"] {
@@ -257,6 +262,8 @@ mod tests {
         assert!(run(r#"{"fadedFilm":50}"#, [0.; 3])[0] > 0. && run(r#"{"fadedFilm":50}"#, [1.; 3])[0] < 1.);
     }
 
+    // A colour table saved as a .cube file should read back the same. A look at strength 0 should
+    // change nothing, and at 100 should apply in full.
     #[test]
     fn cube_round_trips_and_look_blends() {
         let lut = Lut::bake(5, |[r, g, b]| [b, r * 0.5, g * g]);

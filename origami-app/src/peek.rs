@@ -4,10 +4,10 @@ use crate::{
     view::{BG, BLUE, BORDER, DIM, GREEN, PANEL, TEXT},
 };
 use gpui::{
-    App, Bounds, Context, Div, MouseButton, MouseDownEvent, ObjectFit, PathBuilder, Pixels, RenderImage, StyledImage, Window, canvas, div,
-    img, point, prelude::*, px, rgb, rgba,
+    App, Bounds, Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent, ObjectFit, PathBuilder, Pixels, RenderImage, StyledImage,
+    Window, canvas, div, img, point, prelude::*, px, rgb, rgba,
 };
-use origami_engine::{Player, Preview, footprint};
+use origami_engine::{Player, footprint};
 use origami_lang::{Clip, Kind, Timeline};
 use std::{sync::Arc, time::Instant};
 
@@ -107,7 +107,8 @@ impl Origami {
         p.busy = true;
         let (scout, tl) = (self.scout.clone(), p.tl.clone());
         cx.spawn(async move |this, cx| {
-            let ((w, h), job) = (Preview::size(&tl), tl.clone());
+            let w = (WIDE as usize * 2).min(tl.size.0 as usize) & !1;
+            let ((w, h), job) = ((w, (w * tl.size.1 as usize / tl.size.0.max(1) as usize).max(2) & !1), tl.clone());
             let px = cx
                 .background_executor()
                 .spawn(async move { scout.lock().unwrap().frame(&job, want as f64 / fps, (w, h)) })
@@ -276,6 +277,19 @@ impl Origami {
                 .text_size(px(12.))
                 .text_color(rgb(TEXT))
                 .occlude()
+                .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, window, cx| {
+                    if this.eyeing {
+                        this.scan(e.position.x, window);
+                        cx.notify();
+                    }
+                }))
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.release();
+                        cx.notify();
+                    }),
+                )
                 .child(media.rounded(px(3.)).overflow_hidden())
                 .child(bar)
                 .child(
@@ -289,5 +303,48 @@ impl Origami {
                         .child(div().text_color(rgb(DIM)).whitespace_nowrap().child(about)),
                 ),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{Modifiers, point};
+
+    // Dragging along the bar of the hover preview should move its playhead, keep following the drag
+    // even when the pointer leaves the bar, and stop once the button is released.
+    #[gpui::test]
+    fn scrub(cx: &mut gpui::TestAppContext) {
+        let path = std::env::temp_dir().join("origami-peek-test.js");
+        std::fs::write(&path, "stack(color(\"#203040\").for(4))\n").unwrap();
+        let tl = origami_lang::eval(&path, false, footprint).unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            (app.script, app.lines) = (path.clone(), vec!["stack(color(\"#203040\").for(4))".into()]);
+            app.peek = Some(Peek::new(0, tl));
+            app
+        });
+        let (left, top) = view.update_in(cx, |o, window, _| o.perch(window)).unwrap();
+        cx.run_until_parked();
+        let bar = |f: f32| point(px(left + 11. + f * WIDE), px(top + 11. + 156. + 8. + 7.));
+        let at = |cx: &mut gpui::VisualTestContext| view.update(cx, |o, _| (o.peek.as_ref().unwrap().t, o.eyeing));
+        cx.simulate_mouse_move(bar(0.5), None, Modifiers::default());
+        cx.simulate_mouse_down(bar(0.5), MouseButton::Left, Modifiers::default());
+        assert_eq!(at(cx).1, true);
+        cx.simulate_mouse_move(bar(0.25), Some(MouseButton::Left), Modifiers::default());
+        assert!((at(cx).0 - 1.).abs() < 0.05, "{:?}", at(cx));
+        cx.simulate_mouse_up(bar(0.25), MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_move(bar(0.9), None, Modifiers::default());
+        cx.simulate_mouse_move(point(px(left - 300.), px(top + 300.)), None, Modifiers::default());
+        assert!((at(cx).0 - 1.).abs() < 0.05 && !at(cx).1, "{:?}", at(cx));
+        cx.simulate_mouse_down(bar(0.5), MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_move(
+            point(px(left - 300.), px(top + 300.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_up(point(px(left - 300.), px(top + 300.)), MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_move(bar(0.9), None, Modifiers::default());
+        assert!(!at(cx).1 && at(cx).0 < 0.05, "{:?}", at(cx));
     }
 }
