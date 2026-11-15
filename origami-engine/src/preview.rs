@@ -23,7 +23,7 @@ type Key = (String, usize, usize);
 type Px = Arc<Vec<u8>>;
 type Laid = Arc<(Vec<Glyph>, usize, usize)>;
 
-type Info = (&'static [&'static str], &'static str, f64, f64, f64, f64);
+type Info = (&'static [&'static str], &'static str, f64, f64, f64, f64, i64);
 
 static KNOWN: LazyLock<Mutex<HashMap<String, Info>>> = LazyLock::new(Mutex::default);
 
@@ -35,7 +35,7 @@ fn probe(path: &str) -> Info {
             "-select_streams",
             "v:0",
             "-show_entries",
-            "stream=codec_name,pix_fmt,avg_frame_rate,time_base,duration",
+            "stream=codec_name,has_b_frames,pix_fmt,avg_frame_rate,time_base,duration",
             "-of",
             "csv=p=0",
         ];
@@ -43,7 +43,7 @@ fn probe(path: &str) -> Info {
         let text = String::from_utf8_lossy(&out);
         let mut cols = text.lines().next().unwrap_or_default().split(',');
         let mut col = || cols.next().unwrap_or_default();
-        let (codec, pix, rate) = (col(), col(), col());
+        let (codec, late, pix, rate) = (col(), col(), col(), col());
         let (tb, dur) = (col().strip_prefix("1/"), col());
         let (n, d) = rate.split_once('/').unwrap_or_default();
         let (lead, down): (&[&str], &str) = match (codec, pix) {
@@ -69,6 +69,7 @@ fn probe(path: &str) -> Info {
             d.parse().unwrap_or(0.),
             dur.parse().unwrap_or(0.),
             tb.and_then(|b| b.parse().ok()).unwrap_or(0.),
+            (late != "0") as i64,
         )
     };
     *KNOWN.lock().unwrap().entry(path.into()).or_insert_with(ask)
@@ -276,7 +277,7 @@ impl Preview {
             c.src.clone()
         };
         let (n, d, tb) = match probe(&src) {
-            (_, _, n, d, _, tb) if n > 0. && d > 0. => (n, d, tb),
+            (_, _, n, d, _, tb, _) if n > 0. && d > 0. => (n, d, tb),
             _ => (fps, 1., 0.),
         };
         ((src, tw, th), index(c, t, fps, (n, d, tb), probe(&c.src).4), (n, d))
@@ -346,8 +347,9 @@ impl Preview {
         let found = match self.near(key, k) {
             Some(i) => self.decoders.remove(i),
             None => {
-                let seek = (from - 1).max(0);
-                let (args, (lead, down, ..)) = (["-ss", &(seek as f64 * d / n).to_string(), "-i", &key.0], probe(&key.0));
+                let (lead, down, .., late) = probe(&key.0);
+                let seek = (from - late).max(0);
+                let args = ["-ss", &(seek as f64 * d / n).to_string(), "-i", &key.0];
                 let out = [
                     "-vf",
                     &format!(

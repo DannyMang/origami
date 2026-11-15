@@ -242,7 +242,7 @@
   globalThis.__prep = src => {
     L = {}
     src.split('\n').forEach((s, i) => {
-      const m = s.match(named)
+      const m = s.includes('=') && s.match(named)
       if (m) L[i + 1] = m[1]
     })
     return __tag(src, made, bare, called)
@@ -267,7 +267,8 @@
   const frames = d => Math.max(1, Math.ceil(d * S.fps - 1e-6))
   const sample = (c, v) => {
     if (typeof v !== 'function') return v
-    const d = c.end - c.start, s = Array.from({ length: frames(d) }, (_, i) => v(i / S.fps, d, c.start + i / S.fps))
+    const d = c.end - c.start, s = []
+    for (let i = 0, n = frames(d); i < n; i++) s.push(v(i / S.fps, d, c.start + i / S.fps))
     if (!s.every(Number.isFinite)) throw new Error(`line ${v.line}: a function of time must return a number`)
     return s.every(x => x === s[0]) ? s[0] : [v.line, s]
   }
