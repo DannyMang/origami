@@ -8,6 +8,7 @@ mod graph;
 mod keys;
 mod knob;
 mod lint;
+mod menu;
 mod motion;
 mod mouse;
 mod peek;
@@ -21,8 +22,8 @@ mod voice;
 mod web;
 
 use gpui::{
-    App, AppContext, Application, Bounds, Context, FocusHandle, Pixels, Point, RenderImage, TitlebarOptions, WindowBounds, WindowOptions,
-    px, size,
+    App, AppContext, Application, Bounds, Context, FocusHandle, Pixels, Point, RenderImage, TitlebarOptions, Window, WindowBounds,
+    WindowOptions, px, size,
 };
 use image::{Frame, RgbaImage};
 use mouse::Grab;
@@ -355,7 +356,11 @@ impl Origami {
         }
     }
 
-    fn tick(&mut self, cx: &mut Context<Self>) {
+    fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let arrived = menu::ARRIVED.lock().unwrap().take();
+        if let Some(path) = arrived {
+            self.switch(path, window, cx);
+        }
         self.watch(cx);
         *crash::UNSAVED.lock().unwrap() = self.dirty.then(|| (self.script.clone(), self.text()));
         if self.dwell() {
@@ -533,7 +538,19 @@ fn main() {
     let script = script.unwrap_or_default();
     crash::guard();
     thread::spawn(Player::warm);
-    Application::new().run(move |cx: &mut App| {
+    let app = Application::new();
+    app.on_open_urls(|urls| {
+        if let Some(path) = urls.iter().filter_map(|u| menu::local(u)).last() {
+            *menu::ARRIVED.lock().unwrap() = Some(path);
+        }
+    });
+    app.run(move |cx: &mut App| {
+        let recent: Vec<PathBuf> = fs::read_to_string(mouse::recent())
+            .unwrap_or_default()
+            .lines()
+            .map(PathBuf::from)
+            .collect();
+        menu::install(cx, &recent);
         let options = WindowOptions {
             titlebar: Some(TitlebarOptions {
                 title: Some("origami".into()),
@@ -557,20 +574,16 @@ fn main() {
                 let weak = cx.weak_entity();
                 window.on_window_should_close(cx, move |window, cx| {
                     let ask = |this: &mut Origami, cx: &mut Context<Origami>| {
-                        if this.dirty {
+                        let busy = this.dirty || this.export.is_some();
+                        if busy {
                             this.leave(window, cx);
                         }
-                        !this.dirty
+                        !busy
                     };
                     weak.update(cx, ask).unwrap_or(true)
                 });
-                let recent = fs::read_to_string(mouse::recent())
-                    .unwrap_or_default()
-                    .lines()
-                    .map(PathBuf::from)
-                    .collect();
-                cx.spawn(async move |this, cx| {
-                    while this.update(cx, |this, cx| this.tick(cx)).is_ok() {
+                cx.spawn_in(window, async move |this, cx| {
+                    while this.update_in(cx, |this, window, cx| this.tick(window, cx)).is_ok() {
                         cx.background_executor().timer(Duration::from_millis(16)).await;
                     }
                 })
@@ -585,7 +598,7 @@ fn main() {
                 .detach();
                 let mut app = fresh(focus, recent);
                 if !script.as_os_str().is_empty() {
-                    app.open(script);
+                    app.open(script, cx);
                 }
                 app
             })

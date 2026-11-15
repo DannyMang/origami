@@ -71,7 +71,7 @@ mod tests {
         assert!(fs::read_to_string(&log).unwrap().contains("panicked at here:\nboom\n"));
         let (view, cx) = cx.add_window_view(|_, cx| {
             let mut app = crate::fresh(cx.focus_handle(), vec![]);
-            app.open(script.clone());
+            app.open(script.clone(), cx);
             app
         });
         cx.run_until_parked();

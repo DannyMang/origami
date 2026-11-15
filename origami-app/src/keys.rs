@@ -45,10 +45,11 @@ impl Origami {
     }
 
     pub fn key(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        cx.stop_propagation();
         let key = &e.keystroke;
         let save = key.modifiers.control && matches!(key.key.as_str(), "s" | "0" | "f");
         if key.modifiers.control && !save || self.script.as_os_str().is_empty() {
-            return;
+            return cx.propagate();
         }
         let k = match key.key.as_str() {
             k @ ("enter" | "escape" | "backspace" | "delete" | "space" | "tab") => k.to_string(),
@@ -56,7 +57,7 @@ impl Origami {
         };
         let plain = !(key.modifiers.platform || key.modifiers.shift || key.modifiers.alt || save);
         let shown = matches!(k.as_str(), "escape" | "f" | "space" | "left" | "right");
-        if self.full && !(shown || key.modifiers.platform && matches!(key.key.as_str(), "q" | "s")) {
+        if self.full && !(shown || key.modifiers.platform && key.key == "s") {
             return;
         }
         if k == "escape" && self.peek.is_some() {
@@ -105,7 +106,6 @@ impl Origami {
                     .or(self.focused().map(|c| (c.line as usize).saturating_sub(1)));
                 self.fold(row.unwrap_or(0), Some(key.key == "["));
             }
-            (true, "q") => self.leave(window, cx),
             (true, "z") if key.modifiers.shift => self.redo(),
             (true, "z") => self.undo(),
             (true, "=" | "+") => self.scale(1.),
@@ -125,19 +125,19 @@ impl Origami {
                 let to = ["home", "end", "top", "bottom"][["left", "right", "up", "down"].iter().position(|a| *a == arrow).unwrap_or(0)];
                 self.edit(to, key.modifiers.shift);
             }
-            (true, _) => return,
+            (true, _) => return cx.propagate(),
             _ if self.cursor.is_some() => {
                 self.draft(|this| this.edit(&k, key.modifiers.shift));
                 self.suggest(&k);
             }
             (_, "escape") if self.full => self.fullscreen(),
             (_, "f") if self.mouse && self.mode == Mode::Normal => self.fullscreen(),
-            _ => return self.press(&k, cx),
+            _ => return self.press(&k, window, cx),
         }
         cx.notify();
     }
 
-    pub fn press(&mut self, k: &str, cx: &mut Context<Self>) {
+    pub fn press(&mut self, k: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.note.clear();
         match mem::replace(&mut self.mode, Mode::Normal) {
             mode @ (Mode::Command(_) | Mode::Search(_)) => {
@@ -148,7 +148,7 @@ impl Origami {
                 match k {
                     "enter" if cmd => {
                         self.last = s.clone();
-                        self.run(&s, cx);
+                        self.run(&s, window, cx);
                     }
                     "enter" => {
                         self.query = s;
@@ -170,7 +170,7 @@ impl Origami {
                 self.mode = mode;
                 let f = self.fps();
                 match k {
-                    _ if !self.mouse => self.normal(k, cx),
+                    _ if !self.mouse => self.normal(k, window, cx),
                     "space" => self.toggle(),
                     "backspace" | "delete" => self.delete(),
                     "s" | "S" => self.split(),
@@ -185,7 +185,7 @@ impl Origami {
         cx.notify();
     }
 
-    fn normal(&mut self, k: &str, cx: &mut Context<Self>) {
+    fn normal(&mut self, k: &str, window: &mut Window, cx: &mut Context<Self>) {
         let (f, t) = (self.fps(), self.t);
         if let Some(p) = self.pending.take() {
             let c = k.chars().next().unwrap_or(' ');
@@ -244,7 +244,7 @@ impl Origami {
             "/" => self.mode = Mode::Search(String::new()),
             "n" => self.find(true),
             "N" => self.find(false),
-            "." => self.run(&self.last.clone(), cx),
+            "." => self.run(&self.last.clone(), window, cx),
             "escape" => (self.mode, self.help) = (Mode::Normal, false),
             _ => {}
         }
@@ -279,16 +279,16 @@ impl Origami {
         let _ = Command::new(editor).arg(format!("{}:{}", self.script.display(), c.line)).spawn();
     }
 
-    pub fn run(&mut self, cmd: &str, cx: &mut Context<Self>) {
+    pub fn run(&mut self, cmd: &str, window: &mut Window, cx: &mut Context<Self>) {
         let (head, arg) = cmd.trim().split_once(' ').unwrap_or((cmd.trim(), ""));
         let dir = self.script.parent().unwrap().to_path_buf();
         match head {
             "q" if self.dirty => self.note = "unsaved changes: cmd+s saves, :q! discards".into(),
-            "q" | "q!" => cx.quit(),
+            "q" | "q!" => self.quit(window, cx),
             "goto" => self.seek(secs(arg).unwrap_or(self.t)),
             "f" => self.seek(arg.parse::<f64>().map_or(self.t, |n| n / self.fps())),
             "e" if !dir.join(arg).is_file() => self.note = format!("no script named {arg} here, nothing opened"),
-            "e" => self.open(dir.join(arg)),
+            "e" => self.switch(dir.join(arg), window, cx),
             "set" => self.looping = arg == "loop",
             "help" => self.help = !self.help,
             "ir" => {
@@ -369,9 +369,9 @@ mod tests {
             app
         });
         let job = Arc::new(Mutex::new(("exporting 40%".to_string(), false)));
-        view.update(cx, |o, cx| {
+        view.update_in(cx, |o, window, cx| {
             o.export = Some(job.clone());
-            o.run("export out.mp4", cx);
+            o.run("export out.mp4", window, cx);
             assert_eq!(o.note, "an export is already running: wait for it to finish");
             assert!(Arc::ptr_eq(o.export.as_ref().unwrap(), &job));
         });

@@ -2,17 +2,16 @@ use crate::{
     Origami,
     clip::set,
     crash,
+    menu::menus,
     scene::{FOOT, LEAD, sink},
     view::{HEAD, RULER},
 };
-use gpui::{Context, Pixels, PromptLevel, ScrollWheelEvent, Window, px};
+use gpui::{Context, Pixels, ScrollWheelEvent, Window, px};
 use origami_lang::{Clip, Kind};
 use std::{
     env, fs, mem,
     path::{Path, PathBuf},
 };
-
-const STARTER: &str = "stack(\n  cat(\n    color(\"#282c33\").for(5),\n  ),\n  text(\"hello origami\"),\n)\n";
 
 pub fn recent() -> PathBuf {
     PathBuf::from(env::var("HOME").unwrap_or_default()).join(".origami/recent")
@@ -65,14 +64,15 @@ impl Origami {
         }
     }
 
-    pub fn open(&mut self, path: PathBuf) {
+    pub fn open(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.recent.retain(|p| *p != path);
         self.recent.insert(0, path.clone());
         self.recent.truncate(6);
         let (list, all) = (recent(), self.recent.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>());
         let _ = fs::create_dir_all(list.parent().unwrap());
         let _ = fs::write(list, all.join("\n"));
-        (self.script, self.mtime, self.t, self.dirty) = (path, None, 0., false);
+        cx.set_menus(menus(&self.recent));
+        (self.script, self.mtime, self.t, self.dirty, self.clash) = (path, None, 0., false, false);
         (self.past, self.future, self.cursor, self.top, self.left) = (vec![], vec![], None, 0., 0.);
         (self.folded, self.fresh) = (vec![], true);
         let stamp = |p: &Path| fs::metadata(p).and_then(|m| m.modified()).ok();
@@ -86,33 +86,6 @@ impl Origami {
                 self.note = "recovered unsaved changes from a crash: keep mine saves them, use disk drops them".into();
             }
         }
-    }
-
-    pub fn leave(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.dirty {
-            return cx.quit();
-        }
-        let detail = Some("Save them before closing?");
-        let answer = window.prompt(
-            PromptLevel::Warning,
-            "You have unsaved changes",
-            detail,
-            &["Save", "Discard", "Cancel"],
-            cx,
-        );
-        cx.spawn(async move |this, cx| {
-            let pick = answer.await.unwrap_or(2);
-            let _ = this.update(cx, |this, cx| {
-                if pick == 0 {
-                    this.clash = false;
-                    this.store();
-                }
-                if pick < 2 {
-                    cx.quit();
-                }
-            });
-        })
-        .detach();
     }
 
     pub fn reset(&mut self) {
@@ -287,21 +260,6 @@ impl Origami {
         let k = (t - self.pan) / self.span();
         self.zoom = deep(self.zoom * (f64::from(d.y) / 200.).exp(), self.tl.duration, self.fps());
         self.pan = within(t - k * self.span() - f64::from(d.x) * per, self.tl.duration, self.span());
-    }
-
-    pub fn create(&mut self, cx: &mut Context<Self>) {
-        let path = cx.prompt_for_new_path(&env::current_dir().unwrap_or_default(), Some("edit.js"));
-        cx.spawn(async move |this, cx| {
-            if let Ok(Ok(Some(path))) = path.await
-                && fs::write(&path, STARTER).is_ok()
-            {
-                let _ = this.update(cx, |this, cx| {
-                    this.open(path);
-                    cx.notify();
-                });
-            }
-        })
-        .detach();
     }
 }
 

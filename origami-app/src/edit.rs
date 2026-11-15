@@ -355,7 +355,7 @@ mod tests {
         fs::write(&path, "stack(video(\"v.mp4\"))\n").unwrap();
         let (view, cx) = cx.add_window_view(|_, cx| {
             let mut app = crate::fresh(cx.focus_handle(), vec![]);
-            app.open(path.clone());
+            app.open(path.clone(), cx);
             app
         });
         settle(&view, cx);
@@ -393,7 +393,7 @@ mod tests {
         fs::write(&path, "stack()\n").unwrap();
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut app = crate::fresh(cx.focus_handle(), vec![]);
-            app.open(path.clone());
+            app.open(path.clone(), cx);
             window.focus(&app.focus);
             app
         });
@@ -441,8 +441,8 @@ mod tests {
             view.update(cx, |o, _| (o.lines.clone(), o.clash, o.dirty)),
             (one.clone(), true, true)
         );
-        view.update(cx, |o, cx| {
-            o.run("e other.js", cx);
+        view.update_in(cx, |o, window, cx| {
+            o.run("e other.js", window, cx);
             assert_eq!(
                 (o.script.clone(), o.note.as_str()),
                 (path.clone(), "no script named other.js here, nothing opened")

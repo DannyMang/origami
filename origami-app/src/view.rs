@@ -2,6 +2,7 @@ use crate::{
     Asset, Mode, Origami,
     full::corners,
     keys::stamp,
+    menu::place,
     release::VERSION,
     stage::{draw, letterbox},
 };
@@ -29,7 +30,7 @@ const CODE: u32 = 0xacb2be;
 const COMMENT: u32 = 0x5d636f;
 const GUTTER: u32 = 0x4e5a5f;
 pub const INK: u32 = 0x1b1f25;
-const DOCS: &str = "https://example.com/origami/docs";
+pub const DOCS: &str = "https://example.com/origami/docs";
 pub const HEAD: f32 = 48.;
 pub const RULER: f32 = 22.;
 const HELP: &str =
@@ -308,7 +309,7 @@ impl Origami {
             self.tool("bigger code", cx, |t, _, _| t.scale(1.)),
             self.tool("smaller code", cx, |t, _, _| t.scale(-1.)),
             self.tool("reset layout", cx, |t, _, _| t.reset()),
-            self.tool("export", cx, |t, _, cx| t.run("export out.mp4", cx)),
+            self.tool("export", cx, |t, window, cx| t.run("export out.mp4", window, cx)),
             self.quality(cx),
         ];
         let side = || div().flex_1().flex().items_center().text_size(px(20.));
@@ -940,13 +941,7 @@ impl Origami {
                 .child(label)
         };
         let recent = self.recent.iter().filter(|p| p.exists()).map(|p| {
-            let (path, name) = (p.clone(), p.file_name().unwrap_or_default().to_string_lossy().to_string());
-            let dir = p
-                .parent()
-                .and_then(|d| d.file_name())
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
+            let (path, (name, dir)) = (p.clone(), place(p));
             div()
                 .w(px(420.))
                 .h(px(30.))
@@ -960,16 +955,13 @@ impl Origami {
                 .hover(|s| s.bg(rgb(PANEL)))
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| {
-                        this.open(path.clone());
-                        cx.notify();
-                    }),
+                    cx.listener(move |this, _, window, cx| this.switch(path.clone(), window, cx)),
                 )
                 .child(name)
                 .child(div().text_size(px(11.)).text_color(rgb(DIM)).child(dir))
         });
         let recent: Vec<Div> = recent.collect();
-        div()
+        self.listen(div(), cx)
             .size_full()
             .relative()
             .flex()
@@ -1007,7 +999,13 @@ impl Origami {
                         button("Create new file")
                             .bg(rgb(BLUE))
                             .text_color(rgb(INK))
-                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| this.create(cx))),
+                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| this.create(window, cx))),
+                    )
+                    .child(
+                        button("Open\u{2026}")
+                            .border_1()
+                            .border_color(rgb(BORDER))
+                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| this.browse(window, cx))),
                     )
                     .child(
                         button("Docs")
@@ -1102,7 +1100,8 @@ impl Render for Origami {
             this.release();
             cx.notify();
         };
-        let root = div()
+        let root = self
+            .listen(div(), cx)
             .size_full()
             .relative()
             .flex()
@@ -1111,7 +1110,6 @@ impl Render for Origami {
             .text_color(rgb(TEXT))
             .text_size(px(13.))
             .font_family("Menlo")
-            .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| this.key(e, window, cx)))
             .capture_any_mouse_down(cx.listener(|this, _, _, cx| {
                 (this.cursor, this.anchor) = (None, None);

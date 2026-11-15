@@ -49,7 +49,8 @@ The later crates depend on the earlier ones by relative path.
 | --- | --- |
 | `main.rs` | The `Origami` state struct, the 60 Hz `tick`, script loading, preview frame requests |
 | `view.rs` | All rendering: preview stage, timeline, code pane, status bar, launch screen |
-| `mouse.rs` | Scrub, clip drag and trim, zoom, pane resize, open and create |
+| `mouse.rs` | Scrub, clip drag and trim, zoom, pane resize, opening a script |
+| `menu.rs` | Menu bar, its actions and key bindings, New/Open/Open Recent, files opened from Finder, quitting |
 | `keys.rs` | Key handling, vim mode, `:` commands, script rewrites |
 | `edit.rs` | Code pane text editing, selection, undo and redo |
 | `complete.rs` | Autocomplete and the list of script functions (`DEFS`) |
