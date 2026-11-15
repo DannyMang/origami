@@ -89,3 +89,7 @@ Click a gutter arrow to hide a block or a run of definitions. cmd+opt+[ folds at
 ## Layout
 
 Drag the edge between panes to resize. cmd+= and cmd+- change the code size. cmd+0 resets.
+
+## Menus
+
+Every command is also in the menu bar, with its shortcut. File has New (cmd+n), Open… (cmd+o), Open Recent, Save (cmd+s), Export… (cmd+shift+e, the same as `:export`) and Close Window (cmd+w). Help › What's New opens the changelog.

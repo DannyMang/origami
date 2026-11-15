@@ -6,6 +6,8 @@ What changed in each version of Origami. The launch screen shows the version you
 
 ### Nov 15
 
+- **Menu bar.** Origami, File, Edit, View, Window and Help menus, with every existing shortcut on its item. New: ⌘N new file, ⌘O open, ⇧⌘E export, ⌘W close, ⌘M minimize, ⌘H hide.
+- **Open….** A button on the launch screen and ⌘O open any script, and double-clicking a `.js` file in Finder (or Open With › Origami) opens it. Opening another script or quitting asks before losing unsaved changes, and quitting asks before stopping a running export.
 - The launch screen shows the app's version and tells you when a newer one is available.
 - Opening a project for the first time is about three times faster: media files are read in parallel.
 - If the app crashes with unsaved changes, they are saved next to your script and offered back the next time you open it.
