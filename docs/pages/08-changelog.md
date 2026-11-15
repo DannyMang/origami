@@ -47,6 +47,7 @@ What changed in each version of Origami. The launch screen shows the version you
   - Colours are hex only, such as `"#ffffff"`. Anything else is an error on its line instead of black. Click a colour in the script to pick it on the colour wheel.
   - Odd frame sizes are rounded up to even numbers, because video files need even sizes, and the status bar says so.
   - An export that stops making progress for 30 seconds is stopped and reported. Exports stop when the app quits. A second export waits for the first.
+  - An export stops even when Origami is force-quit or runs out of memory, instead of running on in the background.
 
 ### Nov 14
 
