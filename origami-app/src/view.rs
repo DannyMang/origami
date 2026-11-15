@@ -882,6 +882,7 @@ impl Origami {
             (Some(take), _) => (RED, take.about()),
             _ if !self.err.is_empty() => (RED, self.err.clone()),
             _ if !self.note.is_empty() => (TEXT, self.note.clone()),
+            _ if !self.tl.note.is_empty() => (TEXT, self.tl.note.clone()),
             (_, Some(c)) => (MUTED, format!("{}  line {}", self.code(c, c.start, c.end), c.line)),
             _ => (MUTED, String::new()),
         };

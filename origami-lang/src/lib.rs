@@ -142,6 +142,8 @@ pub struct Timeline {
     pub preview: String,
     #[serde(default)]
     pub proxy: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub note: String,
     pub clips: Vec<Clip>,
     #[serde(skip)]
     pub files: Vec<(u32, PathBuf)>,
@@ -1035,8 +1037,8 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         }
     }
 
-    // A colour that does not parse, an odd frame size and a layer too large to draw should each stop
-    // the script with an error on its line, while every colour form the engine draws is accepted.
+    // A colour that does not parse and a layer too large to draw should each stop the script with an
+    // error on its line, while every colour form the engine draws is accepted.
     #[test]
     fn refuses_unusable_values() {
         let dir = std::env::temp_dir().join("origami-refuse");
@@ -1057,10 +1059,6 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
                 "line 1: \"+fffff\" is not a colour",
             ),
             (
-                "settings({ size: [641, 360] })\ntext('a')",
-                "line 1: size is written [1920, 1080], with even numbers",
-            ),
-            (
                 "text('a')\ntext('b', { size: 1e9 })",
                 "line 2: b would be drawn 1000000000x500000000 pixels",
             ),
@@ -1072,5 +1070,19 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
             let e = run(src).unwrap_err();
             assert!(e.starts_with(want), "{src}: {e}");
         }
+    }
+
+    // An odd frame size should be rounded to even numbers, with a note naming its line.
+    #[test]
+    fn rounds_odd_sizes() {
+        let dir = std::env::temp_dir().join("origami-odd-size");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("edit.js"), "settings({ size: [641, 360] })\ntext('a')").unwrap();
+        let tl = eval(&dir.join("edit.js"), true, size).unwrap();
+        assert_eq!(tl.size, (642, 360));
+        assert_eq!(
+            tl.note,
+            "line 1: size [641, 360] is rounded to [642, 360], video files need even numbers"
+        );
     }
 }

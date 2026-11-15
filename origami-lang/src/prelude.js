@@ -1,8 +1,8 @@
 (() => {
   const T = t => typeof t === 'number' ? t : String(t).split(':').reduce((a, x) => a * 60 + +x, 0)
   const S = { fps: 30, size: null, preview: 'auto', proxy: true }
-  let L = {}, at = 0, N = 0, P = [], D = 0, W = [1, 1]
-  const M = new Map(), reads = ['x', 'y', 'scale', 'rotate', 'opacity']
+  let L = {}, at = 0, N = 0, P = [], D = 0, W = [1, 1], note
+  const M = new Map(), reads = ['x', 'y', 'scale', 'rotate', 'opacity'], even = n => Math.round(n / 2) * 2
   const digits = /^\d+$/, named = /(?:const|let|var)\s+(\w+)\s*=/, made = 'video sound image text captions caption color', bare = 'keys rect line add mul cat stack settings'
   const DAY = 86400
   const must = (ok, say) => { if (!ok) throw new Error(`line ${at}: ${say}`) }
@@ -186,7 +186,8 @@
     settings: line(n => (o = {}) => {
       at = n || at
       must(o.fps === undefined || Number.isInteger(o.fps) && o.fps > 0 && o.fps <= 240, 'fps takes a whole number from 1 to 240')
-      must(o.size == null || Array.isArray(o.size) && o.size.length === 2 && o.size.every(v => v >= 1 && v <= 16384 && v % 2 === 0), 'size is written [1920, 1080], with even numbers so the exported H.264 video plays everywhere')
+      must(o.size == null || Array.isArray(o.size) && o.size.length === 2 && o.size.every(v => v >= 1 && v <= 16384), 'size is written [1920, 1080], two numbers from 1 to 16384')
+      if (o.size?.some(v => v % 2)) note = `line ${at}: size [${o.size.join(', ')}] is rounded to [${o.size.map(even).join(', ')}], video files need even numbers`
       must([undefined, 'auto', 'full', 'half', 'quarter'].includes(o.preview), 'preview is "auto", "full", "half" or "quarter"')
       must([undefined, true, false].includes(o.proxy), 'proxy is true or false')
       Object.assign(S, o)
@@ -301,7 +302,7 @@
   }
   globalThis.__out = r => {
     if (!r || !r.$) throw new Error(`line ${tail()}: script must end with a clip`)
-    const root = r.$, even = n => Math.round(n / 2) * 2
+    const root = r.$
     place(root, 0, len(root) ?? 5, P)
     P = P.filter(c => c.video || c.gain > 0)
     const late = P.find(c => !(c.start >= -DAY && c.end <= DAY))
@@ -309,6 +310,6 @@
     const first = P.find(c => c.kind === 'video' && c.w)
     W = (S.size ?? (first ? [first.w, first.h] : [1920, 1080])).map(even)
     D = Math.max(0, ...P.map(c => c.end))
-    return JSON.stringify({ fps: S.fps, size: W, duration: D, preview: S.preview, proxy: S.proxy, clips: P.map(ir) })
+    return JSON.stringify({ fps: S.fps, size: W, duration: D, preview: S.preview, proxy: S.proxy, note, clips: P.map(ir) })
   }
 })()

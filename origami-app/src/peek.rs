@@ -61,6 +61,7 @@ impl Origami {
                 duration: clip.end,
                 preview: self.tl.preview.clone(),
                 proxy: self.tl.proxy,
+                note: String::new(),
                 clips: vec![clip],
                 files: vec![],
             };
