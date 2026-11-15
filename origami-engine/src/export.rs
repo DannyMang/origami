@@ -8,7 +8,7 @@ use std::{
     iter,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
-    process::{self, Command, Stdio},
+    process::{self, Child, Command, Stdio},
     sync::{
         Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed},
@@ -28,6 +28,15 @@ fn kill(pid: u32) {
 
 pub fn halt() {
     LIVE.lock().map(|l| l.iter().copied().for_each(kill)).unwrap_or_default();
+}
+
+fn tether(pid: u32) -> Option<Child> {
+    Command::new("sh")
+        .args(["-c", &format!("read x; kill -9 {pid}")])
+        .stdin(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()
 }
 
 fn room() -> PathBuf {
@@ -355,9 +364,13 @@ pub fn render(tl: &Timeline, out: &str, mut progress: impl FnMut(f64)) -> Result
     thread::scope(|s| {
         let (beat, pulse) = mpsc::channel();
         s.spawn(move || {
+            let tie = tether(pid);
             if iter::repeat_with(|| pulse.recv_timeout(STALL)).find_map(Result::err) == Some(RecvTimeoutError::Timeout) {
                 stuck.store(true, Relaxed);
                 kill(pid);
+            }
+            if let Some(mut t) = tie {
+                let _ = (t.kill(), t.wait());
             }
         });
         s.spawn(move || {
@@ -598,5 +611,20 @@ mod tests {
         let out = dir.join("out.mp4").to_string_lossy().to_string();
         let e = render(&tl, &out, |_| {}).unwrap_err().to_string();
         assert_eq!(e, format!("export of {out} stopped: ffmpeg made no progress for 5 seconds"));
+    }
+
+    // An export's ffmpeg should be killed soon after its tie to the program is cut, which the system does
+    // when the program dies, even by force quit.
+    #[test]
+    fn dies_with_the_program() {
+        let args = ["-v", "error", "-re", "-f", "lavfi", "-i", "color=d=60", "-f", "null", "-"];
+        let mut ff = ffmpeg().args(args).spawn().unwrap();
+        drop(tether(ff.id()));
+        let gone = (0..500).any(|_| {
+            thread::sleep(Duration::from_millis(10));
+            ff.try_wait().unwrap().is_some()
+        });
+        let _ = ff.kill();
+        assert!(gone);
     }
 }
