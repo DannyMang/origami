@@ -5,13 +5,30 @@ use origami_lang::{Clip, Kind, Timeline, Val, ffmpeg};
 use std::{
     env, fs,
     io::{BufRead, BufReader, Read, Write},
+    iter,
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
-    process::{self, Stdio},
-    sync::atomic::{AtomicUsize, Ordering::Relaxed},
+    process::{self, Command, Stdio},
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed},
+        mpsc::{self, RecvTimeoutError},
+    },
     thread,
+    time::Duration,
 };
 
 static ROOMS: AtomicUsize = AtomicUsize::new(0);
+static LIVE: Mutex<Vec<u32>> = Mutex::new(vec![]);
+const STALL: Duration = Duration::from_secs(if cfg!(test) { 5 } else { 30 });
+
+fn kill(pid: u32) {
+    let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
+}
+
+pub fn halt() {
+    LIVE.lock().map(|l| l.iter().copied().for_each(kill)).unwrap_or_default();
+}
 
 fn room() -> PathBuf {
     let dir = env::temp_dir().join(format!("origami-{}-{}", process::id(), ROOMS.fetch_add(1, Relaxed)));
@@ -312,6 +329,13 @@ pub fn render(tl: &Timeline, out: &str, mut progress: impl FnMut(f64)) -> Result
             bail!("line {}: {file} is not a .cube file with a 0 to 1 domain", c.line);
         }
     }
+    let id = |p: &Path| fs::metadata(p).map(|m| (m.dev(), m.ino())).ok();
+    if let Some((line, file)) = id(out.as_ref()).and_then(|o| tl.files.iter().find(|(_, f)| id(f) == Some(o))) {
+        bail!(
+            "export to {out} would overwrite {}, which line {line} reads: pick another name",
+            file.display()
+        );
+    }
     let dir = room();
     let mut child = ffmpeg()
         .args(["-v", "error", "-nostats", "-progress", "pipe:1"])
@@ -321,8 +345,21 @@ pub fn render(tl: &Timeline, out: &str, mut progress: impl FnMut(f64)) -> Result
         .stderr(Stdio::piped())
         .spawn()
         .context("ffmpeg not found")?;
-    let (pipe, size) = (child.stdin.take(), (tl.size.0 as usize, tl.size.1 as usize));
+    let (pipe, size, pid, stuck) = (
+        child.stdin.take(),
+        (tl.size.0 as usize, tl.size.1 as usize),
+        child.id(),
+        &AtomicBool::new(false),
+    );
+    LIVE.lock().unwrap().push(pid);
     thread::scope(|s| {
+        let (beat, pulse) = mpsc::channel();
+        s.spawn(move || {
+            if iter::repeat_with(|| pulse.recv_timeout(STALL)).find_map(Result::err) == Some(RecvTimeoutError::Timeout) {
+                stuck.store(true, Relaxed);
+                kill(pid);
+            }
+        });
         s.spawn(move || {
             let (mut pv, mut pipe) = (Preview::default(), pipe?);
             pv.room = 1 << 26;
@@ -330,15 +367,20 @@ pub fn render(tl: &Timeline, out: &str, mut progress: impl FnMut(f64)) -> Result
                 .try_for_each(|k| pipe.write_all(&pv.frame(tl, k as f64 / tl.fps as f64, size)).ok())
         });
         for line in BufReader::new(child.stdout.take().unwrap()).lines().map_while(Result::ok) {
+            let _ = beat.send(());
             if let Some(us) = line.strip_prefix("out_time_us=").and_then(|v| v.parse::<f64>().ok()) {
                 progress((us / 1e6 / tl.duration).clamp(0., 1.));
             }
         }
     });
+    LIVE.lock().unwrap().retain(|p| *p != pid);
     let mut err = String::new();
     child.stderr.take().unwrap().read_to_string(&mut err)?;
     let done = child.wait()?.success();
     let _ = fs::remove_dir_all(dir);
+    if stuck.load(Relaxed) {
+        bail!("export of {out} stopped: ffmpeg made no progress for {} seconds", STALL.as_secs());
+    }
     if !done {
         let why = err.lines().find(|l| !l.trim().is_empty()).unwrap_or("ffmpeg failed").trim();
         let why = why.strip_prefix('[').and_then(|w| w.split_once("] ")).map_or(why, |w| w.1);
@@ -357,11 +399,14 @@ mod tests {
     use super::*;
     use crate::footprint;
 
+    static ONE: Mutex<()> = Mutex::new(());
+
     // Slow and very fast motion with sound, a fade longer than its clip, and layers too small to see
     // should export and play. Two exports at once should not disturb each other or leave files behind, and a
     // failing export should say what failed and, when a clip caused it, on which line.
     #[test]
     fn exports_odd_timelines() {
+        let _one = ONE.lock();
         let dir = env::temp_dir().join("origami-export-test");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
@@ -480,5 +525,78 @@ mod tests {
         let made: Vec<u8> = px.chunks(64 * 36).map(|f| f[18 * 64 + 32]).collect();
         assert_eq!(made.len(), n);
         assert!(shown.iter().chain(&made).all(|v| *v > 200), "{shown:?} {made:?}");
+    }
+
+    // An export onto a file the script reads, spelled another way (different case, a detour through
+    // .., a symlink), should be refused and leave the file whole.
+    #[test]
+    fn keeps_sources_safe() {
+        let dir = env::temp_dir().join("origami-self-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        let made = ffmpeg()
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=white:s=64x36:r=30:d=1"])
+            .arg(dir.join("a.mp4"))
+            .status();
+        assert!(made.unwrap().success());
+        fs::write(dir.join("subs.srt"), "1\n00:00:00,000 --> 00:00:01,000\nhi\n").unwrap();
+        std::os::unix::fs::symlink(dir.join("a.mp4"), dir.join("link.mp4")).unwrap();
+        fs::write(
+            dir.join("edit.js"),
+            "text('a').for(1)\nvideo('a.mp4').trim(0, 1)\ncaptions('subs.srt')",
+        )
+        .unwrap();
+        let tl = origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap();
+        let before = fs::read(dir.join("a.mp4")).unwrap();
+        for (out, line) in [("A.MP4", 2), ("sub/../a.mp4", 2), ("link.mp4", 2), ("subs.srt", 3)] {
+            let out = dir.join(out).to_string_lossy().to_string();
+            let e = render(&tl, &out, |_| {}).unwrap_err().to_string();
+            assert!(
+                e.starts_with(&format!("export to {out} would overwrite ")) && e.contains(&format!("which line {line} reads")),
+                "{e}"
+            );
+        }
+        assert_eq!(fs::read(dir.join("a.mp4")).unwrap(), before);
+    }
+
+    // Shapes, lines and text too large to draw, directly or through a scale or keyed scale, should
+    // stop the script with an error on their line instead of taking all memory.
+    #[test]
+    fn refuses_huge_layers() {
+        let dir = env::temp_dir().join("origami-huge-test");
+        fs::create_dir_all(&dir).unwrap();
+        for src in [
+            "rect(1e9, 1e9).for(1)",
+            "rect(100, 100).scale(1e8).for(1)",
+            "rect(100, 100).for(1).scale(keys([0, 1], [1, 1e4]))",
+            "text('hi').scale(1e6).for(1)",
+            "text('hi', { size: 1e9 }).for(1)",
+            "line(0, 0, 1, 1, { width: 1e9 }).for(1)",
+        ] {
+            fs::write(dir.join("edit.js"), format!("text('a')\nstack({src})")).unwrap();
+            let e = origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap_err().to_string();
+            assert!(e.starts_with("line 2: ") && e.contains("over 16384 on a side"), "{src}: {e}");
+        }
+    }
+
+    // An export whose ffmpeg makes no progress should be stopped and reported instead of running forever.
+    #[test]
+    fn stops_a_stalled_export() {
+        let _one = ONE.lock();
+        let dir = env::temp_dir().join("origami-stall-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let made = ffmpeg()
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=white:s=64x36:r=30:d=1"])
+            .arg(dir.join("a.mp4"))
+            .status();
+        assert!(made.unwrap().success());
+        fs::write(dir.join("edit.js"), "video('a.mp4').trim(0, 1)").unwrap();
+        let mut tl = origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap();
+        assert!(Command::new("mkfifo").arg(dir.join("never.mp4")).status().unwrap().success());
+        tl.clips[0].src = dir.join("never.mp4").to_string_lossy().to_string();
+        let out = dir.join("out.mp4").to_string_lossy().to_string();
+        let e = render(&tl, &out, |_| {}).unwrap_err().to_string();
+        assert_eq!(e, format!("export of {out} stopped: ffmpeg made no progress for 5 seconds"));
     }
 }

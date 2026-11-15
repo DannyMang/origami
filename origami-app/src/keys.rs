@@ -308,10 +308,20 @@ impl Origami {
                     let _ = fs::write(dir.join("export.sh"), format!("ffmpeg {line}\n"));
                     return self.note = "wrote export.sh".into();
                 }
+                if self.export.is_some() {
+                    return self.note = "an export is already running: wait for it to finish".into();
+                }
                 let (tl, job) = (self.tl.clone(), Arc::new(Mutex::new(("exporting 0%".to_string(), false))));
                 self.export = Some(job.clone());
                 let work = async move {
-                    let done = render(&tl, &out, |p| job.lock().unwrap().0 = format!("exporting {:.0}%", p * 100.));
+                    let mut last = String::new();
+                    let done = render(&tl, &out, |p| {
+                        let note = format!("exporting {:.0}%", p * 100.);
+                        if note != last {
+                            job.lock().unwrap().0 = note.clone();
+                            last = note;
+                        }
+                    });
                     *job.lock().unwrap() = (done.map_or_else(|e| e.to_string(), |_| format!("exported {out}")), true);
                 };
                 cx.background_executor().spawn(work).detach();
@@ -328,6 +338,10 @@ impl Origami {
 mod tests {
     use super::*;
     use gpui::{Modifiers, MouseButton, point, px};
+    use std::{
+        thread,
+        time::{Duration, Instant},
+    };
 
     // Time labels should carry rounding into the minutes instead of showing 60 seconds.
     #[test]
@@ -340,6 +354,43 @@ mod tests {
 
     // Clicking the timecode should copy a time that, pasted into .at(...), starts on the frame shown,
     // even at high frame rates.
+    // Exporting while an export runs should say so instead of starting a second render, and halting
+    // (as on quit or a crash) should stop a running export's ffmpeg at once.
+    #[gpui::test]
+    fn one_export_at_a_time(cx: &mut gpui::TestAppContext) {
+        let dir = env::temp_dir().join("origami-twice-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("edit.js"), "color('#203040').for(1)").unwrap();
+        let tl = origami_lang::eval(&dir.join("edit.js"), false, origami_engine::footprint).unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            (app.script, app.tl) = (dir.join("edit.js"), Arc::new(tl));
+            app
+        });
+        let job = Arc::new(Mutex::new(("exporting 40%".to_string(), false)));
+        view.update(cx, |o, cx| {
+            o.export = Some(job.clone());
+            o.run("export out.mp4", cx);
+            assert_eq!(o.note, "an export is already running: wait for it to finish");
+            assert!(Arc::ptr_eq(o.export.as_ref().unwrap(), &job));
+        });
+        fs::write(dir.join("v.js"), "video('a.mp4').trim(0, 1)").unwrap();
+        let made = origami_lang::ffmpeg()
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=white:s=64x36:r=30:d=1"])
+            .arg(dir.join("a.mp4"))
+            .status();
+        assert!(made.unwrap().success());
+        let mut tl = origami_lang::eval(&dir.join("v.js"), false, origami_engine::footprint).unwrap();
+        assert!(Command::new("mkfifo").arg(dir.join("never.mp4")).status().unwrap().success());
+        tl.clips[0].src = dir.join("never.mp4").to_string_lossy().to_string();
+        let from = Instant::now();
+        let stuck = thread::spawn(move || render(&tl, &dir.join("out.mp4").to_string_lossy(), |_| {}));
+        thread::sleep(Duration::from_millis(500));
+        origami_engine::halt();
+        assert!(stuck.join().unwrap().is_err() && from.elapsed() < Duration::from_secs(10));
+    }
+
     #[gpui::test]
     fn copies_the_frame_shown(cx: &mut gpui::TestAppContext) {
         let path = env::temp_dir().join("origami-timecode-test.js");

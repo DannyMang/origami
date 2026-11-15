@@ -27,13 +27,16 @@ pub fn tone(s: &str) -> Option<[u8; 4]> {
     let hex = match s {
         "white" => "ffffff",
         "black" => "000000",
-        s => s.trim_start_matches('#'),
+        s => s.strip_prefix('#').unwrap_or(s),
     };
     let wide: String = match hex.len() {
         3 | 4 => hex.chars().flat_map(|c| [c, c]).collect(),
         _ => hex.into(),
     };
-    let v = u32::from_str_radix(&wide, 16).ok()?.to_be_bytes();
+    let v = u32::from_str_radix(&wide, 16)
+        .ok()
+        .filter(|_| !wide.starts_with('+'))?
+        .to_be_bytes();
     match wide.len() {
         6 => Some([v[1], v[2], v[3], 255]),
         8 => Some(v),

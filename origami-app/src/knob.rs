@@ -109,12 +109,15 @@ fn secs(s: &str) -> Option<f64> {
 pub fn close(s: &[u8], open: usize) -> Option<usize> {
     let (mut depth, mut quote, mut i) = (0, 0u8, open);
     while i < s.len() {
-        match s[i] {
-            c if quote != 0 => quote = if c == quote { 0 } else { quote },
-            b'"' | b'\'' => quote = s[i],
-            b'(' => depth += 1,
-            b')' if depth == 1 => return Some(i),
-            b')' => depth -= 1,
+        match (s[i], s.get(i + 1)) {
+            (b'\\', _) if quote != 0 => i += 1,
+            (c, _) if quote != 0 => quote = if c == quote { 0 } else { quote },
+            (b'/', Some(b'/')) => i = s[i..].iter().position(|c| *c == b'\n').map_or(s.len(), |n| i + n),
+            (b'/', Some(b'*')) => i = s[i + 2..].windows(2).position(|w| w == b"*/").map_or(s.len(), |n| i + n + 3),
+            (b'"' | b'\'' | b'`', _) => quote = s[i],
+            (b'(', _) => depth += 1,
+            (b')', _) if depth == 1 => return Some(i),
+            (b')', _) => depth -= 1,
             _ => {}
         }
         i += 1;

@@ -6,6 +6,10 @@
   const digits = /^\d+$/, named = /(?:const|let|var)\s+(\w+)\s*=/, made = 'video sound image text captions caption color', bare = 'keys rect line add mul cat stack settings'
   const DAY = 86400
   const must = (ok, say) => { if (!ok) throw new Error(`line ${at}: ${say}`) }
+  const paint = c => {
+    must(/^(white|black|#?([\da-f]{3,4}|[\da-f]{6}|[\da-f]{8}))$/i.test(c), `${JSON.stringify(c)} is not a colour: write "white", "black", "#rgb", "#rrggbb" or "#rrggbbaa"`)
+    return c
+  }
   const span = (k, t, some) => {
     const s = T(t)
     must(Math.abs(s) <= DAY && !(some && s <= 0), `${k} takes a time${some ? ' above 0' : ''}, in seconds or "m:ss", up to 24 hours`)
@@ -81,7 +85,7 @@
     wheel: (d, n, o) => part('wheel', ['shadows', 'midtones', 'highlights'], d, n, [o.hue ?? 0, o.amount ?? 0, o.luma ?? 0]),
     hslSecondary: (d, { key, correction: c = {} }) => grade(d, {
       hslSecondary: {
-        color: key.color, range: key.range ?? 20, soft: key.soft ?? 10,
+        color: paint(key.color), range: key.range ?? 20, soft: key.soft ?? 10,
         exposure: c.exposure ?? 0, temperature: c.temperature ?? 0, tint: c.tint ?? 0, contrast: c.contrast ?? 0, saturation: c.saturation ?? 100,
       },
     }),
@@ -115,18 +119,18 @@
     return { kind, src: m.path, w: m.w, h: m.h, label: stem(p), ...pick(m) }
   })
   const words = (size, pos) => leaf((s, o = {}) => {
-    if (typeof o !== 'object') throw new Error(`line ${at}: options are written { size: 72, color: "red" }`)
+    if (typeof o !== 'object') throw new Error(`line ${at}: options are written { size: 72, color: "white" }`)
     if (!['left', 'center', 'right'].includes(o.align ?? 'center')) throw new Error(`line ${at}: align is "left", "center" or "right"`)
     must(Number.isFinite(o.size ?? size) && (o.size ?? size) >= 0, 'size takes a number, 0 or more')
     return {
-      kind: 'text', src: String(s), video: true, audio: false, size: o.size ?? size, color: o.color ?? 'white', font: o.font == null ? '' : __font(o.font, 'font', at), pos, label: String(s),
-      background: o.background, align: o.align,
+      kind: 'text', src: String(s), video: true, audio: false, size: o.size ?? size, color: paint(o.color ?? 'white'), font: o.font == null ? '' : __font(o.font, 'font', at), pos, label: String(s),
+      background: o.background == null ? o.background : paint(o.background), align: o.align,
     }
   })
   const shape = (kind, n, how, make) => leaf((...a) => {
     const o = a[n] ?? {}
     if (!(a.length >= n && a.slice(0, n).every(Number.isFinite)) || typeof o !== 'object') throw new Error(`line ${at}: ${kind} is written ${how}`)
-    return { kind, src: '', video: true, audio: false, color: o.color ?? 'white', label: kind, ...make(a, o) }
+    return { kind, src: '', video: true, audio: false, color: paint(o.color ?? 'white'), label: kind, ...make(a, o) }
   })
   const group = (cat, k) => line(n => (...kids) => {
     at = n || at
@@ -182,7 +186,7 @@
     settings: line(n => (o = {}) => {
       at = n || at
       must(o.fps === undefined || Number.isInteger(o.fps) && o.fps > 0 && o.fps <= 240, 'fps takes a whole number from 1 to 240')
-      must(o.size == null || Array.isArray(o.size) && o.size.length === 2 && o.size.every(v => v >= 1 && v <= 16384), 'size is written [1920, 1080]')
+      must(o.size == null || Array.isArray(o.size) && o.size.length === 2 && o.size.every(v => v >= 1 && v <= 16384 && v % 2 === 0), 'size is written [1920, 1080], with even numbers so the exported H.264 video plays everywhere')
       must([undefined, 'auto', 'full', 'half', 'quarter'].includes(o.preview), 'preview is "auto", "full", "half" or "quarter"')
       must([undefined, true, false].includes(o.proxy), 'proxy is true or false')
       Object.assign(S, o)
@@ -203,7 +207,7 @@
     }),
     color: leaf(c => {
       must(typeof c === 'string', 'color is written color("#203040")')
-      return { kind: 'color', src: c, video: true, audio: false, label: c }
+      return { kind: 'color', src: paint(c), video: true, audio: false, label: c }
     }),
     rect: shape('rect', 2, 'rect(400, 120, { color: "#0008", radius: 12 })', ([w, h], o) => ({ w: Math.max(1, Math.round(w)), h: Math.max(1, Math.round(h)), radius: o.radius ?? 0 })),
     line: shape('line', 4, 'line(0.1, 0.5, 0.9, 0.5, { color: "white", width: 4 })', (a, o) => ({ ends: a.slice(0, 4), size: o.width ?? 4 })),

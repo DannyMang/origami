@@ -62,6 +62,7 @@ impl Origami {
                 preview: self.tl.preview.clone(),
                 proxy: self.tl.proxy,
                 clips: vec![clip],
+                files: vec![],
             };
             return self.peek = Some(Peek::new(row, tl));
         }

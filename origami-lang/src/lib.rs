@@ -143,6 +143,8 @@ pub struct Timeline {
     #[serde(default)]
     pub proxy: bool,
     pub clips: Vec<Clip>,
+    #[serde(skip)]
+    pub files: Vec<(u32, PathBuf)>,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -164,6 +166,7 @@ pub type Measure = fn(&Clip, (f64, f64)) -> (f64, f64);
 thread_local! {
     static ST: RefCell<(PathBuf, Lock, Lock, bool, Option<Measure>)> = RefCell::default();
     static FAIL: RefCell<Option<Error>> = RefCell::default();
+    static READ: RefCell<Vec<(u32, PathBuf)>> = RefCell::default();
     static COLD: RefCell<(bool, Vec<(String, PathBuf)>, Lock)> = RefCell::default();
 }
 
@@ -293,7 +296,10 @@ fn host(args: &[JsValue], cx: &mut Context, find: Find, f: impl FnOnce(&str, &Pa
     let (path, call) = (text(0)?, text(1)?);
     let line = args.get(2).and_then(JsValue::as_number).unwrap_or(0.) as u32;
     let out = match ST.with_borrow(|st| find(&st.0, &path)) {
-        Some(file) => f(&path, &file).map_err(|e| anyhow!("line {line}: {call}(\"{path}\"): {e}")),
+        Some(file) => {
+            READ.with_borrow_mut(|r| r.push((line, file.clone())));
+            f(&path, &file).map_err(|e| anyhow!("line {line}: {call}(\"{path}\"): {e}"))
+        }
         None => Err(Error::Missing { call, path, line }.into()),
     };
     let fail = |e: anyhow::Error| {
@@ -486,6 +492,7 @@ fn build(cx: &mut Context, script: &Path, relock: bool, src: Option<&str>, measu
     };
     let load = |cx: &mut Context| {
         FAIL.take();
+        READ.take();
         ST.set((dir.clone(), old.clone(), Lock::new(), relock, Some(measure)));
         set(cx, js_string!("__src"), JsString::from(text.as_str()).into())?;
         let code = run(cx, "__prep(__src)")?;
@@ -520,15 +527,30 @@ fn build(cx: &mut Context, script: &Path, relock: bool, src: Option<&str>, measu
     if new != old && src.is_none() {
         let _ = fs::write(lock, serde_json::to_string_pretty(&new)?);
     }
-    serde_json::from_str(&out).or_else(|_| {
+    let mut tl: Timeline = serde_json::from_str(&out).or_else(|_| {
         let all: serde_json::Value = serde_json::from_str(&out)?;
         for c in all["clips"].as_array().into_iter().flatten() {
             if let Err(e) = Clip::deserialize(c) {
                 bail!("line {}: {e}", c["line"]);
             }
         }
-        Ok(serde_json::from_value(all)?)
-    })
+        Ok::<_, anyhow::Error>(serde_json::from_value(all)?)
+    })?;
+    let frame = (tl.size.0 as f64, tl.size.1 as f64);
+    if let Some((c, (w, h))) = tl
+        .clips
+        .iter()
+        .map(|c| (c, measure(c, frame)))
+        .find(|(_, (w, h))| w.max(*h) > 16384.)
+    {
+        bail!(
+            "line {}: {} would be drawn {w:.0}x{h:.0} pixels, over 16384 on a side: lower its size or scale",
+            c.line,
+            c.label
+        );
+    }
+    tl.files = READ.take();
+    Ok(tl)
 }
 
 #[cfg(test)]
@@ -563,7 +585,7 @@ mod tests {
     #[test]
     fn grade_reaches_leaves() {
         let t = tl(
-            "const a = color('red')\nstack(a.exposure(1), text('b'))\n  .saturation(50)\n  .curve('red', [[1, 1], [0, 0]])\n  .curve('luma', [[0, 0]])\n  .saturation(80)",
+            "const a = color('#f00')\nstack(a.exposure(1), text('b'))\n  .saturation(50)\n  .curve('red', [[1, 1], [0, 0]])\n  .curve('luma', [[0, 0]])\n  .saturation(80)",
         );
         let g = t.clips[1].grade.clone().unwrap();
         assert_eq!(
@@ -571,10 +593,10 @@ mod tests {
             (Some(80.), 0., &vec![(0., 0.), (1., 1.)], 1)
         );
         assert_eq!((t.clips[0].grade.as_ref().unwrap().exposure, t.clips[1].line), (1., 2));
-        assert_eq!(tl("color('red').sharpen(5)").clips[0].grade, None);
+        assert_eq!(tl("color('#f00').sharpen(5)").clips[0].grade, None);
         let dir = std::env::temp_dir().join("origami-look");
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("edit.js"), "color('red')\n  .look('none')").unwrap();
+        fs::write(dir.join("edit.js"), "color('#f00')\n  .look('none')").unwrap();
         let e = eval(&dir.join("edit.js"), true, size).unwrap_err();
         assert_eq!(e.downcast_ref::<Error>().map(Error::line), Some(2));
     }
@@ -624,7 +646,7 @@ stack(
         let json = serde_json::to_string(&t).unwrap();
         assert!(json.contains("\"rotate\":90.0,\"shown\":0.5,\"parts\":[{\"from\":0,\"to\":2,\"opacity\":[2,["));
         assert_eq!(serde_json::from_str::<Timeline>(&json).unwrap(), t);
-        let plain = serde_json::to_value(tl("color('red').scale(0.5).pos(0.1)")).unwrap();
+        let plain = serde_json::to_value(tl("color('#f00').scale(0.5).pos(0.1)")).unwrap();
         assert_eq!(plain["clips"][0]["scale"], 0.5);
         assert_eq!(plain["clips"][0]["pos"], serde_json::json!([0.1, null]));
         assert!(plain["clips"][0].get("parts").is_none());
@@ -637,9 +659,9 @@ stack(
         for (src, line) in [
             ("text('a')\n  .scale('big')", 2),
             ("const k =\n  keys([0, 0], [1, 1, 'slow'])\ntext('a')", 2),
-            ("color('red')\n  .shown(1)", 2),
+            ("color('#f00')\n  .shown(1)", 2),
             ("text('a')\n\n  .opacity(t => 'x')", 3),
-            ("color('red')\n\n\n  .for(1)\nrect(10)", 5),
+            ("color('#f00')\n\n\n  .for(1)\nrect(10)", 5),
             ("stack(\n  line(0, 0, 1, '1'))", 2),
             ("text('a', {\n  align: 'middle' })", 1),
             ("rect(10, 10)\n  .shown(1)", 2),
@@ -693,7 +715,7 @@ const l = line(0.2, 0.4, 0.6, 0.4, { width: 10 })
 let c = text('c')
 const d = text('d').opacity(c.opacity)
 c = c.opacity(mul(d.opacity, 0.5))
-stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.scale), color('red').pos(l.pos.x, l.pos.y), c, d)");
+stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.scale), color('#f00').pos(l.pos.x, l.pos.y), c, d)");
         let (b, near) = (&t.clips[0], |v: f64| (v * 1e6).round() / 1e6);
         let at = |v: &Option<Val>, i| near(v.as_ref().unwrap().at(i));
         assert_eq!(
@@ -840,7 +862,7 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
     // same amount.
     #[test]
     fn shift_loop_speed() {
-        let t = tl("stack(text('x').for(2).loop(2).shift(1), color('red'))");
+        let t = tl("stack(text('x').for(2).loop(2).shift(1), color('#f00'))");
         let span: Vec<_> = t.clips.iter().map(|c| (c.start, c.end)).collect();
         assert_eq!(span, [(1., 3.), (3., 5.), (0., 5.)]);
     }
@@ -1010,6 +1032,45 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
             ),
         ] {
             assert_eq!(fails(&dir, src), says);
+        }
+    }
+
+    // A colour that does not parse, an odd frame size and a layer too large to draw should each stop
+    // the script with an error on its line, while every colour form the engine draws is accepted.
+    #[test]
+    fn refuses_unusable_values() {
+        let dir = std::env::temp_dir().join("origami-refuse");
+        fs::create_dir_all(&dir).unwrap();
+        let run = |src: &str| {
+            fs::write(dir.join("edit.js"), src).unwrap();
+            eval(&dir.join("edit.js"), true, size).map_err(|e| e.to_string())
+        };
+        let ok = "stack(color('white').for(1), color('#abc'), color('#abcd'), color('ABCDEF'), color('#aabbcc80'), text('a', { color: 'black', background: '#0008' }), rect(9, 9, { color: '#fff' }), line(0, 0, 1, 1, { color: '#000' }), text('b').hslSecondary({ key: { color: '#f00' } }))";
+        assert!(run(ok).is_ok());
+        for (src, want) in [
+            ("text('a')\nrect(9, 9, { color: 'bleu' })", "line 2: \"bleu\" is not a colour"),
+            ("text('a', { color: '#ff000' })", "line 1: \"#ff000\" is not a colour"),
+            ("text('a',\n  { background: 'nope' })", "line 1: \"nope\" is not a colour"),
+            ("text('a')\ncolor('red')", "line 2: \"red\" is not a colour"),
+            (
+                "text('a').hslSecondary({ key: { color: '+fffff' } })",
+                "line 1: \"+fffff\" is not a colour",
+            ),
+            (
+                "settings({ size: [641, 360] })\ntext('a')",
+                "line 1: size is written [1920, 1080], with even numbers",
+            ),
+            (
+                "text('a')\ntext('b', { size: 1e9 })",
+                "line 2: b would be drawn 1000000000x500000000 pixels",
+            ),
+            (
+                "text('a')\ntext('b').scale(keys([0, 1], [1, 1e6]))",
+                "line 2: b would be drawn 72000000x36000000 pixels",
+            ),
+        ] {
+            let e = run(src).unwrap_err();
+            assert!(e.starts_with(want), "{src}: {e}");
         }
     }
 }

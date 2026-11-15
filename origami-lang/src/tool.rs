@@ -1,6 +1,8 @@
 use std::{
     env,
     ffi::OsStr,
+    fs,
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::Command,
     sync::LazyLock,
@@ -18,7 +20,7 @@ fn find(name: &str, exe: &Path, path: &OsStr) -> PathBuf {
     let known = ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"].map(PathBuf::from);
     let dirs = [exe.to_path_buf()].into_iter().chain(env::split_paths(path)).chain(known);
     dirs.map(|d| d.join(name))
-        .find(|p| p.is_absolute() && p.is_file())
+        .find(|p| p.is_absolute() && fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
         .unwrap_or_else(|| name.into())
 }
 
@@ -33,11 +35,10 @@ pub fn ffprobe() -> Command {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
 
     // A copy next to the program should win over PATH, PATH should be searched in order skipping
-    // relative entries, the usual install folders should be tried when PATH is bare (as when opened
-    // from Finder), and a tool found nowhere should be left to the system by name.
+    // relative entries and files that cannot be run, the usual install folders should be tried when
+    // PATH is bare (as when opened from Finder), and a tool found nowhere should be left to the system by name.
     #[test]
     fn finds_tools_in_order() {
         let dir = env::temp_dir().join("origami-tools");
@@ -46,13 +47,18 @@ mod tests {
         for d in [&app, &one, &two] {
             fs::create_dir_all(d).unwrap();
         }
+        let made = |at: PathBuf, mode| {
+            fs::write(&at, "").unwrap();
+            fs::set_permissions(at, fs::Permissions::from_mode(mode)).unwrap();
+        };
         for at in [app.join("ffmpeg"), two.join("ffmpeg"), two.join("ffprobe")] {
-            fs::write(at, "").unwrap();
+            made(at, 0o755);
         }
+        made(one.join("ffprobe"), 0o644);
         let path = env::join_paths([Path::new("src"), &one, &two]).unwrap();
         assert_eq!(find("ffmpeg", &app, &path), app.join("ffmpeg"));
         assert_eq!(find("ffprobe", &app, &path), two.join("ffprobe"));
-        fs::write(one.join("ffprobe"), "").unwrap();
+        made(one.join("ffprobe"), 0o755);
         assert_eq!(find("ffprobe", &app, &path), one.join("ffprobe"));
         assert_eq!(find("lib.rs", &app, &path), PathBuf::from("lib.rs"));
         assert!(find("ffmpeg", Path::new(""), OsStr::new("/usr/bin:/bin")).is_absolute());

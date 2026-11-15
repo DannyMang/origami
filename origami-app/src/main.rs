@@ -26,11 +26,11 @@ use gpui::{
 };
 use image::{Frame, RgbaImage};
 use mouse::Grab;
-use origami_engine::{Player, Preview, footprint, peaks, thumb};
+use origami_engine::{Player, Preview, footprint, halt, peaks, thumb};
 use origami_lang::{Clip, Kind, Timeline};
 use std::{
     collections::HashMap,
-    env, fs,
+    env, fs, mem,
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex},
@@ -386,11 +386,11 @@ impl Origami {
             }
         }
         if let Some(job) = self.export.clone() {
-            let (note, done) = job.lock().unwrap().clone();
-            if self.note != note || done {
+            let (note, done) = mem::take(&mut *job.lock().unwrap());
+            if !note.is_empty() {
+                self.note = note;
                 cx.notify();
             }
-            self.note = note;
             self.export = self.export.take().filter(|_| !done);
         }
         if !self.refresh(cx) && was != (self.t, self.player.is_some()) {
@@ -545,6 +545,11 @@ fn main() {
             ..Default::default()
         };
         cx.on_window_closed(|cx| cx.quit()).detach();
+        cx.on_app_quit(|_| {
+            halt();
+            async {}
+        })
+        .detach();
         cx.open_window(options, |window, cx| {
             cx.new(|cx: &mut Context<Origami>| {
                 let focus = cx.focus_handle();

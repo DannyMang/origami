@@ -44,6 +44,7 @@ pub fn guard() {
     let log = PathBuf::from(env::var("HOME").unwrap_or_default()).join("Library/Logs/Origami/origami.log");
     let default = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
+        origami_engine::halt();
         rescue(&info.to_string(), &log);
         default(info);
     }));

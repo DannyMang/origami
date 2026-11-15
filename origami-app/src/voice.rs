@@ -292,8 +292,8 @@ mod tests {
     }
 
     // A recorded voice take should be added to the script as a named sound and placed at the time
-    // recording started, whatever shape the end of the script has, and outside a group whose own
-    // calls (mute, volume, speed, fade) would change how it plays.
+    // recording started, whatever shape the end of the script has and whatever its comments hold, and
+    // outside a group whose own calls (mute, volume, speed, fade) would change how it plays.
     #[test]
     fn places() {
         assert_eq!(after("stack(shot, title)", 0.), "DEF\nstack(shot, title, voice_1)");
@@ -342,6 +342,10 @@ mod tests {
             (
                 "const out = stack(a)\nout // result",
                 "DEF\nconst out = stack(a)\nstack(out, voice_1.at(1)) // result",
+            ),
+            (
+                "stack(\n  v.trim(0, 2), // don't\n  cat(\n    v.trim(2, 4), /* won't ) */\n    v.trim(4, 5),\n  ),\n)",
+                "DEF\nstack(\n  v.trim(0, 2), // don't\n  cat(\n    v.trim(2, 4), /* won't ) */\n    v.trim(4, 5),\n  ),\n  voice_1.at(1),\n)",
             ),
             (
                 "stack(\n  a,\n  text(`two\nlines`),\n)",
