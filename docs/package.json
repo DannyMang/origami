@@ -1,0 +1,10 @@
+{
+  "private": true,
+  "scripts": {
+    "build": "bun build.ts",
+    "deploy": "bun build.ts && bunx wrangler pages deploy dist --project-name origami-docs"
+  },
+  "dependencies": {
+    "marked": "^18.2.0"
+  }
+}

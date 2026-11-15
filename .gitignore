@@ -2,6 +2,7 @@ target
 .origami
 .DS_Store
 /demo
-/docs
+/docs/dist
+/docs/node_modules
 /research
 /dist
