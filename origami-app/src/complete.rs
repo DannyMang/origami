@@ -353,6 +353,14 @@ pub fn offers(lines: &[String], (row, col): (usize, usize), dir: &Path) -> (usiz
     (start, defs.chain(vars.map(|v| (v, "", ""))).collect())
 }
 
+fn room(y: f32, row: f32, h: f32, offers: usize) -> (bool, usize) {
+    let fits = |n: usize| n as f32 * row + 10. + if offers > n { 18. } else { 0. };
+    let (below, above) = (h - 28. - y - row, y);
+    let down = fits(offers.min(SHOWN)) <= below || below >= above;
+    let space = if down { below } else { above };
+    (down, (1..=offers.min(SHOWN)).rev().find(|n| fits(*n) <= space).unwrap_or(1))
+}
+
 pub fn fill(line: &str, start: usize, col: usize, name: &str, tail: &str) -> (String, usize) {
     let chars: Vec<char> = line.chars().collect();
     let col = col.min(chars.len());
@@ -413,11 +421,11 @@ impl Origami {
         }
         let (w, h) = (f32::from(window.viewport_size().width), f32::from(window.viewport_size().height));
         let (glyph, row) = (self.glyph(), self.row());
-        let first = (self.pick + 1).saturating_sub(SHOWN);
         let wide = list.iter().map(|(n, a, _)| n.chars().count() + a.chars().count()).max()? as f32;
-        let (wide, tall) = ((wide + 2.) * glyph + 22., list.len().min(SHOWN) as f32 * row + 10.);
         let y = self.head() + (top..r).filter(|i| !hidden[*i]).count() as f32 * row;
-        let rows = list.iter().enumerate().skip(first).take(SHOWN).map(|(i, (name, args, _))| {
+        let (down, shown) = room(y, row, h, list.len());
+        let (wide, first) = ((wide + 2.) * glyph + 22., (self.pick + 1).saturating_sub(shown));
+        let rows = list.iter().enumerate().skip(first).take(shown).map(|(i, (name, args, _))| {
             div()
                 .h(px(row))
                 .px(px(6.))
@@ -434,9 +442,9 @@ impl Origami {
             div()
                 .absolute()
                 .left(px((w - self.side + self.inset() + *start as f32 * glyph - 9.).min(w - wide - 4.)))
-                .map(|d| match y + row + tall + 18. > h - 28. {
-                    true => d.bottom(px(h - y)),
-                    false => d.top(px(y + row)),
+                .map(|d| match down {
+                    true => d.top(px(y + row)),
+                    false => d.bottom(px(h - y)),
                 })
                 .w(px(wide))
                 .p_1()
@@ -448,7 +456,7 @@ impl Origami {
                 .rounded(px(6.))
                 .text_size(px(self.font))
                 .children(rows)
-                .children((list.len() > SHOWN).then(|| {
+                .children((list.len() > shown).then(|| {
                     div()
                         .px(px(6.))
                         .text_size(px(11.))
@@ -523,6 +531,26 @@ mod tests {
         assert_eq!(at("x.look(\"../s"), ["src/"]);
         assert_eq!(at("x.look(\"../src/"), [] as [&str; 0]);
         assert!(at("sound('../").contains(&"Cargo.toml".to_string()));
+    }
+
+    // The suggestion list should open below the line being typed when it fits, above it otherwise,
+    // and show fewer rows rather than reach past the top of the window or the status bar, never
+    // covering the line itself.
+    #[test]
+    fn list_stays_in_the_window() {
+        for (y, row, h, offers) in [
+            (120., 22., 330., 39),
+            (164., 22., 330., 39),
+            (246., 34., 600., 39),
+            (98., 22., 330., 3),
+        ] {
+            let (down, n) = room(y, row, h, offers);
+            let tall = n as f32 * row + 10. + if offers > n { 18. } else { 0. };
+            let (from, to) = if down { (y + row, y + row + tall) } else { (y - tall, y) };
+            assert!(from >= 0. && to <= h - 28. && (to <= y || from >= y + row), "{y} {down} {n}");
+        }
+        assert_eq!(room(98., 22., 900., 39), (true, 8));
+        assert_eq!(room(700., 22., 900., 39), (false, 8));
     }
 
     // Accepting a suggestion should replace the part already typed and leave the cursor in the right

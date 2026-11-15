@@ -1,6 +1,9 @@
 use crate::{
     Origami,
+    edit::links,
+    fold::depth,
     knob::close,
+    tune::blank,
     view::{BG, BORDER, DIM, GREEN, RED, TEXT, wave},
 };
 use gpui::{Context, Div, deferred, div, prelude::*, px, relative, rgb, rgba};
@@ -62,7 +65,14 @@ pub fn placed(lines: &mut Vec<String>, from: usize, item: &str, groups: &[&str])
     };
     let body = lines[head..].join("\n");
     let group = groups.iter().find(|k| body.starts_with(**k));
-    let Some(end) = group.and_then(|k| close(body.as_bytes(), k.len() - 1)) else {
+    let chained = |end: &usize| {
+        let rest: String = body[end + 1..].lines().map(|l| &l[..bare(l)]).collect();
+        links(&rest)
+            .iter()
+            .map(|l| l.trim())
+            .any(|l| l.starts_with('.') && !l.starts_with(".at(") && !l.starts_with(".shift("))
+    };
+    let Some(end) = group.and_then(|k| close(body.as_bytes(), k.len() - 1)).filter(|e| !chained(e)) else {
         let last = lines.iter().rposition(code).unwrap_or(head);
         lines[head].insert_str(0, "stack(");
         let (body, note) = lines[last].split_at(bare(&lines[last]));
@@ -94,7 +104,15 @@ fn voiced(lines: &mut Vec<String>, n: usize, at: f64) -> usize {
     let media = |l: &String| {
         ["const ", "let ", "var "].iter().any(|k| l.starts_with(k)) && ["video(", "sound(", "image("].iter().any(|k| l.contains(k))
     };
-    let after = |i: usize| i + 1 + lines[i + 1..].iter().take_while(|l| !top(l)).count();
+    let rows: Vec<i32> = blank(&lines.join("\n")).split('\n').map(depth).collect();
+    let after = |i: usize| {
+        let mut open = 0;
+        let end = (i..lines.len()).find(|j| {
+            open += rows[*j];
+            open <= 0 && lines.get(j + 1).is_none_or(top)
+        });
+        end.map_or(lines.len(), |j| j + 1)
+    };
     let def = lines.iter().rposition(media).map_or(0, after);
     lines.insert(def, format!("const voice_{n} = sound(\"voice/take-{n}.wav\")"));
     let at = (at * 100.).round() / 100.;
@@ -274,7 +292,8 @@ mod tests {
     }
 
     // A recorded voice take should be added to the script as a named sound and placed at the time
-    // recording started, whatever shape the end of the script has.
+    // recording started, whatever shape the end of the script has, and outside a group whose own
+    // calls (mute, volume, speed, fade) would change how it plays.
     #[test]
     fn places() {
         assert_eq!(after("stack(shot, title)", 0.), "DEF\nstack(shot, title, voice_1)");
@@ -285,7 +304,23 @@ mod tests {
         );
         assert_eq!(
             after("let m = video(\"m.mp4\")\n  .trim(0, 5)\n\ncat(m, m)\n  .volume(0.5);", 0.333),
-            "let m = video(\"m.mp4\")\n  .trim(0, 5)\nDEF\n\ncat(m, m, voice_1.at(0.33))\n  .volume(0.5);"
+            "let m = video(\"m.mp4\")\n  .trim(0, 5)\nDEF\n\nstack(cat(m, m)\n  .volume(0.5), voice_1.at(0.33))"
+        );
+        assert_eq!(
+            after("cat(\n  a,\n  b,\n).mute() // quiet", 1.5),
+            "DEF\nstack(cat(\n  a,\n  b,\n).mute(), voice_1.at(1.5)) // quiet"
+        );
+        assert_eq!(
+            after("stack(\n  a,\n)\n  .fade(1)\n  .speed(2)", 1.),
+            "DEF\nstack(stack(\n  a,\n)\n  .fade(1)\n  .speed(2), voice_1.at(1))"
+        );
+        assert_eq!(
+            after("stack(\n  a,\n).shift(1)", 1.),
+            "DEF\nstack(\n  a,\n  voice_1.at(1),\n).shift(1)"
+        );
+        assert_eq!(
+            after("const v = video(\n\"v.mp4\"\n)\nstack(\n  v,\n)", 1.),
+            "const v = video(\n\"v.mp4\"\n)\nDEF\nstack(\n  v,\n  voice_1.at(1),\n)"
         );
         assert_eq!(
             after("stack(\n  cat(a, b),\n  text(\"it's\")\n  // note\n)", 4.27),

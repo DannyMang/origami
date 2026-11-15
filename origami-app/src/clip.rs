@@ -7,6 +7,7 @@ use crate::{
     voice::placed,
 };
 use gpui::{ClipboardItem, Context, Div, Window, div, prelude::*, px, rgb};
+use origami_engine::Preview;
 use origami_lang::{Clip, Kind};
 use std::ops::Range;
 
@@ -55,6 +56,19 @@ fn whole(item: &str) -> bool {
 fn at(s: &str) -> Option<f64> {
     let a = s.find(".at(")? + 4;
     secs(s[a..close(s.as_bytes(), a - 1)?].trim().trim_matches(['"', '\'']))
+}
+
+fn exact(v: f64) -> String {
+    let k = (v * 1000.).round() / 1000.;
+    if (k - v).abs() < 1e-9 {
+        format!("{k:.3}")
+    } else {
+        format!("{v:.9}")
+    }
+}
+
+fn after(v: f64) -> String {
+    format!("{:.9}", (v * 1e9 + 0.5).ceil() / 1e9)
 }
 
 fn plain(line: &str) -> &str {
@@ -117,8 +131,12 @@ impl Origami {
 
     fn cuts(&self, c: &Clip) -> Option<(f64, f64, f64)> {
         let (a, b) = (c.src_in, c.src_in + (c.end - c.start) * c.speed);
-        let m = a + (self.t - c.start) * c.speed;
-        (matches!(c.kind, Kind::Video | Kind::Sound) && m - a >= 0.04 && b - m >= 0.04).then_some((a, m, b))
+        let m = match c.kind {
+            Kind::Video => Preview::seam(c, self.t, self.tl.fps),
+            _ => a + (self.t - c.start) * c.speed,
+        };
+        let inside = c.start < self.t && self.t < c.end && matches!(c.kind, Kind::Video | Kind::Sound);
+        (inside && m - a >= 0.04 && b - m >= 0.04).then_some((a, m, b))
     }
 
     fn echo(&mut self, c: &Clip, rows: Range<usize>, by: f64, cut: Option<(f64, f64, f64)>, verb: &str) {
@@ -138,13 +156,23 @@ impl Origami {
                 c.label
             );
         };
+        let dyadic = |v: &f64| (v * 1024.).fract() == 0.;
+        let fine = cut.is_none_or(|(a, m, _)| [a, m, c.start].iter().all(dyadic) && c.speed.log2().fract() == 0.);
         self.change(|this| {
             if let Some((a, m, b)) = cut {
-                set(&mut next, n, "trim", |_| format!("{m:.3}, {b:.3}"));
-                set(&mut this.lines, c.line, "trim", |_| format!("{a:.3}, {m:.3}"));
+                let m = if fine { format!("{m:.3}") } else { after(m) };
+                set(&mut next, n, "trim", |_| format!("{m}, {}", exact(b)));
+                set(&mut this.lines, c.line, "trim", |_| format!("{}, {m}", exact(a)));
             }
             if !(cat && c.video && timed.is_none()) {
-                set(&mut next, n, "at", |_| (((old + by) * 1000.).round() / 1000.).to_string());
+                let at = old + by;
+                set(&mut next, n, "at", |_| {
+                    if fine {
+                        ((at * 1000.).round() / 1000.).to_string()
+                    } else {
+                        after(at)
+                    }
+                });
             }
             let last = &mut this.lines[rows.end - 1];
             if !last.trim_end().ends_with(',') {
@@ -160,7 +188,7 @@ impl Origami {
         let Some(cut) = self.cuts(&c).filter(|_| !held) else {
             return self.note = "put the playhead inside a video or sound clip to split it".into();
         };
-        self.echo(&c, rows, self.t - c.start, Some(cut), "split");
+        self.echo(&c, rows, (cut.1 - cut.0) / c.speed, Some(cut), "split");
     }
 
     pub fn twin(&mut self) {
@@ -285,8 +313,9 @@ mod tests {
     }
 
     // Timeline commands (split, duplicate, copy, cut, paste, delete) should rewrite the script the way
-    // you would by hand and leave the clips at the right times. When a clip cannot be changed safely,
-    // the script is left alone and a note says why.
+    // you would by hand and leave the clips at the right times; a split cuts where the frame on screen
+    // starts, a nanosecond late when that time has no short exact form, so no frame is lost. When a
+    // clip cannot be changed safely, the script is left alone and a note says why.
     #[gpui::test]
     fn shapes(cx: &mut TestAppContext) {
         let (view, cx) = open(cx, "shapes");
@@ -364,9 +393,10 @@ mod tests {
         );
         assert_eq!(got.1, [(0., 3.), (3., 10.), (11., 16.), (11.5, 17.5)]);
         let got = run(cx, NEST, &[("split", 1, 13.)]);
-        let want = "    v.speed(2).shift(1).trim(0.000, 4.000),\n    v.speed(2).shift(1).trim(4.000, 10.000).at(2),\n";
+        let want =
+            "    v.speed(2).shift(1).trim(0.000, 3.966666668),\n    v.speed(2).shift(1).trim(3.966666668, 10.000).at(1.983333334),\n";
         assert!(got.0.contains(want), "{}", got.0);
-        assert_eq!(got.1, [(0., 10.), (11., 13.), (13., 16.), (11.5, 17.5)]);
+        assert_eq!(got.1, [(0., 10.), (11., 12.983), (12.983, 16.), (11.5, 17.5)]);
         let got = run(cx, NEST, &[("split", 2, 14.5)]);
         let want = "    a.trim(0.000, 3.000).at(\"0:01\").shift(0.5),\n    a.trim(3.000, 6.000).at(4).shift(0.5)\n  )";
         assert!(got.0.contains(want), "{}", got.0);
@@ -385,6 +415,10 @@ mod tests {
         );
         assert_eq!(got.1, [(2., 3.), (3., 6.), (4., 6.)]);
 
+        let got = run(cx, "cat(\n  v.trim(0, 3),\n  v.trim(5, 6),\n)", &[("split", 0, 38. / 30.)]);
+        let want = "  v.trim(0.000, 1.266666668),\n  v.trim(1.266666668, 3.000),\n  v.trim(5, 6),";
+        assert!(got.0.contains(want), "{}", got.0);
+        assert_eq!(got.1, [(0., 1.267), (1.267, 3.), (3., 4.)]);
         let bare = "cat(\n  v.trim(0, 2),\n  v\n)";
         let got = run(cx, bare, &[("split", 1, 6.)]);
         assert_eq!(
@@ -461,6 +495,25 @@ mod tests {
         for (verb, z) in [("split", 0), ("twin", 1)] {
             same(run(cx, spread, &[(verb, z, 2.)]), spread, "holds more than v, edit the script to");
         }
+    }
+
+    // A script reloaded from disk while the clip menu is open, after an edit made in another program,
+    // should close the menu, so its commands cannot land on whichever clip now has the old number.
+    #[gpui::test]
+    fn reload_closes_menu(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx, "reload");
+        let src = format!("{DEF}{SRC}");
+        let script = view.update(cx, |o, cx| {
+            fs::write(&o.script, &src).unwrap();
+            o.watch(cx);
+            o.script.clone()
+        });
+        cx.run_until_parked();
+        view.update(cx, |o, _| (o.sel, o.menu) = (Some(1), "clip"));
+        fs::write(&script, src.replace("    v.trim(0, 4),\n", "")).unwrap();
+        view.update(cx, |o, cx| o.watch(cx));
+        cx.run_until_parked();
+        assert_eq!(view.update(cx, |o, _| (o.menu, o.lines.len())), ("", src.lines().count() - 1));
     }
 
     // The right-click menu on a timeline clip and its keyboard shortcuts should do the same things,

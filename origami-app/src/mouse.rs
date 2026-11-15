@@ -405,6 +405,57 @@ mod tests {
         });
     }
 
+    // Letting go of the mouse outside the window, or a button that comes up where the window does not
+    // see it, should end a clip drag, a ruler scrub or any other drag right there: later moves with no
+    // button held change nothing, and a drag that changed the script leaves one undo step.
+    #[gpui::test]
+    fn drags_end_outside_the_window(cx: &mut gpui::TestAppContext) {
+        use gpui::{Modifiers, MouseButton::Left, point};
+        let src = "stack(\n  color(\"#203040\").for(4),\n  text(\"hi\").at(2).for(3),\n)";
+        let (view, cx) = window(cx, "outside", src);
+        cx.run_until_parked();
+        let (x, lane, ruler, h) = view.update_in(cx, |o, window, _| {
+            let (h, x) = (f32::from(window.viewport_size().height), o.lead() + (3.5 / o.per_px(window)) as f32);
+            (x, h - 28. - o.dock + RULER + 28., h - 28. - o.dock + 11., h)
+        });
+        let state = |cx: &mut gpui::VisualTestContext| {
+            view.update(cx, |o, _| (o.lines[2].clone(), o.drag.is_some() || o.scrubbing, o.past.len(), o.t))
+        };
+        let m = Modifiers::default();
+        cx.simulate_mouse_move(point(px(x), px(lane)), None, m);
+        cx.simulate_mouse_down(point(px(x), px(lane)), Left, m);
+        cx.simulate_mouse_move(point(px(x + 40.), px(lane)), Some(Left), m);
+        cx.simulate_mouse_up(point(px(x + 60.), px(h + 40.)), Left, m);
+        let moved = state(cx);
+        assert!(moved.0.contains(".shift(") && !moved.1 && moved.2 == 1, "{moved:?}");
+        for dx in [100., 160.] {
+            cx.simulate_mouse_move(point(px(x + dx), px(lane - 200.)), None, m);
+            assert_eq!(state(cx), moved);
+        }
+        assert_eq!(
+            fs::read_to_string(view.update(cx, |o, _| o.script.clone())).unwrap().lines().nth(2),
+            Some(moved.0.as_str())
+        );
+        cx.simulate_mouse_down(point(px(x), px(ruler)), Left, m);
+        let t = state(cx).3;
+        assert!(state(cx).1 && t > 0.);
+        cx.simulate_mouse_up(point(px(x), px(h + 40.)), Left, m);
+        cx.simulate_mouse_move(point(px(x + 150.), px(ruler)), None, m);
+        assert_eq!(state(cx), (moved.0.clone(), false, 1, t));
+        cx.simulate_mouse_down(point(px(x), px(ruler)), Left, m);
+        cx.simulate_mouse_move(point(px(x + 150.), px(ruler)), None, m);
+        assert_eq!(state(cx), (moved.0.clone(), false, 1, t));
+        view.update(cx, |o, _| {
+            o.seize(point(px(x), px(lane)), [0.; 3], crate::motion::Pull::Zoom(1.));
+            (o.pull, o.eyeing, o.picking, o.turning) = (Some(true), true, true, Some(crate::knob::Turn::Wheel));
+        });
+        cx.simulate_mouse_up(point(px(-30.), px(-30.)), Left, m);
+        let gone = view.update(cx, |o, _| {
+            o.pull.is_none() && !o.eyeing && !o.picking && o.turning.is_none() && o.slip.is_none()
+        });
+        assert!(gone);
+    }
+
     // Dragging a clip that shares its line with another clip, or whose call is spread over several
     // lines, should leave the script alone with a note, and should not add an undo step. A clip on
     // its own line still moves. Pressing a knob without turning it adds no undo step either.

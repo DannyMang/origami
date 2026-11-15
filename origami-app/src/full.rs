@@ -111,7 +111,8 @@ mod tests {
     use std::sync::Arc;
 
     // Fullscreen preview should open and close from its button, the F key and Escape. Its bar should
-    // scrub the playhead, and hide after a few seconds without mouse movement.
+    // scrub the playhead, stop when the button is let go even outside the window, and hide after a
+    // few seconds without mouse movement.
     #[gpui::test]
     fn scrub(cx: &mut gpui::TestAppContext) {
         let path = std::env::temp_dir().join("origami-full-test.js");
@@ -155,6 +156,10 @@ mod tests {
         cx.simulate_mouse_up(far, MouseButton::Left, Modifiers::default());
         cx.simulate_mouse_move(rail(0.9), None, Modifiers::default());
         assert_eq!(at(cx), (true, false, 0.));
+        cx.simulate_mouse_down(rail(0.5), MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_up(point(px(w / 2.), px(h + 30.)), MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_move(rail(0.9), None, Modifiers::default());
+        assert_eq!(at(cx), (true, false, 2.));
         click(cx, (w + WIDE) / 2. - 24., h - 48.);
         assert_eq!(at(cx).0, false);
         cx.simulate_keystrokes("f");
@@ -166,5 +171,28 @@ mod tests {
         assert!(shown(cx));
         cx.simulate_keystrokes("escape");
         assert_eq!(at(cx).0, false);
+    }
+
+    // In fullscreen the script and the timeline are hidden, so keys that would edit them do nothing,
+    // while playback keys still work and Escape leaves.
+    #[gpui::test]
+    fn keys_leave_the_hidden_script_alone(cx: &mut gpui::TestAppContext) {
+        let path = std::env::temp_dir().join("origami-full-keys-test.js");
+        let src = "stack(\n  color(\"#203040\").for(4),\n  text(\"a\").for(4),\n)";
+        std::fs::write(&path, src).unwrap();
+        let tl = origami_lang::eval(&path, false, footprint).unwrap();
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            (app.script, app.lines, app.tl) = (path.clone(), src.lines().map(String::from).collect(), Arc::new(tl));
+            (app.full, app.past) = (true, vec![vec![]]);
+            window.focus(&app.focus);
+            app
+        });
+        cx.run_until_parked();
+        cx.simulate_keystrokes("backspace delete s cmd-x cmd-d cmd-v cmd-z x");
+        let state = |cx: &mut gpui::VisualTestContext| view.update(cx, |o, _| (o.lines.join("\n"), o.past.len(), o.full, o.t));
+        assert_eq!(state(cx), (src.into(), 1, true, 0.));
+        cx.simulate_keystrokes("right escape");
+        assert_eq!(state(cx), (src.into(), 1, false, 1. / 30.));
     }
 }

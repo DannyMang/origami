@@ -7,8 +7,8 @@ use crate::{
 };
 use gpui::{
     App, Bounds, ClipboardItem, Context, Div, FontWeight, HighlightStyle, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, ObjectFit, ParentElement, PathBuilder, Pixels, Render, ScrollWheelEvent, Styled, StyledImage, StyledText, Window,
-    canvas, deferred, div, img, point, prelude::*, px, relative, rgb, rgba,
+    MouseMoveEvent, MouseUpEvent, ObjectFit, ParentElement, PathBuilder, Pixels, Render, ScrollWheelEvent, Styled, StyledImage, StyledText,
+    Window, canvas, deferred, div, img, point, prelude::*, px, relative, rgb, rgba,
 };
 use origami_lang::{Clip, Kind, Timeline};
 use std::{mem, ops::Range, time::Instant};
@@ -363,7 +363,7 @@ impl Origami {
                     .child(self.menu("\u{22ef}", more, cx))
                     .child(
                         self.tool(format!("{} / {}", self.timecode(), stamp(tl.duration)), cx, |t, _, cx| {
-                            let s = ((t.t * t.fps()).round() / t.fps() * 100.).round() / 100.;
+                            let s = ((t.t * t.fps()).round() / t.fps() * 1000. + 1e-6).floor() / 1000.;
                             cx.write_to_clipboard(ClipboardItem::new_string(s.to_string()));
                             t.note = format!("copied {s}");
                         })
@@ -1097,6 +1097,10 @@ impl Render for Origami {
             )
             .overflow_hidden()
             .child(canvas(seen, show).size_full());
+        let up = |this: &mut Self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>| {
+            this.release();
+            cx.notify();
+        };
         let root = div()
             .size_full()
             .relative()
@@ -1117,6 +1121,9 @@ impl Render for Origami {
                 cx.notify();
             }))
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, window, cx| {
+                if e.pressed_button != Some(MouseButton::Left) {
+                    this.release();
+                }
                 if this.full {
                     this.stir = Instant::now();
                     cx.notify();
@@ -1154,13 +1161,8 @@ impl Render for Origami {
                     cx.notify();
                 }
             }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    this.release();
-                    cx.notify();
-                }),
-            );
+            .on_mouse_up(MouseButton::Left, cx.listener(up))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(up));
         if self.full {
             return root.child(stage).children(self.bar(window, cx));
         }

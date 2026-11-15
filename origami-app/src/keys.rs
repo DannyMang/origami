@@ -9,7 +9,8 @@ use std::{
 };
 
 pub fn stamp(t: f64) -> String {
-    format!("{}:{:05.2}", (t / 60.) as u32, t % 60.)
+    let c = (t * 100.).round() as u64;
+    format!("{}:{:02}.{:02}", c / 6000, c / 100 % 60, c % 100)
 }
 
 pub fn secs(s: &str) -> Option<f64> {
@@ -54,6 +55,10 @@ impl Origami {
             k => key.key_char.clone().unwrap_or(k.to_string()),
         };
         let plain = !(key.modifiers.platform || key.modifiers.shift || key.modifiers.alt || save);
+        let shown = matches!(k.as_str(), "escape" | "f" | "space" | "left" | "right");
+        if self.full && !(shown || key.modifiers.platform && matches!(key.key.as_str(), "q" | "s")) {
+            return;
+        }
         if k == "escape" && self.peek.is_some() {
             self.blink(cx);
             return cx.notify();
@@ -315,6 +320,52 @@ impl Origami {
                 Some(t) => self.seek(t),
                 None => self.note = format!("unknown command: {cmd}"),
             },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{Modifiers, MouseButton, point, px};
+
+    // Time labels should carry rounding into the minutes instead of showing 60 seconds.
+    #[test]
+    fn stamps_carry() {
+        assert_eq!(
+            [stamp(59.996), stamp(0.), stamp(61.5), stamp(3599.999)],
+            ["1:00.00", "0:00.00", "1:01.50", "60:00.00"]
+        );
+    }
+
+    // Clicking the timecode should copy a time that, pasted into .at(...), starts on the frame shown,
+    // even at high frame rates.
+    #[gpui::test]
+    fn copies_the_frame_shown(cx: &mut gpui::TestAppContext) {
+        let path = env::temp_dir().join("origami-timecode-test.js");
+        let src = "settings({ fps: 120 })\nstack(color(\"#203040\").for(4))";
+        fs::write(&path, src).unwrap();
+        let tl = origami_lang::eval(&path, false, origami_engine::footprint).unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            (app.script, app.lines, app.tl) = (path.clone(), src.lines().map(String::from).collect(), Arc::new(tl));
+            app
+        });
+        cx.run_until_parked();
+        for (frame, want) in [(1., "0.008"), (2., "0.016"), (121., "1.008")] {
+            let at = view.update_in(cx, |o, window, cx| {
+                o.t = frame / 120.;
+                cx.notify();
+                let (w, h) = (f32::from(window.viewport_size().width), f32::from(window.viewport_size().height));
+                point(px(w - o.side - 12. - 16. - 21. * 7.8 + 60.), px(h - 28. - o.dock - 17.))
+            });
+            cx.run_until_parked();
+            cx.simulate_mouse_move(at, None, Modifiers::default());
+            cx.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+            cx.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+            let copied = cx.read_from_clipboard().and_then(|i| i.text()).unwrap();
+            assert_eq!(copied, want);
+            assert_eq!((copied.parse::<f64>().unwrap() * 120.).ceil(), frame);
         }
     }
 }

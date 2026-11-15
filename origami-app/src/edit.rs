@@ -336,6 +336,52 @@ mod tests {
         cx.run_until_parked();
     }
 
+    // Replacing a media file under the same name should reload the timeline and drop the thumbnails
+    // and waveforms made from the old file; with unsaved edits the script on screen stays as it is.
+    #[gpui::test]
+    fn replaced_media_reloads(cx: &mut TestAppContext) {
+        let dir = std::env::temp_dir().join("origami-replaced-test");
+        fs::create_dir_all(&dir).unwrap();
+        let (path, clip) = (dir.join("edit.js"), dir.join("v.mp4"));
+        let make = |secs: u32| {
+            let src = format!("color=red:s=64x36:r=30:d={secs}");
+            let made = origami_lang::ffmpeg()
+                .args(["-v", "error", "-y", "-f", "lavfi", "-i", &src])
+                .arg(&clip)
+                .status();
+            assert!(made.unwrap().success());
+        };
+        make(2);
+        fs::write(&path, "stack(video(\"v.mp4\"))\n").unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            app.open(path.clone());
+            app
+        });
+        settle(&view, cx);
+        let thumb = format!("{}@0.0", view.update(cx, |o, _| o.tl.clips[0].src.clone()));
+        let state = |cx: &mut VisualTestContext| {
+            view.update(cx, |o, _| {
+                (
+                    o.tl.duration,
+                    matches!(o.assets.get(&thumb), Some(Some(crate::Asset::Wave(_)))),
+                    o.rev,
+                    o.clash,
+                )
+            })
+        };
+        view.update(cx, |o, _| o.assets.insert(thumb.clone(), Some(crate::Asset::Wave(vec![]))));
+        let (_, _, rev, _) = state(cx);
+        make(3);
+        settle(&view, cx);
+        assert_eq!(state(cx), (3., false, rev + 2, false));
+        view.update(cx, |o, _| (o.lines, o.dirty) = (vec!["stack(".into()], true));
+        make(4);
+        settle(&view, cx);
+        assert_eq!(state(cx), (3., false, rev + 3, false));
+        assert_eq!(view.update(cx, |o, _| o.lines.clone()), ["stack("]);
+    }
+
     // Opening scripts with mistakes should mark the line that is wrong. Undoing back to an empty
     // script should stay empty and redo should bring the text back, deleting the script file outside the app should keep the code
     // on screen and offer to save it again, and :e with a name that does not exist opens nothing.

@@ -344,9 +344,10 @@ fn tag(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
         if quote.is_some() || c != "(" {
             continue;
         }
-        let at = src[..i].trim_end_matches(|c: char| c.is_ascii_alphanumeric() || c == '_').len();
+        let end = src[..i].trim_end().len();
+        let at = src[..end].trim_end_matches(|c: char| c.is_ascii_alphanumeric() || c == '_').len();
         let list = if src[..at].ends_with('.') { &called } else { &bare };
-        if [&made, list].iter().any(|l| l.split(' ').any(|n| n == &src[at..i])) {
+        if [&made, list].iter().any(|l| l.split(' ').any(|n| n == &src[at..end])) {
             out += &src[from..i];
             out += &format!("[{line}]");
             from = i;
@@ -798,7 +799,7 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
     }
 
     // Preview quality and sidecar scrubbing are set in settings and reach the timeline; a value that
-    // is not one of the choices names the line it is on.
+    // is not one of the choices, null included, names the line it is on.
     #[test]
     fn settings_check_their_values() {
         let t = tl("settings({ fps: 24 })\ntext('a')");
@@ -813,6 +814,15 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
             (
                 "settings({ fps: 30 })\n\nsettings({ proxy: 'no' })\ntext('a')",
                 "line 3: proxy is true or false",
+            ),
+            (
+                "text('a')\nsettings({ preview: null })",
+                "line 2: preview is \"auto\", \"full\", \"half\" or \"quarter\"",
+            ),
+            ("settings({ proxy: null })\ntext('a')", "line 1: proxy is true or false"),
+            (
+                "\nsettings ({ preview: 'big' })\ntext('a')",
+                "line 2: preview is \"auto\", \"full\", \"half\" or \"quarter\"",
             ),
         ] {
             let dir = std::env::temp_dir().join(format!("origami-settings-{}", src.len()));

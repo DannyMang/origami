@@ -86,6 +86,10 @@ fn piped(tl: &Timeline) -> bool {
     !tl.clips.iter().all(|c| plain(c) && c.opacity == Val::Fixed(1.))
 }
 
+pub fn live(c: &Clip, t: f64) -> bool {
+    c.start <= t + 1e-6 && t + 1e-6 < c.end
+}
+
 pub fn alpha(c: &Clip, t: f64) -> f64 {
     let side = |d: f64, f: f64| if f > 0. { d / f } else { 1. };
     side(t - c.start, c.fade.0).min(side(c.end - t, c.fade.1)).clamp(0., 1.)
@@ -102,7 +106,10 @@ fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path) -> (Vec<String>, Str
     }
     for (i, c) in tl.clips.iter().enumerate().filter(|(_, c)| c.end > from) {
         let skip = (from - c.start).max(0.);
-        let (len, on) = (c.end - c.start - skip, format!("enable='gte(t,{})*lt(t,{})'", c.start, c.end));
+        let (len, on) = (
+            c.end - c.start - skip,
+            format!("enable='gte(t+1e-6,{})*lt(t+1e-6,{})'", c.start, c.end),
+        );
         let n = ins.iter().filter(|a| *a == "-i").count();
         let (tw, th, x, y) = place(c, size, 1.);
         let own = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
@@ -171,7 +178,8 @@ fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path) -> (Vec<String>, Str
                     format!("[b{b0}]drawbox=w=iw:h=ih:{fill}:t=fill:{on}{shade}[b{}]", b0 + 1)
                 }
                 false => {
-                    let mut s = format!("[{n}:v]setpts=(PTS-STARTPTS)/{}+{}/TB,scale={tw}:{th}", c.speed, c.start);
+                    let pad = if c.kind == Kind::Video { "tpad=stop=2:stop_mode=clone," } else { "" };
+                    let mut s = format!("[{n}:v]{pad}setpts=(PTS-STARTPTS)/{}+{}/TB,scale={tw}:{th}", c.speed, c.start);
                     if lut.is_some() || mask.is_some() {
                         s += ",format=bgra";
                     }
@@ -416,5 +424,61 @@ mod tests {
         assert!(e.starts_with(&format!("export of {} failed: ", out("no/where.mp4"))), "{e}");
         let e = render(&tl("stack()"), &out("empty.mp4"), |_| {}).unwrap_err().to_string();
         assert_eq!(e, "nothing to export: the timeline is empty");
+    }
+
+    // A clip that starts on a timeline frame after lengths such as 0.1 + 0.2, which add up to a hair
+    // more than 0.3 in floating point, should show from that frame in the preview and the export.
+    #[test]
+    fn clips_meet_on_the_frame() {
+        let dir = env::temp_dir().join("origami-meet-test");
+        fs::create_dir_all(&dir).unwrap();
+        let made = ffmpeg()
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=white:s=64x36:r=30:d=2"])
+            .arg(dir.join("w.mp4"))
+            .status();
+        assert!(made.unwrap().success());
+        let src =
+            "settings({ fps: 30, size: [64, 36] })\ncat(color('#ff0000').for(0.1), color('#00ff00').for(0.2), video('w.mp4').trim(0, 1))";
+        fs::write(dir.join("edit.js"), src).unwrap();
+        let tl = origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap();
+        assert!(tl.clips[2].start > 0.3);
+        let out = dir.join("meet.mp4").to_string_lossy().to_string();
+        render(&tl, &out, |_| {}).unwrap();
+        let args = ["-v", "error", "-i", &out, "-f", "rawvideo", "-pix_fmt", "gray", "-"];
+        let px = ffmpeg().args(args).output().unwrap().stdout;
+        let shown = Preview::default().frame(&tl, 9. / 30., (64, 36))[(18 * 64 + 32) * 4];
+        assert!(px[9 * 64 * 36 + 18 * 64 + 32] > 200 && shown > 200);
+    }
+
+    // A clip trimmed so its media runs out a little before the clip ends, a slowed-down clip and a
+    // clip at a lower frame rate than the timeline should hold their last picture to the end of the
+    // clip, in the preview and in the export, instead of flashing black.
+    #[test]
+    fn ends_hold_the_last_frame() {
+        let dir = env::temp_dir().join("origami-ends-test");
+        fs::create_dir_all(&dir).unwrap();
+        for (file, rate) in [("w30.mp4", 30), ("w15.mp4", 15)] {
+            let src = format!("color=white:s=64x36:r={rate}:d=6");
+            let made = ffmpeg()
+                .args(["-v", "error", "-y", "-f", "lavfi", "-i", &src])
+                .arg(dir.join(file))
+                .status();
+            assert!(made.unwrap().success());
+        }
+        let src = "settings({ fps: 30 })\ncat(video('w30.mp4').trim(4.01), video('w30.mp4').trim(0, 1).speed(0.5), video('w15.mp4').trim(0, 1), video('w30.mp4').trim(5.51))";
+        fs::write(dir.join("edit.js"), src).unwrap();
+        let tl = origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap();
+        let n = (tl.duration * 30.).round() as usize;
+        let mut pv = Preview::default();
+        let shown: Vec<u8> = (0..n)
+            .map(|k| pv.frame(&tl, k as f64 / 30., (64, 36))[(18 * 64 + 32) * 4])
+            .collect();
+        let out = dir.join("ends.mp4").to_string_lossy().to_string();
+        render(&tl, &out, |_| {}).unwrap();
+        let args = ["-v", "error", "-i", &out, "-f", "rawvideo", "-pix_fmt", "gray", "-"];
+        let px = ffmpeg().args(args).output().unwrap().stdout;
+        let made: Vec<u8> = px.chunks(64 * 36).map(|f| f[18 * 64 + 32]).collect();
+        assert_eq!(made.len(), n);
+        assert!(shown.iter().chain(&made).all(|v| *v > 200), "{shown:?} {made:?}");
     }
 }

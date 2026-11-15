@@ -704,7 +704,8 @@ mod tests {
     }
 
     // On the curve pad, dragging a point should move it, clicking empty space should add one, and
-    // double-clicking a point should remove it, each rewriting the curve in the script.
+    // double-clicking a point should remove it, each rewriting the curve in the script. A drag let go
+    // outside the window ends there.
     #[gpui::test]
     fn pad(cx: &mut gpui::TestAppContext) {
         use gpui::{Modifiers, MouseButton, point};
@@ -748,5 +749,12 @@ mod tests {
         cx.simulate_mouse_up(at(0.2, 0.8), MouseButton::Left, Modifiers::default());
         let line = view.update(cx, |o, _| o.lines[1].clone());
         assert!(line.contains("[[0, 0], [0.6, 0.3], [1, 1]]"), "{line}");
+        let past = view.update(cx, |o, _| o.past.len());
+        cx.simulate_mouse_down(at(0.6, 0.3), MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_move(at(0.7, 0.4), Some(MouseButton::Left), Modifiers::default());
+        cx.simulate_mouse_up(point(px(-40.), px(-40.)), MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_move(at(0.9, 0.9), None, Modifiers::default());
+        let (line, now) = view.update(cx, |o, _| (o.lines[1].clone(), o.past.len()));
+        assert!(line.contains("[[0, 0], [0.7, 0.4], [1, 1]]") && now == past + 1, "{line}");
     }
 }

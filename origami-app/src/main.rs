@@ -27,7 +27,7 @@ use gpui::{
 use image::{Frame, RgbaImage};
 use mouse::Grab;
 use origami_engine::{Player, Preview, footprint, peaks, thumb};
-use origami_lang::{Clip, Timeline};
+use origami_lang::{Clip, Kind, Timeline};
 use std::{
     collections::HashMap,
     env, fs,
@@ -143,6 +143,7 @@ struct Origami {
     clash: bool,
     player: Option<(Instant, f64, Option<Player>)>,
     assets: HashMap<String, Option<Asset>>,
+    stamps: HashMap<String, Option<(u64, SystemTime)>>,
     jobs: Vec<(String, String, Option<f64>)>,
     loading: usize,
     export: Option<Arc<Mutex<(String, bool)>>>,
@@ -244,6 +245,7 @@ impl Origami {
                 match tl {
                     Ok(tl) => {
                         (this.tl, this.rev) = (Arc::new(tl), this.rev + 1);
+                        this.menu = if this.menu == "clip" { "" } else { this.menu };
                         this.err.clear();
                         this.bad = 0;
                         let sel = this.sel;
@@ -332,6 +334,20 @@ impl Origami {
     }
 
     fn watch(&mut self, cx: &mut Context<Self>) {
+        for c in self
+            .tl
+            .clone()
+            .clips
+            .iter()
+            .filter(|c| matches!(c.kind, Kind::Video | Kind::Sound | Kind::Image))
+        {
+            let now = fs::metadata(&c.src).and_then(|m| Ok((m.len(), m.modified()?))).ok();
+            if self.stamps.insert(c.src.clone(), now).is_some_and(|was| was != now) {
+                self.assets.retain(|k, _| !k.starts_with(&c.src));
+                self.rev += 1;
+                self.mtime = self.mtime.filter(|_| self.dirty);
+            }
+        }
         let mtime = fs::metadata(&self.script).and_then(|m| m.modified()).ok();
         if mtime != self.mtime && !self.reading {
             self.mtime = mtime;
@@ -497,6 +513,7 @@ fn fresh(focus: FocusHandle, recent: Vec<PathBuf>) -> Origami {
         clash: false,
         player: None,
         assets: HashMap::new(),
+        stamps: HashMap::new(),
         jobs: vec![],
         loading: 0,
         export: None,

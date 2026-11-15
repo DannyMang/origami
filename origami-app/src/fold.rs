@@ -7,7 +7,7 @@ pub struct Region {
     pub run: bool,
 }
 
-fn depth(l: &str) -> i32 {
+pub fn depth(l: &str) -> i32 {
     l.chars().fold(0, |d, c| d + "([{".contains(c) as i32 - ")]}".contains(c) as i32)
 }
 

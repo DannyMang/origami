@@ -183,8 +183,8 @@
       at = n || at
       must(o.fps === undefined || Number.isInteger(o.fps) && o.fps > 0 && o.fps <= 240, 'fps takes a whole number from 1 to 240')
       must(o.size == null || Array.isArray(o.size) && o.size.length === 2 && o.size.every(v => v >= 1 && v <= 16384), 'size is written [1920, 1080]')
-      must(['auto', 'full', 'half', 'quarter'].includes(o.preview ?? 'auto'), 'preview is "auto", "full", "half" or "quarter"')
-      must(typeof (o.proxy ?? true) === 'boolean', 'proxy is true or false')
+      must([undefined, 'auto', 'full', 'half', 'quarter'].includes(o.preview), 'preview is "auto", "full", "half" or "quarter"')
+      must([undefined, true, false].includes(o.proxy), 'proxy is true or false')
       Object.assign(S, o)
     }),
     video: file('video', m => ({ video: m.video, audio: m.audio, out: m.dur, total: m.dur })),
