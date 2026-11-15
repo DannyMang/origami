@@ -6,7 +6,11 @@ on:
 
 jobs:
   check:
-    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-26]
+    runs-on: ${{ matrix.os }}
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       RUSTFLAGS: -Dwarnings
@@ -21,8 +25,8 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: cargo-${{ runner.os }}-${{ hashFiles('origami-*/Cargo.lock') }}
-          restore-keys: cargo-${{ runner.os }}-
+          key: cargo-${{ matrix.os }}-${{ hashFiles('origami-*/Cargo.lock') }}
+          restore-keys: cargo-${{ matrix.os }}-
       - name: origami-lang
         run: |
           cargo fmt --check --manifest-path origami-lang/Cargo.toml
@@ -38,3 +42,13 @@ jobs:
           cargo fmt --check --manifest-path origami-app/Cargo.toml
           cargo build --release --manifest-path origami-app/Cargo.toml
           cargo test --release --manifest-path origami-app/Cargo.toml
+      - name: app bundle
+        run: |
+          ./bundle.sh
+          echo 'color("#203040").for(1)' > "$RUNNER_TEMP/edit.js"
+          dist/Origami.app/Contents/MacOS/origami render "$RUNNER_TEMP/edit.js" "$RUNNER_TEMP/out.mp4"
+          ffprobe -v error -show_entries format=duration -of csv=p=0 "$RUNNER_TEMP/out.mp4"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Origami-${{ matrix.os }}
+          path: dist/Origami.dmg

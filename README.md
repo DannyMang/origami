@@ -30,3 +30,7 @@ With no script it opens the launch screen. The `origami` CLI in `origami-engine`
 ## Docs
 
 The language reference and changelog live in `docs/pages`. `docs/README.md` explains how to build and deploy them. `CONTRIBUTING.md` maps the code.
+
+## Licence
+
+[FSL-1.1-ALv2](LICENSE.md): use, change and share Origami for any purpose except a commercial product or service that competes with it. Each release becomes Apache-2.0 two years after it ships.
