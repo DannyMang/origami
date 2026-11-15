@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::{env, process::Command};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 const FEED: &str = "https://raw.githubusercontent.com/DannyMang/origami/main/latest.json";
@@ -23,6 +23,9 @@ pub fn read(feed: &[u8]) -> Option<(String, String)> {
 }
 
 pub fn latest() -> Option<(String, String)> {
+    if env::var_os("ORIGAMI_NO_UPDATE_CHECK").is_some() {
+        return None;
+    }
     let out = Command::new("curl").args(["-fsL", "--max-time", "5", FEED]).output().ok()?;
     read(&out.stdout)
 }

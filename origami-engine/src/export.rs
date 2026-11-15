@@ -1,12 +1,12 @@
 use crate::preview::Preview;
 use crate::{grade, lut::Lut, shape, text};
 use anyhow::{Context, Result, bail};
-use origami_lang::{Clip, Kind, Timeline, Val};
+use origami_lang::{Clip, Kind, Timeline, Val, ffmpeg};
 use std::{
     env, fs,
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
-    process::{self, Command, Stdio},
+    process::{self, Stdio},
     sync::atomic::{AtomicUsize, Ordering::Relaxed},
     thread,
 };
@@ -305,7 +305,7 @@ pub fn render(tl: &Timeline, out: &str, mut progress: impl FnMut(f64)) -> Result
         }
     }
     let dir = room();
-    let mut child = Command::new("ffmpeg")
+    let mut child = ffmpeg()
         .args(["-v", "error", "-nostats", "-progress", "pipe:1"])
         .args(args(tl, out, &dir))
         .stdin(if piped(tl) { Stdio::piped() } else { Stdio::null() })
@@ -369,11 +369,7 @@ mod tests {
             "-shortest",
         ];
         for file in ["a.mp4", "b.mp4"] {
-            let made = Command::new("ffmpeg")
-                .args(["-v", "error", "-y"])
-                .args(args)
-                .arg(dir.join(file))
-                .status();
+            let made = ffmpeg().args(["-v", "error", "-y"]).args(args).arg(dir.join(file)).status();
             assert!(made.unwrap().success());
         }
         let tl = |src: &str| {
@@ -391,10 +387,7 @@ mod tests {
         .enumerate()
         {
             render(&tl(src), &out(&format!("{i}.mp4")), |_| {}).unwrap();
-            let heard = Command::new("ffmpeg")
-                .args(["-v", "error"])
-                .args(audio_args(&tl(src), 0., 48000, 1.))
-                .output();
+            let heard = ffmpeg().args(["-v", "error"]).args(audio_args(&tl(src), 0., 48000, 1.)).output();
             assert!(heard.unwrap().status.success(), "{src}");
         }
         let (one, two) = (tl("text('one').for(2)"), tl("text('two').for(2)"));

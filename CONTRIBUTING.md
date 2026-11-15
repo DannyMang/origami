@@ -30,6 +30,7 @@ The later crates depend on the earlier ones by relative path.
 | `prelude.js` | The script API: `video`, `sound`, `text`, `cat`, `stack` and every clip method |
 | `grade.rs` | Colour grade types carried on a clip |
 | `error.rs` | Errors a script author can fix, each with the script line |
+| `tool.rs` | Finds `ffmpeg` and `ffprobe`: next to the program, then `PATH`, then the usual Homebrew and MacPorts folders |
 
 ### origami-engine/src
 
@@ -55,6 +56,7 @@ The later crates depend on the earlier ones by relative path.
 | `knob.rs` | Sliders, colour wheel and curve editor for numbers in the script |
 | `lint.rs` | Inline warnings and hover tips |
 | `fold.rs`, `search.rs` | Code folding and find |
+| `crash.rs` | Panic hook: saves unsaved code to `<script>.recovered` and logs to `~/Library/Logs/Origami/origami.log` |
 
 ## Build, run, test
 
@@ -67,6 +69,9 @@ cargo test --manifest-path origami-lang/Cargo.toml
 ```
 
 Running the app with no argument opens the launch screen. Run `cargo test` and `cargo fmt` in each crate you touch; a build must produce zero warnings.
+Set `ORIGAMI_NO_UPDATE_CHECK` (any value) to stop the app checking for a newer version at startup.
+
+`./bundle.sh` builds `dist/Origami.app` and `dist/Origami.dmg`. `FFMPEG_DIR=<folder>` copies `ffmpeg` and `ffprobe` from that folder into the app; `SIGN_ID="Developer ID Application: …"` with `NOTARY_PROFILE=<notarytool keychain profile>` also signs, notarises and staples.
 
 ## House style
 

@@ -61,7 +61,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         for (file, ink) in [("v.mp4", "red"), ("v.LRF", "blue")] {
             let src = format!("color={ink}:s=320x180:r=30000/1001:d=4");
-            let made = std::process::Command::new("ffmpeg")
+            let made = origami_lang::ffmpeg()
                 .args(["-v", "error", "-y", "-f", "lavfi", "-i", &src, "-f", "mp4"])
                 .arg(dir.join(file))
                 .status();

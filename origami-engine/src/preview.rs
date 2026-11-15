@@ -4,13 +4,13 @@ use crate::{
     text::{self, Glyph},
 };
 use lru::LruCache;
-use origami_lang::{Clip, Kind, Part, Timeline, Val};
+use origami_lang::{Clip, Kind, Part, Timeline, Val, ffmpeg, ffprobe};
 use std::{
     collections::HashMap,
     io::Read,
     num::NonZeroUsize,
     path::Path,
-    process::{Child, Command, Stdio},
+    process::{Child, Stdio},
     sync::{Arc, LazyLock, Mutex},
     thread,
 };
@@ -34,12 +34,7 @@ fn probe(path: &str) -> Info {
             "-of",
             "csv=p=0",
         ];
-        let out = Command::new("ffprobe")
-            .args(show)
-            .arg(path)
-            .output()
-            .map(|o| o.stdout)
-            .unwrap_or_default();
+        let out = ffprobe().args(show).arg(path).output().map(|o| o.stdout).unwrap_or_default();
         let text = String::from_utf8_lossy(&out);
         let (codec, rate) = text.trim().split_once(',').unwrap_or_default();
         let (n, d) = rate.split_once('/').unwrap_or_default();
@@ -55,7 +50,7 @@ fn probe(path: &str) -> Info {
 
 fn raw(args: &[&str], len: usize) -> Option<Vec<u8>> {
     let tail = ["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "bgra", "-"];
-    let out = Command::new("ffmpeg").args(["-v", "error"]).args(args).args(tail).output().ok()?;
+    let out = ffmpeg().args(["-v", "error"]).args(args).args(tail).output().ok()?;
     (out.stdout.len() == len).then_some(out.stdout)
 }
 
@@ -70,7 +65,7 @@ pub fn thumb(path: &str, t: f64, w: usize, h: usize) -> Option<Vec<u8>> {
 
 pub fn peaks(path: &str) -> Vec<f32> {
     let args = ["-v", "error", "-i", path, "-ac", "1", "-ar", "4000", "-f", "u8", "-"];
-    let pcm = Command::new("ffmpeg").args(args).output().map(|o| o.stdout).unwrap_or_default();
+    let pcm = ffmpeg().args(args).output().map(|o| o.stdout).unwrap_or_default();
     let peaks: Vec<f32> = pcm
         .chunks(200)
         .map(|c| c.iter().map(|&s| (s as f32 - 128.).abs()).fold(0., f32::max))
@@ -267,7 +262,7 @@ impl Preview {
                     "bgra",
                     "-",
                 ];
-                let child = Command::new("ffmpeg")
+                let child = ffmpeg()
                     .args(["-v", "error"])
                     .args(probe(&key.0).0)
                     .args(args)

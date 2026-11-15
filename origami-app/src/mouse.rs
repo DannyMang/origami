@@ -1,12 +1,16 @@
 use crate::{
     Origami,
     clip::set,
+    crash,
     scene::{FOOT, LEAD, sink},
     view::{HEAD, RULER},
 };
 use gpui::{Context, Pixels, PromptLevel, ScrollWheelEvent, Window, px};
 use origami_lang::{Clip, Kind};
-use std::{env, fs, mem, path::PathBuf};
+use std::{
+    env, fs, mem,
+    path::{Path, PathBuf},
+};
 
 const STARTER: &str = "stack(\n  cat(\n    color(\"#282c33\").for(5),\n  ),\n  text(\"hello origami\"),\n)\n";
 
@@ -71,6 +75,17 @@ impl Origami {
         (self.script, self.mtime, self.t, self.dirty) = (path, None, 0., false);
         (self.past, self.future, self.cursor, self.top, self.left) = (vec![], vec![], None, 0., 0.);
         (self.folded, self.fresh) = (vec![], true);
+        let stamp = |p: &Path| fs::metadata(p).and_then(|m| m.modified()).ok();
+        let spare = crash::spare(&self.script);
+        if stamp(&spare) > stamp(&self.script)
+            && let Ok(text) = fs::read_to_string(&spare)
+        {
+            let _ = fs::remove_file(&spare);
+            if fs::read_to_string(&self.script).unwrap_or_default().lines().ne(text.lines()) {
+                (self.lines, self.dirty) = (text.lines().map(String::from).collect(), true);
+                self.note = "recovered unsaved changes from a crash: keep mine saves them, use disk drops them".into();
+            }
+        }
     }
 
     pub fn leave(&mut self, window: &mut Window, cx: &mut Context<Self>) {

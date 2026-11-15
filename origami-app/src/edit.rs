@@ -49,10 +49,14 @@ impl Origami {
         self.font = (self.font + by).clamp(9., 28.);
     }
 
+    pub fn text(&self) -> String {
+        self.lines.iter().flat_map(|l| [l.as_str(), "\n"]).collect()
+    }
+
     pub fn store(&mut self) {
         self.dirty = self.clash;
         if !self.clash {
-            let _ = fs::write(&self.script, self.lines.iter().map(|l| l.clone() + "\n").collect::<String>());
+            let _ = fs::write(&self.script, self.text());
         }
     }
 

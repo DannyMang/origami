@@ -1,5 +1,6 @@
 mod clip;
 mod complete;
+mod crash;
 mod edit;
 mod fold;
 mod full;
@@ -327,6 +328,7 @@ impl Origami {
 
     fn tick(&mut self, cx: &mut Context<Self>) {
         self.watch(cx);
+        *crash::UNSAVED.lock().unwrap() = self.dirty.then(|| (self.script.clone(), self.text()));
         if self.dwell() {
             cx.notify();
         }
@@ -498,6 +500,7 @@ fn main() {
         return eprintln!("usage: origami-app [script.js]");
     };
     let script = script.unwrap_or_default();
+    crash::guard();
     thread::spawn(Player::warm);
     Application::new().run(move |cx: &mut App| {
         let options = WindowOptions {

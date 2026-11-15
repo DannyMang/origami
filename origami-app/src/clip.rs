@@ -221,7 +221,7 @@ mod tests {
     use super::*;
     use crate::view::RULER;
     use gpui::{Entity, Modifiers, MouseButton, Pixels, Point, TestAppContext, VisualTestContext, point};
-    use std::{fs, process::Command, sync::Arc};
+    use std::{fs, sync::Arc};
 
     const DEF: &str = "const v = video(\"v.mp4\")\nconst a = sound(\"a.wav\")\n";
     const SRC: &str = "stack(
@@ -246,7 +246,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("origami-clip-{name}"));
         fs::create_dir_all(&dir).unwrap();
         for (file, src) in [("a.wav", "sine=d=10"), ("v.mp4", "color=black:s=64x64:r=30:d=10")] {
-            let made = Command::new("ffmpeg")
+            let made = origami_lang::ffmpeg()
                 .args(["-v", "error", "-y", "-f", "lavfi", "-i", src])
                 .arg(dir.join(file))
                 .status();
