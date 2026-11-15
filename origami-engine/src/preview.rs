@@ -1,6 +1,8 @@
 use crate::{
     export::{alpha, place, plain, seat},
-    grade, shape,
+    grade,
+    lut::spread,
+    shape,
     text::{self, Glyph},
 };
 use lru::LruCache;
@@ -91,13 +93,8 @@ fn blit(out: &mut [u8], (pw, ph): (usize, usize), src: &[u8], (sw, sh): (usize, 
     );
     let span = |c: f64, r: f64, n: usize| ((c - r).clamp(0., n as f64) as usize, (c + r).ceil().clamp(0., n as f64) as usize);
     let ((x0, x1), (y0, y1)) = (span(cx, rx, pw), span(cy, ry, ph));
-    let band = if (x1 - x0) * (y1 - y0) < 1 << 16 {
-        ph
-    } else {
-        (y1 - y0).div_ceil(thread::available_parallelism().map_or(1, usize::from))
-    };
-    let paint = |(n, rows): (usize, &mut [u8])| {
-        for (y, row) in (y0 + n * band..).zip(rows.chunks_exact_mut(pw * 4)) {
+    let paint = |from: usize, rows: &mut [u8]| {
+        for (y, row) in (y0 + from / (pw * 4)..).zip(rows.chunks_exact_mut(pw * 4)) {
             for (x, d) in (x0..x1).zip(row[x0 * 4..].chunks_exact_mut(4)) {
                 let (dx, dy) = (x as f64 + 0.5 - cx, y as f64 + 0.5 - cy);
                 let (u, v) = ((dx * cos + dy * sin) / k + hw - 0.5, (dy * cos - dx * sin) / k + hh - 0.5);
@@ -126,12 +123,12 @@ fn blit(out: &mut [u8], (pw, ph): (usize, usize), src: &[u8], (sw, sh): (usize, 
             }
         }
     };
-    let mut bands = out[y0 * pw * 4..y1 * pw * 4].chunks_mut(band * pw * 4).enumerate();
-    let first = bands.next();
-    thread::scope(|s| {
-        bands.for_each(|b| drop(s.spawn(|| paint(b))));
-        first.map(paint)
-    });
+    let rows = &mut out[y0 * pw * 4..y1 * pw * 4];
+    if (x1 - x0) * (y1 - y0) < 1 << 16 {
+        paint(0, rows)
+    } else {
+        spread(rows, pw * 4, paint)
+    }
 }
 
 fn nudge(px: &[u8], w: usize, (fx, fy): (f64, f64)) -> Vec<u8> {
@@ -191,6 +188,7 @@ pub struct Preview {
     texts: HashMap<String, Laid>,
     was: (HashMap<String, Option<Px>>, HashMap<String, Laid>),
     at: f64,
+    primed: (Vec<u32>, (usize, usize)),
     pub room: usize,
     pub fast: bool,
     pub rough: bool,
@@ -206,6 +204,7 @@ impl Default for Preview {
             texts: HashMap::new(),
             was: Default::default(),
             at: -1.,
+            primed: Default::default(),
             room: 1 << 30,
             fast: false,
             rough: false,
@@ -253,12 +252,20 @@ impl Preview {
             let (key, i, rate) = Self::cell(c, t, tl.fps, (tw as usize, th as usize), false);
             if !self.frames.contains(&(key.clone(), i)) && self.near(&key, i).is_none() {
                 all = false;
-                if t != self.at && self.lap(&key, i) == 0 {
+                if (t != self.at || self.decoders.iter().all(|(o, _)| o.0 != key.0)) && self.lap(&key, i) == 0 {
                     self.decoder(&key, i, i, rate);
                 }
             }
         }
         all
+    }
+
+    pub fn prime(&mut self, tl: &Timeline, t: f64, size: (usize, usize)) {
+        let old: Vec<u32> = self.decoders.iter().map(|(_, d)| d.child.id()).collect();
+        self.at = f64::NAN;
+        self.ready(tl, t, size);
+        let ids = self.decoders.iter().map(|(_, d)| d.child.id());
+        self.primed = (ids.filter(|n| !old.contains(n)).collect(), size);
     }
 
     fn lap(&self, key: &Key, k: i64) -> i64 {
@@ -450,6 +457,10 @@ impl Preview {
         let (k, drawn) = (pw as f64 / tl.size.0 as f64, |c: &&Clip| {
             c.scale.max() > 0. && (c.kind != Kind::Text || c.size > 0.)
         });
+        let (primed, size) = std::mem::take(&mut self.primed);
+        if self.fast || size != (pw, ph) {
+            self.decoders.retain(|(_, d)| !primed.contains(&d.child.id()));
+        }
         let mut out = [0, 0, 0, 255].repeat(pw * ph);
         (self.rough, self.at) = (false, t);
         self.was = (std::mem::take(&mut self.stills), std::mem::take(&mut self.texts));

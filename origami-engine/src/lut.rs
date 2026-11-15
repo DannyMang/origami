@@ -24,7 +24,7 @@ fn mix(a: [f32; 3], b: [f32; 3], f: f32) -> [f32; 3] {
     array::from_fn(|i| a[i] + (b[i] - a[i]) * f)
 }
 
-fn spread<T: Send>(out: &mut [T], unit: usize, f: impl Fn(usize, &mut [T]) + Sync) {
+pub fn spread<T: Send>(out: &mut [T], unit: usize, f: impl Fn(usize, &mut [T]) + Sync) {
     let band = out.len().div_ceil(unit).div_ceil(64).max(1) * unit;
     let parts = Mutex::new(out.chunks_mut(band).enumerate());
     let next = || parts.lock().unwrap().next();

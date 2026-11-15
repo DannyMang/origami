@@ -137,6 +137,7 @@ struct Origami {
     image: Option<Arc<RenderImage>>,
     shown: Option<(i64, usize, (usize, usize))>,
     rough: bool,
+    rest: Option<Instant>,
     busy: bool,
     reading: bool,
     clash: bool,
@@ -285,6 +286,18 @@ impl Origami {
         );
         let (w, h) = Preview::size(&self.tl, wide as f64, still);
         let want = ((self.t * self.fps()).round() as i64, self.rev, (w, h));
+        if self.scrubbing && !self.busy && self.shown == Some(want) && self.rest.is_some_and(|r| r.elapsed() > Duration::from_millis(150)) {
+            self.rest = None;
+            let (preview, tl, t, size) = (
+                self.preview.clone(),
+                self.tl.clone(),
+                want.0 as f64 / self.fps(),
+                Preview::size(&self.tl, wide as f64, true),
+            );
+            cx.background_executor()
+                .spawn(async move { preview.lock().unwrap().prime(&tl, t, size) })
+                .detach();
+        }
         if self.busy || self.shown == Some(want) && !(self.rough && still) || self.tl.duration <= 0. || wide <= 0. {
             return false;
         }
@@ -302,7 +315,7 @@ impl Origami {
                 if let Some(old) = this.image.replace(bitmap(px, w, h)) {
                     cx.drop_image(old, None);
                 }
-                (this.busy, this.shown, this.rough) = (false, Some(want), rough);
+                (this.busy, this.shown, this.rough, this.rest) = (false, Some(want), rough, Some(Instant::now()));
                 this.refresh(cx);
                 cx.notify();
             })
@@ -478,6 +491,7 @@ fn fresh(focus: FocusHandle, recent: Vec<PathBuf>) -> Origami {
         image: None,
         shown: None,
         rough: false,
+        rest: None,
         busy: false,
         reading: false,
         clash: false,
