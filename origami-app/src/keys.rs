@@ -68,6 +68,9 @@ impl Origami {
             self.menu = "";
             return cx.notify();
         }
+        if k == "escape" && mem::take(&mut self.pen) {
+            return cx.notify();
+        }
         if self.take.is_some() && matches!(k.as_str(), "escape" | "space") {
             self.finish(k == "space");
             return cx.notify();
@@ -174,6 +177,7 @@ impl Origami {
                     "space" => self.toggle(),
                     "backspace" | "delete" => self.delete(),
                     "s" | "S" => self.split(),
+                    "t" => self.pen(),
                     "left" => self.seek(self.t - 1. / f),
                     "right" => self.seek(self.t + 1. / f),
                     ":" => self.mode = Mode::Command(String::new()),
@@ -227,6 +231,7 @@ impl Origami {
             "<" | ">" => self.shift(if k == "<" { -n / f } else { n / f }),
             "space" => self.toggle(),
             "x" => self.delete(),
+            "t" => self.pen(),
             "i" => (self.mouse, self.mode) = (true, Mode::Normal),
             "v" => self.mode = if self.mode == Mode::Normal { Mode::Visual(t) } else { Mode::Normal },
             "y" => {

@@ -42,6 +42,7 @@ Motion tab: click a clip to open its properties, drag a number sideways to chang
 click a key for its time, value and ease, drag it to move it, delete removes it     Graph Editor: drag keys and curve handles
 drag a property's dot onto another clip's property to make it follow, or click the dot to pick one; click the chip to break it     Graph tab: what follows what
 Program: click text, a shape or a placed clip to select it, drag it to move it; with keys on its position the drag sets a key at the playhead
+T beside the speed, or the t key, then a click in the picture adds text there at the playhead: type the words, cmd+s applies them
 fold code with the gutter arrows, cmd+opt+[ and cmd+opt+], or za zM zR in vim keys     esc  vim keys, i  back
 h l  frame        H L  second       w b  clip boundary    0 $ gg G  start, end
 j k  layer        < >  shift clip   x  delete clip    space  play, pause    m' + letter  marks
@@ -360,6 +361,7 @@ impl Origami {
                 side()
                     .justify_end()
                     .child(self.tool(pace, cx, |t, _, _| t.pace()).text_size(px(13.)))
+                    .child(self.typer(cx))
                     .child(self.menu("+", add, cx))
                     .child(self.menu("\u{22ef}", more, cx))
                     .child(
@@ -1086,14 +1088,15 @@ impl Render for Origami {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, e: &MouseDownEvent, _, cx| {
-                    if this.mouse {
-                        if !this.clasp(e.position) {
-                            this.toggle();
-                        }
-                        cx.notify();
+                    if this.pen && !this.full {
+                        this.print(e.position);
+                    } else if this.mouse && !this.clasp(e.position) {
+                        this.toggle();
                     }
+                    cx.notify();
                 }),
             )
+            .when(self.pen && !self.full, |d| d.cursor_crosshair())
             .overflow_hidden()
             .child(canvas(seen, show).size_full());
         let up = |this: &mut Self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>| {

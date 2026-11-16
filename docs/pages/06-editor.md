@@ -37,6 +37,10 @@ clip.temperature(-10)
 - Curve pads are coloured by what they act on: a hue strip for the hue curves, grey for luma, grey to vivid for saturation, and red, green or blue for those channels.
 - Not built yet: adding or removing curve points by click, picking a colour from the preview, a frame scrubber for times.
 
+## Type tool
+
+Click the T beside the speed button, or press `t`, then click anywhere in the picture: Origami adds `text("text").at(<playhead>).for(3).pos(x, y)` to your script with its top-left corner at the spot you clicked, and selects the placeholder so you can type the words straight away (cmd+s applies them). Esc or a second click on T cancels, cmd+z removes the new text, and the size slider, colour wheel and dragging in the preview edit it afterwards.
+
 ## Problems
 
 A value that cannot work gets a red squiggle. Hover it to read why.

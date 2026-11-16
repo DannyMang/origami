@@ -12,6 +12,7 @@ mod menu;
 mod motion;
 mod mouse;
 mod peek;
+mod pen;
 mod release;
 mod scene;
 mod search;
@@ -149,6 +150,7 @@ struct Origami {
     loading: usize,
     export: Option<Arc<Mutex<(String, bool)>>>,
     take: Option<voice::Take>,
+    pen: bool,
     mic: Option<String>,
     mics: Vec<String>,
     stir: Instant,
@@ -523,6 +525,7 @@ fn fresh(focus: FocusHandle, recent: Vec<PathBuf>) -> Origami {
         loading: 0,
         export: None,
         take: None,
+        pen: false,
         mic: None,
         mics: vec![],
         stir: Instant::now(),
