@@ -4,7 +4,7 @@
   let L = {}, at = 0, N = 0, P = [], D = 0, W = [1, 1], note
   const M = new Map(), reads = ['x', 'y', 'scale', 'rotate', 'opacity'], even = n => Math.round(n / 2) * 2
   const digits = /^\d+$/, named = /(?:const|let|var)\s+(\w+)\s*=/, made = 'video sound image text captions caption color', bare = 'keys rect line add mul cat stack settings'
-  const DAY = 86400
+  const DAY = 86400, run = Symbol()
   const must = (ok, say) => { if (!ok) throw new Error(`line ${at}: ${say}`) }
   const paint = c => {
     must(/^#?([\da-f]{3,4}|[\da-f]{6}|[\da-f]{8})$/i.test(c), `${JSON.stringify(c)} is not a colour: write hex, like "#ffffff" or "#ffffff80", and click it for the colour wheel`)
@@ -24,12 +24,14 @@
       v = (t, d, T) => (f ??= read(of, p))(T)
     }
     if (typeof v !== 'number' && typeof v !== 'function') throw new Error(`line ${at}: ${k} takes a number or a function of time`)
-    return typeof v === 'number' ? v : Object.assign((t, d, T) => v(t, d, T), { line: at })
+    return typeof v === 'number' ? v : Object.assign((t, d, T) => v(t, d, T), { line: at, [run]: v[run] })
   }
   const num = (v, t, d, T) => typeof v === 'number' ? v : v(t, d, T)
   const times = (k, a, x) => {
     const b = anim(k, x)
-    return typeof a === 'number' && typeof b === 'number' ? a * b : anim(k, (t, d, T) => num(a, t, d, T) * num(b, t, d, T))
+    if (typeof a === 'number' && typeof b === 'number') return a * b
+    const all = typeof a === 'number' && b[run] && ((n, d) => b[run](n, d).map(x => a * x))
+    return anim(k, Object.assign((t, d, T) => num(a, t, d, T) * num(b, t, d, T), { [run]: all }))
   }
   const split = { char: /\S/gu, word: /\S+/gu, line: /.+/gu }
   const ops = {
@@ -170,11 +172,25 @@
         return eases[e] ?? e
       })
       let D, T
-      return (t, d) => {
+      const lay = d => {
         if (d !== D) [D, T] = [d, k.map(([s]) => typeof s === 'string' ? parseFloat(s) / 100 * d : s < 0 ? d + s : s)]
-        const i = T.findIndex(s => t < s)
-        return i < 1 ? k.at(i)[1] : k[i - 1][1] + (k[i][1] - k[i - 1][1]) * e[i]((t - T[i - 1]) / (T[i] - T[i - 1]))
       }
+      const mix = (t, i) => i < 1 ? k.at(i)[1] : k[i - 1][1] + (k[i][1] - k[i - 1][1]) * e[i]((t - T[i - 1]) / (T[i] - T[i - 1]))
+      const one = (t, d) => {
+        lay(d)
+        return mix(t, T.findIndex(s => t < s))
+      }
+      const all = (n, d) => {
+        lay(d)
+        if (e.every((f, i) => !i || f === eases.linear)) return __ramp(T, k.map(p => p[1]), n, S.fps)
+        const s = []
+        for (let f = 0, i = 0; f < n; f++) {
+          while (i < T.length && !(f / S.fps < T[i])) i++
+          s.push(mix(f / S.fps, i < T.length ? i : -1))
+        }
+        return s
+      }
+      return Object.assign(one, { [run]: all })
     }),
     bezier: (x1, y1, x2, y2) => x => {
       const B = (p, q, s) => 3 * p * s * (1 - s) ** 2 + 3 * q * s * s * (1 - s) + s ** 3
@@ -268,8 +284,8 @@
   const frames = d => Math.max(1, Math.ceil(d * S.fps - 1e-6))
   const sample = (c, v) => {
     if (typeof v !== 'function') return v
-    const d = c.end - c.start, s = []
-    for (let i = 0, n = frames(d); i < n; i++) s.push(v(i / S.fps, d, c.start + i / S.fps))
+    const d = c.end - c.start, n = frames(d), s = v[run] ? v[run](n, d) : []
+    for (let i = s.length; i < n; i++) s.push(v(i / S.fps, d, c.start + i / S.fps))
     if (!s.every(Number.isFinite)) throw new Error(`line ${v.line}: a function of time must return a number`)
     return s.every(x => x === s[0]) ? s[0] : [v.line, s]
   }

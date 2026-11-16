@@ -4,7 +4,8 @@ mod tool;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use boa_engine::{
-    Context, JsError, JsNativeError, JsResult, JsString, JsValue, NativeFunction, Source, js_string, property::Attribute, script::Script,
+    Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue, NativeFunction, Source, js_string, object::builtins::JsArray,
+    property::Attribute, script::Script,
 };
 pub use error::Error;
 pub use grade::{Curves, Grade, Secondary, Vignette, Wheels};
@@ -364,6 +365,27 @@ fn tag(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
     Ok(JsString::from(out + &src[from..]).into())
 }
 
+fn ramp(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
+    let mut list = |i: usize| -> JsResult<Vec<f64>> {
+        let all = JsArray::from_object(args.get_or_undefined(i).to_object(cx)?)?;
+        (0..all.length(cx)?).map(|j| all.get(j, cx)?.to_number(cx)).collect()
+    };
+    let (t, v, mut i) = (list(0)?, list(1)?, 0);
+    let (n, fps) = (args.get_or_undefined(2).to_number(cx)?, args.get_or_undefined(3).to_number(cx)?);
+    let at = |f: usize| {
+        let x = f as f64 / fps;
+        while i < t.len() && !(x < t[i]) {
+            i += 1;
+        }
+        JsValue::from(match i {
+            0 => v[0],
+            i if i == t.len() => v[i - 1],
+            i => v[i - 1] + (v[i] - v[i - 1]) * ((x - t[i - 1]) / (t[i] - t[i - 1])),
+        })
+    };
+    Ok(JsArray::from_iter((0..n as usize).map(at).collect::<Vec<_>>(), cx).into())
+}
+
 type Job = Box<dyn FnOnce(&mut Context) + Send>;
 
 static VM: Mutex<Option<mpsc::Sender<Job>>> = Mutex::new(None);
@@ -423,6 +445,7 @@ fn boot() -> Context {
         (js_string!("__font"), font),
         (js_string!("__measure"), extent),
         (js_string!("__tag"), tag),
+        (js_string!("__ramp"), ramp),
     ] {
         cx.register_global_builtin_callable(name, 1, NativeFunction::from_fn_ptr(f))
             .unwrap();
@@ -629,6 +652,21 @@ stack(
         let turn = |i| t.clips[11].rotate.at(i);
         assert_eq!((turn(1), turn(4), turn(8), &t.clips[11].opacity), (0., 2., 4., &Val::Fixed(1.)));
         assert!(matches!(t.clips[0].opacity, Val::Frames(2, ref s) if s.len() == 10));
+    }
+
+    // Keys given straight to a clip are worked out for the whole clip at once. They should give exactly
+    // the values the same keys give when asked one frame at a time: keys out of order, two keys at one
+    // time, times counted from the end, eases, and a second opacity multiplied in.
+    #[test]
+    fn keys_at_once_match_frame_by_frame() {
+        let t = tl("settings({ fps: 24 })
+const all = [keys([0.5, 1], [0.2, 0.25], [0.2, 0.75], [-0.3, 0.1]), keys([0, 0], ['40%', 1, 'slowOut'], [2, 0.5]), keys([0.3, 0.7])]
+const slow = k => (t, d) => k(t, d)
+stack(all.flatMap(k => [k, slow(k)].map(v => text('a').for(1.3).opacity(0.5).opacity(v).rotate(v))))");
+        for pair in t.clips.chunks(2) {
+            assert_eq!((&pair[0].opacity, &pair[0].rotate), (&pair[1].opacity, &pair[1].rotate));
+        }
+        assert!(matches!((&t.clips[0].rotate, &t.clips[4].rotate), (Val::Frames(_, s), Val::Fixed(_)) if s.len() == 32));
     }
 
     // Animated text (per-word motion, typewriter reveal, scale, rotation) should survive being saved
