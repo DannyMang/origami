@@ -38,6 +38,7 @@ What changed in each version of Origami. The launch screen shows the version you
   - A drag let go outside the window ends there.
   - The last frame of a clip holds instead of flashing black, and preview and export show the same frame at every time.
   - Splitting keeps the frame at the playhead and leaves every other frame as it was, including DJI footage at 29.97 fps on a 30 fps timeline, and is instant again.
+  - Splits write times to the millisecond, with more decimals only when a frame needs them, and keep every frame in preview and export at any frame rate, including 24 fps.
   - A take or paste after a muted group no longer goes inside it.
   - Replacing a media file under the same name shows the new footage.
   - Autocomplete always fits in the window.

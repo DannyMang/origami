@@ -250,24 +250,82 @@ fn index(c: &Clip, t: f64, fps: f64, (n, d, tb): (f64, f64, f64), dur: f64) -> i
     (first + i.min(last).max(0.)) as i64
 }
 
-fn seam(c: &Clip, t: f64, fps: f64, (n, d, tb): (f64, f64, f64), dur: f64) -> (f64, f64) {
+fn seam(c: &Clip, t: f64, fps: f64, (n, d, tb): (f64, f64, f64), dur: f64, seq: bool) -> Option<(f64, f64, f64, f64)> {
     let at = |c: &Clip, t: f64| index(c, t, fps, (n, d, tb), dur);
-    let (i, first) = (at(c, t), (c.src_in * n / d - 1e-6).ceil());
-    let cut = |i: i64| c.src_in + (i as f64 - first) * d / n;
-    let before = (((c.start + (cut(i) - c.src_in) / c.speed - 1e-6) * fps).ceil() - 1.) / fps;
-    if at(c, before) != i {
-        return (cut(i), cut(i));
+    let shown = |p: &[&Clip], k: i64| p.iter().rev().find(|c| live(c, k as f64 / fps)).map(|c| at(c, k as f64 / fps));
+    let (a, v, i, first) = (c.src_in, c.speed, at(c, t), |s: f64| (s * n / d - 1e-6).ceil() as i64);
+    let (b, cut) = (a + (c.end - c.start) * v, |f: i64| a + (f - first(a)) as f64 * d / n);
+    let span = ((c.start + (cut(i) - 2. * d / n - a) / v) * fps).floor() as i64..(c.end * fps).ceil() as i64 + 2;
+    let was: Vec<_> = span.clone().map(|k| shown(&[c], k)).collect();
+    let read = |v: f64| serde_json::from_str(&v.to_string()).unwrap_or(v);
+    let edge = if tb > 0. { 0.6 / tb } else { 1e-4 };
+    let reads = |from: f64, to: f64, j: i64| (j - first(from)) as f64 * d / n + edge <= to - from;
+    let tail = was.iter().rev().find_map(|w| *w).filter(|j| reads(a, b, *j));
+    let tiers: [(&[i64], bool); 3] = [(&[i, i + 1], true), (&[i + 2], true), (&[i], false)];
+    let order = tiers
+        .into_iter()
+        .flat_map(|(near, full)| (3..7).flat_map(move |p| [true, false].map(|whole| (near, full, p, whole))));
+    for (near, full, p, whole) in order {
+        let k = 10f64.powi(p);
+        let reach = if p == 3 { (d / n * k) as i64 + 3 } else { (edge * k) as i64 + 10 };
+        let grid = |v: f64| (v * k).round() / k;
+        let flat = |v: f64| (grid(v) - v).abs() < 1e-9;
+        for &f in near {
+            let mid = (cut(f) * k).round() as i64;
+            let fit = |mut s: i64| {
+                while first(s as f64 / k) > f {
+                    s -= 1;
+                }
+                while first(s as f64 / k) < f {
+                    s += 1;
+                }
+                s
+            };
+            let mut tries: Vec<_> = (mid - reach..=mid + reach).map(|m| (m, fit(m))).collect();
+            tries.sort_by_key(|(m, s)| ((m - s).abs(), (m - mid).abs()));
+            for (m, s) in tries.into_iter().map(|(m, s)| (m as f64 / k, s as f64 / k)) {
+                let by = if seq { (m - a) / v } else { grid((m - a) / v) };
+                let end = s + (b - a) - by * v;
+                let end = if flat(end) {
+                    grid(end)
+                } else if (end - b).abs() < 1e-9 {
+                    b
+                } else {
+                    continue;
+                };
+                let x = if seq || !flat(c.start + by) {
+                    c.start + by
+                } else {
+                    grid(c.start + by)
+                };
+                let stop = read(x + (end - s) / v);
+                let cuts = first(s - 5e-6) == f && tail.is_none_or(|j| reads(s, end, j));
+                if m - a < 0.04 || end - s < 0.04 || !(full || (m - s).abs() < 1.001e-3) || (stop == c.end) != whole || !cuts {
+                    continue;
+                }
+                let one = Clip {
+                    end: read(c.start + (m - a) / v),
+                    ..c.clone()
+                };
+                let two = Clip {
+                    start: read(x),
+                    end: stop,
+                    src_in: s,
+                    ..c.clone()
+                };
+                let k = ((one.end.min(two.start) - 1e-6) * fps).ceil() as i64 - 1;
+                let last = was
+                    .get((k - span.start) as usize)
+                    .copied()
+                    .flatten()
+                    .filter(|_| live(&one, k as f64 / fps));
+                if (!full || last.is_none_or(|j| reads(a, m, j))) && span.clone().zip(&was).all(|(k, w)| shown(&[&one, &two], k) == *w) {
+                    return Some((m, s, by, end));
+                }
+            }
+        }
     }
-    let late = cut(i) + if tb > 0. { 0.6 / tb } else { 1e-4 };
-    let two = Clip {
-        start: c.start + (late - c.src_in) / c.speed,
-        src_in: cut(i),
-        ..c.clone()
-    };
-    match (1..12).map(|j| before + j as f64 / fps).all(|t| at(&two, t) == at(c, t)) {
-        true => (late, cut(i)),
-        false => (cut(i + 1), cut(i + 1)),
-    }
+    None
 }
 
 fn stamp(c: &Clip, t: f64, fps: f64, tb: f64, stamps: &[(f64, bool)]) -> i64 {
@@ -367,8 +425,8 @@ impl Preview {
         ((src, tw, th), i, (n, d))
     }
 
-    pub fn seam(c: &Clip, t: f64, fps: u32) -> (f64, f64) {
-        seam(c, t, fps as f64, rate(&c.src, fps as f64), probe(&c.src).4)
+    pub fn seam(c: &Clip, t: f64, fps: u32, seq: bool) -> Option<(f64, f64, f64, f64)> {
+        seam(c, t, fps as f64, rate(&c.src, fps as f64), probe(&c.src).4, seq)
     }
 
     fn renew(&mut self, src: &str) {
@@ -728,14 +786,13 @@ mod tests {
         assert_eq!(see((0.05, 3.05, 0., 1.), 60., (24., 1., 0.), &[5, 60]), [0, 22]);
     }
 
-    // Splitting a clip in a cat( ) should keep the playhead frame and leave every other timeline frame,
-    // of both pieces and of the clip after them, showing the source frame it showed before, at common
-    // source rates and time bases and any speed and trim, with the cuts written as the app writes them,
-    // except a few 24 fps frames that no cut can keep along with the playhead frame and 60 fps frames
-    // half-way between timeline frames that float rounding of the next clip's start moves either way.
+    // Splitting a clip in a cat( ) or a stack( ) should keep the playhead frame and leave every other
+    // timeline frame, of both pieces and of the clip after them, showing the source frame it showed
+    // before, at common source rates and time bases and any speed and trim, with times to the
+    // millisecond unless a frame needs more decimals. The first piece should also still read the last
+    // frame it shows, so the export matches. Only a few cuts too near the clip's end are refused.
     #[test]
     fn seams_keep_every_frame() {
-        let ns = |v: f64| (v * 1e9 + 0.5).ceil() / 1e9;
         let rates = [
             (30000., 1001., 30000.),
             (30., 1., 15360.),
@@ -743,24 +800,28 @@ mod tests {
             (24., 1., 12288.),
             (60., 1., 15360.),
         ];
-        let mut changed = vec![];
+        let read = |v: f64| serde_json::from_str::<f64>(&v.to_string()).unwrap();
+        let (mut changed, mut longer, mut refused, mut early) = (vec![], vec![], vec![], vec![]);
         for rate in rates {
-            let shown = |clips: &[Clip], t: f64| clips.iter().find(|c| live(c, t)).map(|c| index(c, t, 30., rate, 0.));
-            let mut bad = 0;
-            for (speed, src_in, start, len) in [
-                (0.5, 0., 0., 3.),
-                (0.5, 0.37, 0.2, 2.),
-                (1., 0., 0., 3.),
-                (1., 0.51, 0.7, 2.9),
-                (1.5, 0., 1.234, 2.),
-                (1.5, 0.2, 0., 2.5),
-                (2., 0.1, 0., 3.),
-                (2., 0., 0.5, 2.),
-            ] {
+            let shown = |clips: &[Clip], t: f64| clips.iter().rev().find(|c| live(c, t)).map(|c| (c.z, index(c, t, 30., rate, 0.)));
+            let (mut bad, mut more, mut no, mut held) = (0, 0, 0, 0);
+            for (seq, (speed, src_in, start, len)) in [true, false].into_iter().flat_map(|seq| {
+                [
+                    (0.5, 0., 0., 3.),
+                    (0.5, 0.37, 0.2, 2.),
+                    (1., 0., 0., 3.),
+                    (1., 0.51, 0.7, 2.9),
+                    (1.5, 0., 1.234, 2.),
+                    (1.5, 0.2, 0., 2.5),
+                    (2., 0.1, 0., 3.),
+                    (2., 0., 0.5, 2.),
+                ]
+                .map(|case| (seq, case))
+            }) {
                 let b = src_in + len * speed;
                 let c = Clip {
                     start,
-                    end: start + (b - src_in) / speed,
+                    end: read(start + (b - src_in) / speed),
                     src_in,
                     speed,
                     ..clip("video", "")
@@ -768,36 +829,57 @@ mod tests {
                 let next = Clip {
                     start: c.end,
                     end: c.end + 1.,
+                    z: 1,
                     ..clip("video", "")
                 };
                 for k in (start * 30.).ceil() as usize + 1..(c.end * 30.) as usize {
-                    let (m, n) = seam(&c, k as f64 / 30., 30., rate, 0.);
-                    let b = if m == n { b } else { ns(b - ns(m) + ns(n)) };
-                    let (p, q) = ((ns(m) - src_in) / speed, (b - ns(n)) / speed);
+                    let Some((m, s, by, end)) = seam(&c, k as f64 / 30., 30., rate, 0., seq) else {
+                        no += 1;
+                        continue;
+                    };
+                    let x = if seq {
+                        start + by
+                    } else {
+                        format!("{:.9}", start + by).parse().unwrap()
+                    };
                     let one = Clip {
-                        end: start + p,
+                        end: read(start + (m - src_in) / speed),
                         ..c.clone()
                     };
                     let two = Clip {
-                        start: one.end,
-                        end: start + (p + q),
-                        src_in: ns(n),
+                        start: read(x),
+                        end: read(x + (end - s) / speed),
+                        src_in: s,
                         ..c.clone()
                     };
                     let after = Clip {
-                        start: two.end,
-                        end: two.end + 1.,
+                        start: if seq { two.end } else { c.end },
+                        end: next.end,
                         ..next.clone()
                     };
-                    let (was, now) = ([c.clone(), next.clone()], [one, two, after]);
+                    let (was, now) = ([next.clone(), c.clone()], [after, one, two]);
                     let same = |j: usize| shown(&now, j as f64 / 30.) == shown(&was, j as f64 / 30.);
                     assert!(same(k), "{rate:?} {speed} {k}");
-                    bad += (0..(next.end * 30.) as usize).filter(|j| !same(*j)).count();
+                    bad += (0..(next.end * 30.) as usize + 2).filter(|j| !same(*j)).count();
+                    let alone = |j: &usize| live(&now[1], *j as f64 / 30.) && !live(&now[2], *j as f64 / 30.);
+                    let lead = (src_in * rate.0 / rate.1 - 1e-6).ceil() as i64;
+                    let cut = |j: usize| {
+                        (index(&now[1], j as f64 / 30., 30., rate, 0.) - lead) as f64 * rate.1 / rate.0 + 0.6 / rate.2 > m - src_in
+                    };
+                    held += (0..(next.end * 30.) as usize).filter(alone).filter(|j| cut(*j)).count();
+                    let written = [m, s, end, if seq { 0. } else { by }];
+                    more += written.iter().any(|v| ((v * 1e3).round() / 1e3 - v).abs() > 1e-9) as usize;
                 }
             }
             changed.push(bad);
+            longer.push(more);
+            refused.push(no);
+            early.push(held);
         }
-        assert_eq!(changed, [0, 0, 0, 18, 721]);
+        assert_eq!(
+            (changed, longer, refused, early),
+            (vec![0; 5], vec![0, 0, 0, 1, 0], vec![0, 0, 4, 0, 4], vec![0; 5])
+        );
     }
 
     // While scrubbing, a sidecar that cannot be read, or that ends before the full file does, should

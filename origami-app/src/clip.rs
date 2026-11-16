@@ -58,21 +58,14 @@ fn at(s: &str) -> Option<f64> {
     secs(s[a..close(s.as_bytes(), a - 1)?].trim().trim_matches(['"', '\'']))
 }
 
+fn places(v: f64) -> usize {
+    (3..9)
+        .find(|d| ((v * 10f64.powi(*d)).round() / 10f64.powi(*d) - v).abs() < 1e-9)
+        .unwrap_or(9) as usize
+}
+
 fn exact(v: f64) -> String {
-    let k = (v * 1000.).round() / 1000.;
-    if (k - v).abs() < 1e-9 {
-        format!("{k:.3}")
-    } else {
-        format!("{v:.9}")
-    }
-}
-
-fn up(v: f64) -> f64 {
-    (v * 1e9 + 0.5).ceil() / 1e9
-}
-
-fn after(v: f64) -> String {
-    format!("{:.9}", up(v))
+    format!("{:.*}", places(v), v)
 }
 
 fn plain(line: &str) -> &str {
@@ -133,18 +126,16 @@ impl Origami {
         alone
     }
 
-    fn cuts(&self, c: &Clip) -> Option<(f64, f64, f64, f64)> {
-        let (a, b, m) = (
-            c.src_in,
-            c.src_in + (c.end - c.start) * c.speed,
-            c.src_in + (self.t - c.start) * c.speed,
-        );
-        let (m, n) = match c.kind {
-            Kind::Video => Preview::seam(c, self.t, self.tl.fps),
-            _ => (m, m),
-        };
-        let inside = c.start < self.t && self.t < c.end && matches!(c.kind, Kind::Video | Kind::Sound);
-        (inside && n - a >= 0.04 && b - m >= 0.04).then_some((a, m, n, b))
+    fn cuts(&self, c: &Clip, seq: bool) -> Option<(f64, f64, f64, f64)> {
+        let (a, b) = (c.src_in, c.src_in + (c.end - c.start) * c.speed);
+        let m = ((a + (self.t - c.start) * c.speed) * 1e3).round() / 1e3;
+        let inside = c.start < self.t && self.t < c.end;
+        match c.kind {
+            Kind::Video if inside => Preview::seam(c, self.t, self.tl.fps, seq),
+            Kind::Sound if inside => Some((m, m, ((m - a) / c.speed * 1e3).round() / 1e3, b)),
+            _ => None,
+        }
+        .filter(|(m, s, _, end)| m - a >= 0.04 && end - s >= 0.04)
     }
 
     fn echo(&mut self, c: &Clip, rows: Range<usize>, by: f64, cut: Option<(f64, f64, f64, f64)>, verb: &str) {
@@ -164,24 +155,20 @@ impl Origami {
                 c.label
             );
         };
-        let dyadic = |v: &f64| (v * 1024.).fract() == 0.;
-        let fine = cut.is_none_or(|(a, m, s, _)| [a, m, s, c.start].iter().all(dyadic) && c.speed.log2().fract() == 0.);
         self.change(|this| {
-            if let Some((a, m, s, b)) = cut {
-                let put = |v: f64| if fine { format!("{v:.3}") } else { after(v) };
-                let b = if m == s { exact(b) } else { after(b - up(m) + up(s)) };
-                set(&mut next, n, "trim", |_| format!("{}, {b}", put(s)));
-                set(&mut this.lines, c.line, "trim", |_| format!("{}, {}", exact(a), put(m)));
+            if let Some((m, s, _, end)) = cut {
+                let open = places(end) > 3 && (end - c.total).abs() < 1e-9;
+                let tail = if open { exact(s) } else { format!("{}, {}", exact(s), exact(end)) };
+                set(&mut next, n, "trim", |_| tail.clone());
+                set(&mut this.lines, c.line, "trim", |_| format!("{}, {}", exact(c.src_in), exact(m)));
             }
             if !(cat && c.video && timed.is_none()) {
-                let at = old + by;
-                set(&mut next, n, "at", |_| {
-                    if fine {
-                        ((at * 1000.).round() / 1000.).to_string()
-                    } else {
-                        after(at)
-                    }
-                });
+                let at = if cut.is_some() {
+                    old + by
+                } else {
+                    ((old + by) * 1e3).round() / 1e3
+                };
+                set(&mut next, n, "at", |_| exact(at).trim_end_matches('0').trim_end_matches('.').into());
             }
             let last = &mut this.lines[rows.end - 1];
             if !last.trim_end().ends_with(',') {
@@ -193,11 +180,13 @@ impl Origami {
 
     pub fn split(&mut self) {
         let Some((c, rows, _)) = self.usage("split") else { return };
-        let held = link(&self.lines[rows.clone()], rows.len() as u32, "for").is_some();
-        let Some(cut) = self.cuts(&c).filter(|_| !held) else {
+        let (item, n) = (&self.lines[rows.clone()], rows.len() as u32);
+        let seq = c.video && link(item, n, "at").is_none() && nest(&self.lines[..rows.start].join("\n")) == Some(true);
+        let held = link(item, n, "for").is_some();
+        let Some(cut) = self.cuts(&c, seq).filter(|_| !held) else {
             return self.note = "put the playhead inside a video or sound clip to split it".into();
         };
-        self.echo(&c, rows, (cut.1 - cut.0) / c.speed, Some(cut), "split");
+        self.echo(&c, rows, cut.2, Some(cut), "split");
     }
 
     pub fn twin(&mut self) {
@@ -243,7 +232,7 @@ impl Origami {
             self.tool(line, cx, move |t, _, cx| f(t, cx))
         };
         let items = vec![
-            row("Split at playhead", "S", cx, |t, _| t.split()).when(self.cuts(c).is_none(), |d| d.text_color(rgb(DIM))),
+            row("Split at playhead", "S", cx, |t, _| t.split()).when(self.cuts(c, true).is_none(), |d| d.text_color(rgb(DIM))),
             row("Cut", "\u{2318}X", cx, |t, cx| t.copy(true, cx)),
             row("Copy", "\u{2318}C", cx, |t, cx| t.copy(false, cx)),
             row("Paste at playhead", "\u{2318}V", cx, |t, _| t.lay()),
@@ -323,8 +312,8 @@ mod tests {
 
     // Timeline commands (split, duplicate, copy, cut, paste, delete) should rewrite the script the way
     // you would by hand and leave the clips at the right times; a split cuts where the frame on screen
-    // starts, a nanosecond late when that time has no short exact form, so no frame is lost. When a
-    // clip cannot be changed safely, the script is left alone and a note says why.
+    // starts, with times to the millisecond unless a frame needs more decimals, so no frame is lost.
+    // When a clip cannot be changed safely, the script is left alone and a note says why.
     #[gpui::test]
     fn shapes(cx: &mut TestAppContext) {
         let (view, cx) = open(cx, "shapes");
@@ -402,10 +391,9 @@ mod tests {
         );
         assert_eq!(got.1, [(0., 3.), (3., 10.), (11., 16.), (11.5, 17.5)]);
         let got = run(cx, NEST, &[("split", 1, 13.)]);
-        let want =
-            "    v.speed(2).shift(1).trim(0.000, 3.966666668),\n    v.speed(2).shift(1).trim(3.966666668, 10.000).at(1.983333334),\n";
+        let want = "    v.speed(2).shift(1).trim(0.000, 3.967),\n    v.speed(2).shift(1).trim(3.966, 9.998).at(1.984),\n";
         assert!(got.0.contains(want), "{}", got.0);
-        assert_eq!(got.1, [(0., 10.), (11., 12.983), (12.983, 16.), (11.5, 17.5)]);
+        assert_eq!(got.1, [(0., 10.), (11., 12.984), (12.984, 16.), (11.5, 17.5)]);
         let got = run(cx, NEST, &[("split", 2, 14.5)]);
         let want = "    a.trim(0.000, 3.000).at(\"0:01\").shift(0.5),\n    a.trim(3.000, 6.000).at(4).shift(0.5)\n  )";
         assert!(got.0.contains(want), "{}", got.0);
@@ -425,9 +413,9 @@ mod tests {
         assert_eq!(got.1, [(2., 3.), (3., 6.), (4., 6.)]);
 
         let got = run(cx, "cat(\n  v.trim(0, 3),\n  v.trim(5, 6),\n)", &[("split", 0, 38. / 30.)]);
-        let want = "  v.trim(0.000, 1.266666668),\n  v.trim(1.266666668, 3.000),\n  v.trim(5, 6),";
+        let want = "  v.trim(0.000, 1.266),\n  v.trim(1.266, 3.000),\n  v.trim(5, 6),";
         assert!(got.0.contains(want), "{}", got.0);
-        assert_eq!(got.1, [(0., 1.267), (1.267, 3.), (3., 4.)]);
+        assert_eq!(got.1, [(0., 1.266), (1.266, 3.), (3., 4.)]);
         let bare = "cat(\n  v.trim(0, 2),\n  v\n)";
         let got = run(cx, bare, &[("split", 1, 6.)]);
         assert_eq!(
