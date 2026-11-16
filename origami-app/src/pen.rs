@@ -12,8 +12,7 @@ fn typed(lines: &mut Vec<String>, t: f64, (x, y): (f64, f64)) -> (usize, usize) 
     let at = (t * 100.).round() / 100.;
     let item = format!("text(\"{WORD}\").at({at}).for(3).pos({}, {})", rest(x, 0., 0.), rest(y, 0., 0.));
     let row = placed(lines, 0, &item, &["stack("]);
-    let from = lines[row].rfind(&item).unwrap_or(0);
-    (row, lines[row][..from].chars().count() + 6)
+    (row, lines[row].rfind(&item).unwrap_or(0))
 }
 
 impl Origami {
@@ -24,17 +23,17 @@ impl Origami {
         }
     }
 
-    pub fn print(&mut self, at: Point<Pixels>) {
+    pub fn print(&mut self, at: Point<Pixels>, cx: &mut Context<Self>) {
         let sheet = self.sheet();
         if !sheet.contains(&at) {
             return self.note = "click inside the picture to place the text".into();
         }
-        let (mut row, mut col) = (0, 0);
-        self.change(|this| (row, col) = typed(&mut this.lines, this.t, share(sheet, at)));
-        (self.pen, self.sel) = (false, Some(self.tl.clips.len() as u32));
-        (self.anchor, self.cursor) = (Some((row, col)), Some((row, col + WORD.len())));
+        let (mut row, mut from) = (0, 0);
+        self.change(|this| (row, from) = typed(&mut this.lines, this.t, share(sheet, at)));
+        self.pen = false;
         self.reveal(row);
-        self.note = "added text \u{b7} type the words, cmd+S applies them \u{b7} cmd+Z removes it".into();
+        self.spell(self.tl.clips.len() as u32, (row, from), WORD, true);
+        self.sketch(cx);
     }
 
     pub fn typer(&self, cx: &mut Context<Self>) -> Div {
@@ -53,15 +52,14 @@ mod tests {
 
     // Text placed with the type tool should be written as one new line at the playhead and at the
     // clicked spot, rounded to three decimals: inside the script's stack when it ends in one, and
-    // otherwise by wrapping the last clip or cat in a stack. The words are reported by where they
-    // start, counted in characters.
+    // otherwise by wrapping the last clip or cat in a stack. The new call is reported by where it
+    // starts on its line.
     #[test]
     fn lands() {
         let on = |src: &str, t: f64, at: (f64, f64)| {
             let mut lines: Vec<String> = src.lines().map(String::from).collect();
-            let (row, col) = typed(&mut lines, t, at);
-            let word: String = lines[row].chars().skip(col - 1).take(6).collect();
-            assert_eq!(word, "\"text\"");
+            let (row, from) = typed(&mut lines, t, at);
+            assert!(lines[row][from..].starts_with("text(\"text\")"));
             lines.join("\n")
         };
         assert_eq!(
@@ -85,9 +83,10 @@ mod tests {
 
     // The T button sits beside the speed button. Clicking it or pressing t arms the type tool, and
     // clicking it again or pressing escape disarms it. While it is armed, a click in the picture adds
-    // a text clip there at the playhead, selects it and selects its placeholder word in the script so
-    // typing replaces it; one undo removes the clip. A click beside the picture adds nothing. It works
-    // the same in keyboard mode, and does nothing on the launch screen.
+    // a text clip there at the playhead and starts typing its words on the picture, replacing the
+    // placeholder: enter saves them and one undo then removes the whole clip, escape removes the
+    // clip again. A click beside the picture adds nothing. It works the same in keyboard mode, and
+    // does nothing on the launch screen.
     #[gpui::test]
     fn types(cx: &mut TestAppContext) {
         let path = env::temp_dir().join("origami-pen-test.js");
@@ -141,17 +140,32 @@ mod tests {
             assert_eq!(spot(cx, 0.5, -0.01), (src.to_string(), true, 0));
             assert_eq!(spot(cx, 0.25, 0.75), (want.clone(), false, 1));
             assert_eq!(fs::read_to_string(&path).unwrap(), format!("{want}\n"));
-            assert_eq!(
-                view.update(cx, |o, _| (o.sel, o.chosen(), o.picked())),
-                (Some(1), Some(((2, 8), (2, 12))), "text".into())
-            );
+            cx.run_until_parked();
+            assert_eq!(view.update(cx, |o, _| (o.sel, o.cursor, o.tl.clips.len())), (Some(1), None, 2));
             cx.simulate_keystrokes("h i");
+            cx.run_until_parked();
             assert_eq!(
-                view.update(cx, |o, _| o.lines[2].clone()),
-                "  text(\"hi\").at(1.5).for(3).pos(0.25, 0.75),"
+                view.update(cx, |o, _| (o.lines.join("\n"), o.tl.clips[1].src.clone())),
+                (want.clone(), "hi".into())
             );
-            cx.simulate_keystrokes("cmd-z cmd-z cmd-z escape");
+            cx.simulate_keystrokes("enter");
+            assert_eq!(
+                view.update(cx, |o, _| (o.lines[2].clone(), o.past.len())),
+                ("  text(\"hi\").at(1.5).for(3).pos(0.25, 0.75),".into(), 1)
+            );
+            cx.simulate_keystrokes("cmd-z");
             assert_eq!(view.update(cx, |o, _| (o.lines.clone(), o.past.len())), (lines.clone(), 0));
+            view.update(cx, |o, _| {
+                o.tl = Arc::new(origami_lang::eval(&o.script, false, origami_engine::footprint).unwrap())
+            });
+            cx.simulate_keystrokes("t");
+            assert_eq!(spot(cx, 0.25, 0.75), (want.clone(), false, 1));
+            cx.simulate_keystrokes("x escape");
+            assert_eq!(
+                view.update(cx, |o, _| (o.lines.clone(), o.past.len(), o.sel, o.tl.clips.len())),
+                (lines.clone(), 0, None, 1)
+            );
+            assert_eq!(fs::read_to_string(&path).unwrap(), format!("{src}\n"));
         }
 
         let (view, cx) = cx.add_window_view(|window, cx| {

@@ -51,6 +51,10 @@ impl Origami {
         if key.modifiers.control && !save || self.script.as_os_str().is_empty() {
             return cx.propagate();
         }
+        if self.words.is_some() {
+            self.strike(key, cx);
+            return cx.notify();
+        }
         let k = match key.key.as_str() {
             k @ ("enter" | "escape" | "backspace" | "delete" | "space" | "tab") => k.to_string(),
             k => key.key_char.clone().unwrap_or(k.to_string()),

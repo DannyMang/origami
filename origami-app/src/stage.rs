@@ -101,11 +101,22 @@ impl Origami {
         (seat(c, size, (tw, th), i), (tw * q, th * q), c.rotate.at(i))
     }
 
+    pub fn turned(&self, c: &Clip) -> impl Fn((f64, f64)) -> (f64, f64) + use<> {
+        let ((w, h), ((cx, cy), _, deg)) = ((self.tl.size.0 as f64, self.tl.size.1 as f64), self.quad(c));
+        let (sin, cos) = deg.to_radians().sin_cos();
+        move |(x, y)| ((cx + x * cos - y * sin) / w, (cy + x * sin + y * cos) / h)
+    }
+
+    pub fn hit(&self, at: Point<Pixels>) -> Option<Clip> {
+        let (x, y) = share(self.sheet(), at);
+        let at = (x * self.tl.size.0 as f64, y * self.tl.size.1 as f64);
+        let hit = |c: &&&Clip| loose(c) && inside(self.quad(c), at);
+        self.under().iter().rev().find(hit).map(|c| (*c).clone())
+    }
+
     pub fn clasp(&mut self, at: Point<Pixels>) -> bool {
         let (sheet, (w, h)) = (self.sheet(), (self.tl.size.0 as f64, self.tl.size.1 as f64));
-        let (x, y) = share(sheet, at);
-        let hit = |c: &&&Clip| loose(c) && inside(self.quad(c), (x * w, y * h));
-        let Some(c) = self.under().iter().rev().find(hit).map(|c| (*c).clone()) else {
+        let Some(c) = self.hit(at) else {
             return false;
         };
         if self.sel != Some(c.z) {
@@ -121,12 +132,8 @@ impl Origami {
     pub fn marks(&self) -> Option<Marks> {
         let c = self.opened().filter(|c| loose(c) && c.start <= self.t && self.t < c.end)?;
         let ((w, h), (len, fps)) = ((self.tl.size.0 as f64, self.tl.size.1 as f64), (c.end - c.start, self.fps()));
-        let ((tw, th, ..), ((cx, cy), (bw, bh), deg)) = (place(c, (w, h), 1.), self.quad(c));
-        let (sin, cos) = deg.to_radians().sin_cos();
-        let corner = |(x, y): (f64, f64)| {
-            let (x, y) = (x * bw / 2., y * bh / 2.);
-            ((cx + x * cos - y * sin) / w, (cy + x * sin + y * cos) / h)
-        };
+        let ((tw, th, ..), (_, (bw, bh), _), turn) = (place(c, (w, h), 1.), self.quad(c), self.turned(c));
+        let corner = |(x, y): (f64, f64)| turn((x * bw / 2., y * bh / 2.));
         let at = |i: usize| {
             let (x, y) = seat(c, (w, h), (tw, th), i);
             (x / w, y / h)

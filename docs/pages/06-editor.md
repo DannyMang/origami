@@ -39,7 +39,11 @@ clip.temperature(-10)
 
 ## Type tool
 
-Click the T beside the speed button, or press `t`, then click anywhere in the picture: Origami adds `text("text").at(<playhead>).for(3).pos(x, y)` to your script with its top-left corner at the spot you clicked, and selects the placeholder so you can type the words straight away (cmd+s applies them). Esc or a second click on T cancels, cmd+z removes the new text, and the size slider, colour wheel and dragging in the preview edit it afterwards.
+Click the T beside the speed button, or press `t`, then click anywhere in the picture: Origami adds `text("text").at(<playhead>).for(3).pos(x, y)` to your script with its top-left corner at the spot you clicked, and you type the words right there. Enter saves them, Esc removes the new text, and the size slider, colour wheel and dragging in the preview edit it afterwards.
+
+## Edit text on the picture
+
+Double-click any text or caption in the preview to change its words right on the picture; press Enter (or click elsewhere) to save them into the script, Esc to cancel, and Shift+Enter for a new line. This works when the words are written as a quoted string in the `text("...")` call; for words that come from a variable, a template or a captions file, edit the script instead.
 
 ## Problems
 

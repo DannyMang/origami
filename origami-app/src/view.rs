@@ -5,6 +5,7 @@ use crate::{
     menu::place,
     release::VERSION,
     stage::{draw, letterbox},
+    words::mark,
 };
 use gpui::{
     App, Bounds, ClipboardItem, Context, Div, FontWeight, HighlightStyle, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
@@ -877,6 +878,7 @@ impl Origami {
             Mode::Command(s) => format!(":{s}"),
             Mode::Search(s) => format!("/{s}"),
             Mode::Visual(_) => "-- VISUAL --".into(),
+            Mode::Normal if self.words.is_some() => "-- TEXT --".into(),
             Mode::Normal if self.cursor.is_some() => "-- EDIT --".into(),
             Mode::Normal if self.mouse => "-- MOUSE --".into(),
             Mode::Normal => "-- NORMAL --".into(),
@@ -1067,7 +1069,7 @@ impl Render for Origami {
         );
         let h = f32::from(window.viewport_size().height);
         let rows = ((h - self.head() - 28.) / self.row()).ceil().max(0.) as usize;
-        let (me, image, marks) = (cx.weak_entity(), self.image.clone(), self.marks());
+        let (me, image, marks, caret) = (cx.weak_entity(), self.image.clone(), self.marks(), self.caret());
         let (pad, size) = (if self.full { 0. } else { 12. }, (tl.size.0 as usize, tl.size.1 as usize));
         let seen = move |b: Bounds<Pixels>, window: &mut Window, cx: &mut App| {
             let _ = me.update(cx, |this, _| (this.stage, this.dense) = (b, window.scale_factor()));
@@ -1080,6 +1082,9 @@ impl Render for Origami {
             if let Some(marks) = &marks {
                 draw(marks, sheet, window);
             }
+            if let Some((bar, all)) = caret {
+                mark(bar, all, sheet, window);
+            }
         };
         let stage = div()
             .relative()
@@ -1089,8 +1094,8 @@ impl Render for Origami {
                 MouseButton::Left,
                 cx.listener(|this, e: &MouseDownEvent, _, cx| {
                     if this.pen && !this.full {
-                        this.print(e.position);
-                    } else if this.mouse && !this.clasp(e.position) {
+                        this.print(e.position, cx);
+                    } else if !(e.click_count == 2 && !this.full && this.retype(e.position)) && this.mouse && !this.clasp(e.position) {
                         this.toggle();
                     }
                     cx.notify();
@@ -1120,6 +1125,7 @@ impl Render for Origami {
                 this.offers.1.clear();
                 this.shut = mem::take(&mut this.menu);
                 this.note.clear();
+                this.seal(false);
                 cx.notify();
             }))
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, window, cx| {

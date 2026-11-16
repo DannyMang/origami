@@ -7,6 +7,7 @@ What changed in each version of Origami. The launch screen shows the version you
 ### Nov 15
 
 - **Type tool.** Click T beside the speed (or press `t`), then click the preview to add text at that spot and at the playhead.
+- **Edit text on the picture.** Double-click a text in the preview to retype it there: Enter saves, Esc cancels, Shift+Enter starts a new line. The T tool now types straight onto the picture.
 - **Menu bar.** Origami, File, Edit, View, Window and Help menus, with every existing shortcut on its item. New: ⌘N new file, ⌘O open, ⇧⌘E export, ⌘W close, ⌘M minimize, ⌘H hide.
 - **Open….** A button on the launch screen and ⌘O open any script, and double-clicking a `.js` file in Finder (or Open With › Origami) opens it. Opening another script or quitting asks before losing unsaved changes, and quitting asks before stopping a running export.
 - The launch screen shows the app's version and tells you when a newer one is available.

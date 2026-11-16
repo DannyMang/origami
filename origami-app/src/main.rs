@@ -21,6 +21,7 @@ mod tune;
 mod view;
 mod voice;
 mod web;
+mod words;
 
 use gpui::{
     App, AppContext, Application, Bounds, Context, FocusHandle, Pixels, Point, RenderImage, TitlebarOptions, Window, WindowBounds,
@@ -151,6 +152,7 @@ struct Origami {
     export: Option<Arc<Mutex<(String, bool)>>>,
     take: Option<voice::Take>,
     pen: bool,
+    words: Option<words::Words>,
     mic: Option<String>,
     mics: Vec<String>,
     stir: Instant,
@@ -254,6 +256,7 @@ impl Origami {
                         let sel = this.sel;
                         this.seek(this.t);
                         this.sel = sel;
+                        this.redraft(cx);
                         this.refresh(cx);
                     }
                     Err(e) => {
@@ -526,6 +529,7 @@ fn fresh(focus: FocusHandle, recent: Vec<PathBuf>) -> Origami {
         export: None,
         take: None,
         pen: false,
+        words: None,
         mic: None,
         mics: vec![],
         stir: Instant::now(),
