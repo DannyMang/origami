@@ -211,15 +211,35 @@ fn cube(dir: &Path, name: &str) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-fn face(dir: &Path, name: &str) -> Option<PathBuf> {
-    if name.contains('/') || Path::new(name).extension().is_some() {
-        return find(dir, name);
-    }
+const FACES: [&str; 3] = ["ttf", "otf", "ttc"];
+
+fn bare(name: &str) -> bool {
+    !name.contains('/') && Path::new(name).extension().is_none()
+}
+
+fn installed() -> impl Iterator<Item = PathBuf> {
     let home = PathBuf::from(std::env::var("HOME").unwrap_or_default()).join("Library/Fonts");
     let system = ["/System/Library/Fonts", "/System/Library/Fonts/Supplemental", "/Library/Fonts"].map(PathBuf::from);
-    let places = [dir.to_path_buf(), dir.join("fonts"), home].into_iter().chain(system);
-    let files = places.flat_map(|p| ["ttf", "otf", "ttc"].map(|e| p.join(format!("{name}.{e}"))));
+    [home].into_iter().chain(system)
+}
+
+fn face(dir: &Path, name: &str) -> Option<PathBuf> {
+    if !bare(name) {
+        return find(dir, name);
+    }
+    let places = [dir.to_path_buf(), dir.join("fonts")].into_iter().chain(installed());
+    let files = places.flat_map(|p| FACES.map(|e| p.join(format!("{name}.{e}"))));
     files.into_iter().find(|p| p.is_file())
+}
+
+pub fn fonts() -> Vec<String> {
+    let files = installed().flat_map(|p| fs::read_dir(p).into_iter().flatten().flatten().map(|e| e.path()));
+    let typed = files.filter(|p| p.extension().is_some_and(|e| FACES.iter().any(|f| e == *f)));
+    let stems = typed.filter_map(|p| Some(p.file_stem()?.to_str()?.to_string()));
+    let mut out: Vec<String> = stems.filter(|n| bare(n) && !n.starts_with('.')).collect();
+    out.sort_by_key(|n| (n.to_lowercase(), n.clone()));
+    out.dedup();
+    out
 }
 
 fn stat(path: &Path) -> Result<(u64, u64)> {
@@ -1124,5 +1144,14 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
             tl.note,
             "line 1: size [641, 360] is rounded to [642, 360], video files need even numbers"
         );
+    }
+
+    // Every installed font the app lists by name should be one a script can ask for by that name, and
+    // the list holds each name once.
+    #[test]
+    fn listed_fonts_resolve() {
+        let all = fonts();
+        assert!(all.contains(&"Menlo".to_string()) && all.iter().all(|n| face(Path::new("/nowhere"), n).is_some()));
+        assert!(all.windows(2).all(|w| w[0] != w[1]));
     }
 }

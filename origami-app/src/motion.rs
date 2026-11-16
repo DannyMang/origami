@@ -1,6 +1,7 @@
 use crate::{
     Origami,
     knob::close,
+    scene::stem,
     stage::{drag, rest},
 };
 use gpui::{Pixels, Point};
@@ -499,6 +500,18 @@ pub fn amend(s: &str, from: usize, kind: Kind, name: &str, f: impl FnOnce(&str) 
     Some(format!("{}{}{new}{}{}", &s[..slot.a], slot.pre, slot.post, &s[slot.b..]))
 }
 
+fn omit(s: &str, from: usize, kind: Kind, name: &str) -> Option<String> {
+    let (slot, _) = read(s, from, kind, name)?;
+    let key = s[..slot.a].rfind(name).filter(|_| slot.pre.is_empty())?;
+    let key = key - s[..key].ends_with(['"', '\'']) as usize;
+    let (head, rest) = (s[..key].trim_end(), s[slot.b..].trim_start());
+    Some(match (rest.strip_prefix(','), head.strip_suffix('{')) {
+        (Some(rest), _) => format!("{}{}", &s[..key], rest.trim_start()),
+        (None, Some(lead)) => format!("{}{}", lead.trim_end().strip_suffix(',')?, rest.strip_prefix('}')?),
+        _ => format!("{}{}", head.strip_suffix(',')?, &s[slot.b..]),
+    })
+}
+
 impl Origami {
     pub fn offset(&self, c: &Clip) -> Option<usize> {
         let row = (c.home as usize).checked_sub(1).filter(|r| *r < self.lines.len())?;
@@ -746,9 +759,31 @@ impl Origami {
         }
     }
 
-    pub fn face(&mut self, name: &str) {
-        if let Some(c) = self.opened().cloned().filter(|c| self.option(c, "font").is_some()) {
-            self.change(|this| this.amend(&c, "font", |_| format!("\"{name}\"")));
+    fn site(&self, row: usize) -> (String, usize) {
+        (self.lines.join("\n"), self.lines[..row].iter().map(|l| l.len() + 1).sum())
+    }
+
+    pub fn fonting(&mut self, row: usize) {
+        let (text, from) = self.site(row);
+        if self.shut == "font" {
+            return;
+        }
+        if read(&text, from, Kind::Text, "font").is_none() {
+            return self.note = format!("line {} cannot be rewritten safely, edit the script to change its font", row + 1);
+        }
+        self.sift.0.clear();
+        let at = self.shelf().iter().position(|n| stem(n) == self.faced(row)).unwrap_or(0);
+        (self.menu, self.sift.1) = ("font", at.saturating_sub(3) as f32);
+    }
+
+    pub fn face(&mut self, row: usize, name: &str) {
+        let (text, from) = self.site(row);
+        let new = match name {
+            "" => omit(&text, from, Kind::Text, "font"),
+            _ => amend(&text, from, Kind::Text, "font", |_| format!("\"{name}\"")),
+        };
+        if let Some(new) = new {
+            self.change(|this| this.put(&new));
         }
     }
 
@@ -993,6 +1028,28 @@ stack(shot, title.shift(1), tag, note, text(\"inline\").for(2))";
             "  background: \"#0008\", font: \"Menlo\""
         );
         assert_eq!(row(&set(wide, 0, "y", "0.5"), 5), "  .pos(0.1, 0.5)");
+    }
+
+    // Picking the default font should take the font out of a text's options and leave the rest as
+    // written, dropping the braces when nothing else is in them.
+    #[test]
+    fn removes_a_font() {
+        let cut = |src: &str| omit(src, 0, Kind::Text, "font");
+        let one = "let a = text(\"a\", { font: face }).for(2)";
+        assert_eq!(cut(one).as_deref(), Some("let a = text(\"a\").for(2)"));
+        assert_eq!(
+            cut("text(\"a\", { font: \"Menlo\", size: 9 })").as_deref(),
+            Some("text(\"a\", { size: 9 })")
+        );
+        assert_eq!(
+            cut("text(\"a\", { size: 9, 'font': \"Menlo\" })").as_deref(),
+            Some("text(\"a\", { size: 9 })")
+        );
+        let wide = "caption(\"a\", {\n  font: \"Menlo\",\n  size: 9\n})";
+        assert_eq!(cut(wide).as_deref(), Some("caption(\"a\", {\n  size: 9\n})"));
+        let last = "caption(\"a\", {\n  size: 9,\n  font: \"Menlo\"\n})";
+        assert_eq!(cut(last).as_deref(), Some("caption(\"a\", {\n  size: 9\n})"));
+        assert!(cut("text(\"a\")").is_none() && cut("text(\"a\", { size: 9 })").is_none() && cut("text(\"a\", look)").is_none());
     }
 
     // Changing a rectangle's or line's width, height, radius or colour should update its numbers and

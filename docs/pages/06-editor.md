@@ -45,6 +45,10 @@ Click the T beside the speed button, or press `t`, then click anywhere in the pi
 
 Double-click any text or caption in the preview to change its words right on the picture; press Enter (or click elsewhere) to save them into the script, Esc to cancel, and Shift+Enter for a new line. This works when the words are written as a quoted string in the `text("...")` call; for words that come from a variable, a template or a captions file, edit the script instead.
 
+## Fonts
+
+Click a `text(` or `caption(` call in the code, or open the clip in the Motion tab, and use the font row to choose from the font files beside your script and every font installed on this Mac; type to narrow the list, click or press Enter to apply, Esc to close. Picking writes `font: "Name"` into that call's options (adding the options if there are none, and replacing a variable in that call only), and "default" removes it.
+
 ## Problems
 
 A value that cannot work gets a red squiggle. Hover it to read why.

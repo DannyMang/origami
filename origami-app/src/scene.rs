@@ -5,8 +5,8 @@ use crate::{
     view::{BAR, BG, BLUE, BORDER, DIM, MUTED, ORANGE, PANEL, RULER, TEXT, tint},
 };
 use gpui::{
-    App, Bounds, Context, Div, MouseButton, MouseDownEvent, PathBuilder, Pixels, Point, Window, canvas, deferred, div, fill, point,
-    prelude::*, px, relative, rgb, rgba, size,
+    App, Bounds, Context, Div, MouseButton, MouseDownEvent, PathBuilder, Pixels, Point, ScrollWheelEvent, Window, canvas, deferred, div,
+    fill, point, prelude::*, px, relative, rgb, rgba, size,
 };
 use origami_engine::tone;
 use origami_lang::{Clip, Kind};
@@ -19,7 +19,7 @@ const NAMES: f32 = LEAD - 12.;
 const LAYER: f32 = 20.;
 const ATTR: f32 = 19.;
 const ZOOM: f32 = 72.;
-const FACES: usize = 10;
+const FACES: usize = 12;
 
 pub fn tick(per: f64, gap: f64) -> (f64, i64) {
     let (want, unit) = (per * gap, 10f64.powf((per * gap).log10().floor()));
@@ -70,7 +70,7 @@ fn slider(part: f32, wide: f32, ink: u32) -> Div {
     div().relative().w(px(wide)).h(px(12.)).flex_none().child(line).child(knob)
 }
 
-fn field(text: String) -> Div {
+pub fn field(text: String) -> Div {
     div()
         .h(px(15.))
         .px(px(6.))
@@ -83,7 +83,7 @@ fn field(text: String) -> Div {
         .child(text)
 }
 
-fn stem(path: &str) -> String {
+pub fn stem(path: &str) -> String {
     Path::new(path).file_stem().unwrap_or_default().to_string_lossy().to_string()
 }
 
@@ -400,21 +400,12 @@ impl Origami {
             out.push(swatch("color", cx));
         }
         if c.kind == Kind::Text {
-            let font = match self.option(c, "font") {
-                Some(name) => div().child(
-                    field(if name.is_empty() { "default".into() } else { stem(&name) })
-                        .w(px(120.))
-                        .justify_between()
-                        .overflow_hidden()
-                        .cursor_pointer()
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            Self::tap(cx, |this, _, _| this.menu = if this.shut == "font" { "" } else { "font" }),
-                        )
-                        .child(div().text_color(rgb(MUTED)).child("\u{25be}")),
-                ),
-                None => code(stem(&c.font)),
-            };
+            let row = (c.home as usize).saturating_sub(1);
+            let font = div().child(
+                self.typeface(row)
+                    .w(px(120.))
+                    .on_mouse_down(MouseButton::Left, Self::tap(cx, move |this, _, _| this.fonting(row))),
+            );
             out.push(swatch("color", cx));
             out.push(self.attr((z, "-"), "font", (false, false), font, gem(false, BORDER), cx));
             out.push(swatch("background", cx));
@@ -726,29 +717,106 @@ impl Origami {
         vec![head, body, foot, over]
     }
 
-    pub fn fonts(&self, window: &Window, cx: &mut Context<Self>) -> Option<Div> {
-        let c = self
-            .opened()
-            .filter(|c| self.menu == "font" && self.motion && c.kind == Kind::Text)?;
+    pub fn faced(&self, row: usize) -> String {
+        let made = |c: &&Clip| c.kind == Kind::Text && c.home as usize == row + 1;
+        self.tl.clips.iter().find(made).map_or(String::new(), |c| stem(&c.font))
+    }
+
+    pub fn typeface(&self, row: usize) -> Div {
+        let name = Some(self.faced(row)).filter(|n| !n.is_empty());
+        field(name.unwrap_or("default".into()))
+            .justify_between()
+            .overflow_hidden()
+            .cursor_pointer()
+            .child(div().text_color(rgb(MUTED)).child("\u{25be}"))
+    }
+
+    pub fn shelf(&self) -> Vec<String> {
+        let (all, want) = (self.script.parent().map_or(vec![], faces), self.sift.0.to_lowercase());
+        let fits = |n: &String| if n.is_empty() { "default" } else { n }.to_lowercase().contains(&want);
+        [String::new()].into_iter().chain(all).filter(fits).collect()
+    }
+
+    fn fount(&self, window: &Window) -> Option<(usize, f32, f32)> {
         let h = f32::from(window.viewport_size().height);
-        let y = self.floor(window) + top(&self.slots(), (c.z, "-")) + ATTR;
-        let (all, now) = (faces(self.script.parent()?), self.option(c, "font").unwrap_or_default());
-        let items = all.iter().take(FACES).map(|name| {
+        let tall = FACES as f32 * 20. + 52.;
+        let code = |(row, x, y): (usize, f32, f32)| (row, x, if y + 24. + tall > h - 28. { h - y } else { h - y - 24. - tall });
+        let motion = || {
+            let c = self.opened().filter(|c| self.motion && c.kind == Kind::Text)?;
+            let y = self.floor(window) + top(&self.slots(), (c.z, "-")) + ATTR;
+            Some(((c.home as usize).checked_sub(1)?, 128., h - y))
+        };
+        (self.menu == "font").then(|| self.roost(window).map(code).or_else(motion))?
+    }
+
+    pub fn narrow(&mut self, k: &str, held: bool, window: &Window) -> bool {
+        let Some((row, ..)) = self.fount(window) else { return false };
+        if held {
+            self.menu = "";
+            return false;
+        }
+        match k {
+            "escape" => self.menu = "",
+            "backspace" => drop(self.sift.0.pop()),
+            "space" => self.sift.0.push(' '),
+            "enter" => {
+                if let Some(name) = self.shelf().first().filter(|_| !self.sift.0.is_empty()).cloned() {
+                    self.face(row, &name);
+                }
+                self.menu = "";
+            }
+            k if k.chars().count() == 1 => self.sift.0.push_str(k),
+            _ => {}
+        }
+        self.sift.1 = 0.;
+        true
+    }
+
+    pub fn fonts(&self, window: &Window, cx: &mut Context<Self>) -> Option<Div> {
+        let (row, left, bottom) = self.fount(window)?;
+        let (all, now, want) = (self.shelf(), self.faced(row), &self.sift.0);
+        let first = (self.sift.1 as usize).min(all.len().saturating_sub(FACES));
+        let items = all.iter().skip(first).take(FACES).map(|name| {
             let pick = name.clone();
-            option(name.clone())
-                .when(*name == now, |d| d.bg(rgba(BLUE << 8 | 0x40)))
-                .on_mouse_down(MouseButton::Left, Self::tap(cx, move |this, _, _| this.face(&pick)))
+            option(if name.is_empty() { "default".into() } else { name.clone() })
+                .flex_none()
+                .whitespace_nowrap()
+                .overflow_hidden()
+                .when(stem(name) == now, |d| d.bg(rgba(BLUE << 8 | 0x40)))
+                .on_mouse_down(MouseButton::Left, Self::tap(cx, move |this, _, _| this.face(row, &pick)))
         });
         let items: Vec<Div> = items.collect();
-        let note = match all.len() {
-            0 => Some("no font files next to the script or in fonts/".to_string()),
-            n if n > FACES => Some(format!("{} more: type the name in the script", n - FACES)),
-            _ => None,
+        let find = match want.is_empty() {
+            true => field("type to filter".into()).text_color(rgb(DIM)),
+            false => field(format!("{want}\u{2502}")),
         };
+        let note = match all.len() {
+            0 => "no font matches \u{b7} backspace widens".to_string(),
+            n if n > FACES => format!("{}\u{2013}{} of {n} \u{b7} scroll for more", first + 1, first + FACES),
+            n => format!("{n} fonts"),
+        };
+        let roll = cx.listener(|this, e: &ScrollWheelEvent, _, cx| {
+            let last = this.shelf().len().saturating_sub(FACES) as f32;
+            this.sift.1 = (this.sift.1 - f32::from(e.delta.pixel_delta(px(20.)).y) / 20.).clamp(0., last);
+            cx.stop_propagation();
+            cx.notify();
+        });
         Some(
-            sheet(128., h - y)
-                .children(items)
-                .children(note.map(|n| div().px_2().text_size(px(11.)).text_color(rgb(DIM)).child(n))),
+            sheet(left, bottom)
+                .w(px(230.))
+                .on_scroll_wheel(roll)
+                .child(find.h(px(20.)).mb_1())
+                .child(div().h(px(FACES as f32 * 20.)).flex().flex_col().children(items))
+                .child(
+                    div()
+                        .h(px(18.))
+                        .px_2()
+                        .flex()
+                        .items_center()
+                        .text_size(px(11.))
+                        .text_color(rgb(DIM))
+                        .child(note),
+                ),
         )
     }
 
@@ -882,5 +950,109 @@ mod tests {
             (0., 100., 50.)
         );
         assert_eq!((sink(50., 100., 200.), sink(f32::MAX, 231., 170.)), (0., 61.));
+    }
+
+    // The font row in the click controls of a text call should open a list of this Mac's fonts that
+    // typing narrows. Picking one writes it into that call's options, adding them when there are none
+    // and replacing a variable only there; default removes it. Each pick is one undo and leaves the
+    // list open, escape changes nothing, and options the app cannot rewrite get a note instead of a list.
+    #[gpui::test]
+    fn picks_fonts(cx: &mut gpui::TestAppContext) {
+        use gpui::{Modifiers, VisualTestContext};
+        let dir = std::env::temp_dir().join("origami-font-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = "let face = \"Menlo\"
+let a = text(\"daniel\", { font: face, size: 24, background: \"#0008\" }).for(2)
+let b = text(\"text\").at(1).for(3).pos(0.5, 0.5)
+let look = { size: 20 }
+let c = caption(\"c\", look).for(1)
+stack(a, b, c)";
+        std::fs::write(dir.join("edit.js"), src).unwrap();
+        let tl = origami_lang::eval(&dir.join("edit.js"), false, origami_engine::footprint).unwrap();
+        let lines: Vec<String> = src.lines().map(String::from).collect();
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            (app.script, app.lines, app.tl) = (dir.join("edit.js"), lines.clone(), std::sync::Arc::new(tl));
+            window.focus(&app.focus);
+            app
+        });
+        let click = |cx: &mut VisualTestContext, x: f32, y: f32| {
+            cx.simulate_mouse_move(point(px(x), px(y)), None, Modifiers::default());
+            cx.simulate_mouse_down(point(px(x), px(y)), MouseButton::Left, Modifiers::default());
+            cx.simulate_mouse_up(point(px(x), px(y)), MouseButton::Left, Modifiers::default());
+        };
+        let open = |cx: &mut VisualTestContext, row: usize| {
+            let at = view.update_in(cx, |o, window, cx| {
+                (o.cursor, o.menu, o.shut) = (Some((row, 10)), "", "");
+                o.grasp();
+                cx.notify();
+                o.roost(window).unwrap()
+            });
+            cx.run_until_parked();
+            click(cx, at.1 + 20., at.2 + 12.);
+        };
+        let state = |cx: &mut VisualTestContext, row: usize| view.update(cx, |o, _| (o.lines[row].clone(), o.past.len(), o.menu));
+        open(cx, 2);
+        assert_eq!(
+            view.update(cx, |o, _| (o.menu, o.shelf().len() > 20, o.shelf()[0].clone())),
+            ("font", true, String::new())
+        );
+        let list = view.update_in(cx, |o, window, _| {
+            let (_, left, bottom) = o.fount(window).unwrap();
+            point(px(left + 20.), px(f32::from(window.viewport_size().height) - bottom - 100.))
+        });
+        cx.simulate_event(ScrollWheelEvent {
+            position: list,
+            delta: gpui::ScrollDelta::Lines(point(0., -3.)),
+            ..Default::default()
+        });
+        assert_eq!(view.update(cx, |o, _| o.sift.1), 3.);
+        cx.simulate_keystrokes("m e n l x backspace");
+        assert_eq!(
+            view.update(cx, |o, _| (o.sift.0.clone(), o.shelf())),
+            ("menl".into(), vec!["Menlo".to_string()])
+        );
+        cx.simulate_keystrokes("enter");
+        let typed = "let b = text(\"text\", { font: \"Menlo\" }).at(1).for(3).pos(0.5, 0.5)";
+        assert_eq!(state(cx, 2), (typed.into(), 1, ""));
+        open(cx, 1);
+        assert_eq!(
+            view.update(cx, |o, _| (o.faced(1), o.shelf()[o.sift.1 as usize + 3].clone())),
+            ("Menlo".into(), "Menlo".into())
+        );
+        cx.simulate_keystrokes("escape");
+        assert_eq!(state(cx, 1), (lines[1].clone(), 1, ""));
+        open(cx, 1);
+        cx.simulate_keystrokes("c o u r i e r");
+        let first = view.update_in(cx, |o, window, _| {
+            let (_, left, bottom) = o.fount(window).unwrap();
+            (left + 20., f32::from(window.viewport_size().height) - bottom - 292. + 39.)
+        });
+        click(cx, first.0, first.1);
+        let named = "let a = text(\"daniel\", { font: \"Courier\", size: 24, background: \"#0008\" }).for(2)";
+        assert_eq!(state(cx, 1), (named.into(), 2, "font"));
+        assert_eq!(
+            view.update(cx, |o, _| (o.lines[0].clone(), o.knobbed)),
+            (lines[0].clone(), Some((1, 8)))
+        );
+        open(cx, 1);
+        cx.simulate_keystrokes("d e f a u l t");
+        click(cx, first.0, first.1);
+        let plain = "let a = text(\"daniel\", { size: 24, background: \"#0008\" }).for(2)";
+        assert_eq!(state(cx, 1), (plain.into(), 3, "font"));
+        cx.simulate_keystrokes("cmd-z cmd-z cmd-z");
+        assert_eq!(view.update(cx, |o, _| o.lines.clone()), lines);
+        open(cx, 4);
+        let (note, menu) = view.update(cx, |o, _| (o.note.clone(), o.menu));
+        assert_eq!(
+            (note.as_str(), menu),
+            ("line 5 cannot be rewritten safely, edit the script to change its font", "")
+        );
+        let motion = view.update_in(cx, |o, window, _| {
+            (o.knobbed, o.motion, o.sel, o.shut) = (None, true, Some(o.tl.clips[1].z), "");
+            o.fonting(2);
+            o.fount(window).map(|f| (f.0, f.1))
+        });
+        assert_eq!(motion, Some((2, 128.)));
     }
 }

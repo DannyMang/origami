@@ -72,6 +72,9 @@ impl Origami {
             self.menu = "";
             return cx.notify();
         }
+        if self.narrow(&k, key.modifiers.platform, window) {
+            return cx.notify();
+        }
         if k == "escape" && mem::take(&mut self.pen) {
             return cx.notify();
         }

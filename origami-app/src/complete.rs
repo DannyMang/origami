@@ -3,7 +3,7 @@ use crate::{
     view::{BLUE, BORDER, DIM, PANEL},
 };
 use gpui::{Div, Styled, Window, div, prelude::*, px, rgb, rgba};
-use std::{fs, mem, path::Path};
+use std::{fs, mem, path::Path, sync::LazyLock};
 
 pub struct Def {
     pub name: &'static str,
@@ -152,6 +152,8 @@ const LOOKS: &str = "Contents/Lumetri/LUTs/Creative";
 
 pub type Offer = (String, &'static str, &'static str);
 
+static INSTALLED: LazyLock<Vec<String>> = LazyLock::new(origami_lang::fonts);
+
 fn ident(c: char) -> bool {
     c.is_alphanumeric() || c == '_' || c == '$'
 }
@@ -188,6 +190,8 @@ pub fn faces(dir: &Path) -> Vec<String> {
     });
     let mut out: Vec<String> = found.collect();
     out.dedup();
+    let rest: Vec<String> = INSTALLED.iter().filter(|n| !out.contains(n)).cloned().collect();
+    out.extend(rest);
     out
 }
 
@@ -318,9 +322,20 @@ pub fn offers(lines: &[String], (row, col): (usize, usize), dir: &Path) -> (usiz
         let start = head.iter().rposition(|c| *c == '/').filter(|s| *s > q).unwrap_or(q) + 1;
         let (folder, typed) = (String::from_iter(&head[q + 1..start]), String::from_iter(&head[start..]));
         let found = names(&dir.join(&folder)).into_iter();
-        let files = found.filter(|(n, d)| *d || if font { typeface(n) } else { !look || n.ends_with(".cube") });
+        let named = font && folder.is_empty();
+        let files = found.filter(|(n, d)| {
+            *d || if font {
+                !named && typeface(n)
+            } else {
+                !look || n.ends_with(".cube")
+            }
+        });
         let files = files.map(|(n, d)| if d { n + "/" } else { n });
-        let builtin = if look && folder.is_empty() { premiere() } else { vec![] };
+        let builtin = match folder.is_empty() {
+            true if look => premiere(),
+            true if font => faces(dir),
+            _ => vec![],
+        };
         let fit = files.chain(builtin).filter(|n| starts(n, &typed));
         return (start, fit.map(|n| (n, "", "")).collect());
     }
@@ -524,13 +539,16 @@ mod tests {
         }
     }
 
-    // Inside a file path, autocomplete should offer the matching files and folders.
+    // Inside a file path, autocomplete should offer the matching files and folders, and after font:
+    // the fonts installed on this Mac by name.
     #[test]
     fn paths() {
         assert_eq!(at("video(\"ma"), ["main.rs"]);
         assert_eq!(at("x.look(\"../s"), ["src/"]);
         assert_eq!(at("x.look(\"../src/"), [] as [&str; 0]);
         assert!(at("sound('../").contains(&"Cargo.toml".to_string()));
+        assert_eq!(at("text(\"a\", { font: \"Menl"), ["Menlo"]);
+        assert!(at("text(\"a\", { font: \"").len() > 20 && at("text(\"a\", { font: \"../").contains(&"src/".to_string()));
     }
 
     // The suggestion list should open below the line being typed when it fits, above it otherwise,

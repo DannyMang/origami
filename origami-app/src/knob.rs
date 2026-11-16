@@ -23,6 +23,7 @@ pub enum Turn {
 
 const PAD: f32 = 200.;
 pub const TRACK: f32 = 160.;
+const TYPED: [&str; 2] = ["text", "caption"];
 const CURVES: [&str; 6] = ["curve", "hueVsSat", "hueVsHue", "hueVsLuma", "lumaVsSat", "satVsSat"];
 
 fn range(call: &str, label: &str) -> Option<(f64, f64)> {
@@ -218,7 +219,7 @@ pub fn calls(line: &str) -> Vec<(String, usize, usize, Vec<Knob>)> {
 }
 
 pub fn knobs(line: &str, at: usize) -> Option<(String, usize, usize, Vec<Knob>)> {
-    let on = calls(line).into_iter().filter(|c| c.1 <= at && at <= c.2 && !c.3.is_empty());
+    let on = calls(line).into_iter().filter(|c| c.1 <= at && at <= c.2 && live(&c.0, &c.3));
     let from = line.len() - line.trim_start().len();
     let loose = || (String::new(), from, line.len().saturating_sub(1), scan(line, "", from, line.len()));
     let (call, name, end, mut found) = on.max_by_key(|c| c.1).unwrap_or_else(loose);
@@ -226,7 +227,11 @@ pub fn knobs(line: &str, at: usize) -> Option<(String, usize, usize, Vec<Knob>)>
     if let Some(span) = dye.map(|k| k.span) {
         found.retain(|k| !["#", "strength"].contains(&k.label.as_str()) || k.span == span);
     }
-    (!found.is_empty()).then_some((call, name, end, found))
+    live(&call, &found).then_some((call, name, end, found))
+}
+
+fn live(call: &str, found: &[Knob]) -> bool {
+    !found.is_empty() || TYPED.contains(&call)
 }
 
 fn bound(found: &mut Vec<Knob>, top: Option<f64>) {
@@ -337,7 +342,7 @@ impl Origami {
             _ => None,
         };
         bound(&mut found, top);
-        (!found.is_empty()).then_some((call, name, end, found))
+        live(&call, &found).then_some((call, name, end, found))
     }
 
     pub fn panel(&self) -> Option<(usize, String, usize, Vec<Knob>)> {
@@ -370,7 +375,7 @@ impl Origami {
         }
         let (w, h) = (f32::from(window.viewport_size().width), f32::from(window.viewport_size().height));
         let pad = found.iter().any(|k| k.label == "hue" || k.label == "#") || CURVES.contains(&call.as_str());
-        let rows = if CURVES.contains(&call.as_str()) { 1 } else { found.len() };
+        let rows = if CURVES.contains(&call.as_str()) { 1 } else { found.len() } + TYPED.contains(&call.as_str()) as usize;
         let tall = rows as f32 * 24. + 20. + if pad { PAD + 10. } else { 0. };
         let col = self.lines[row][..name].chars().count() as f32;
         let y = self.head() + (top..row).filter(|i| !hidden[*i]).count() as f32 * self.row();
@@ -385,6 +390,12 @@ impl Origami {
             found.len(),
             pad,
         ))
+    }
+
+    pub fn roost(&self, window: &Window) -> Option<(usize, f32, f32)> {
+        let ((x, y, n, pad), (row, call, ..)) = (self.origin(window)?, self.panel()?);
+        let y = y + 11. + n as f32 * 24. + if pad { PAD + 10. } else { 0. };
+        TYPED.contains(&call.as_str()).then_some((row, x + 95., y))
     }
 
     fn set(&mut self, mut values: Vec<(usize, f64)>) {
@@ -582,6 +593,19 @@ impl Origami {
             ],
             false => rows.collect(),
         };
+        let open = move |this: &mut Self, _: &MouseDownEvent, _: &mut Window| {
+            this.knobbed = this.kept;
+            this.fonting(row);
+        };
+        let face = TYPED.contains(&call.as_str()).then(|| {
+            div()
+                .h(px(24.))
+                .flex()
+                .items_center()
+                .child(div().w(px(84.)).text_color(rgb(DIM)).child("font"))
+                .child(self.typeface(row).w(px(TRACK)).h(px(18.)))
+                .on_mouse_down(MouseButton::Left, Self::tap(cx, open))
+        });
         Some(
             div()
                 .absolute()
@@ -603,7 +627,8 @@ impl Origami {
                     }),
                 )
                 .children(pad.then_some(board))
-                .children(rows),
+                .children(rows)
+                .children(face),
         )
     }
 }
