@@ -24,6 +24,10 @@ What changed in each version of Origami. The launch screen shows the version you
 - Jumping far in 10-bit HEVC footage (such as DJI's) and opening a project are about 50 ms faster.
 - The Motion tab draws more than twice as fast on big projects.
 - Jumping onto a keyframe in footage without B-frames (such as DJI's) no longer decodes the whole second before it: the slowest far jumps are about a fifth faster.
+- **Preview matches export on more kinds of footage:**
+  - Jumping to a frame just before a keyframe in footage with B-frames shows that frame instead of a neighbour.
+  - Variable-frame-rate footage (phone recordings) shows the same frame in the preview as in the export.
+  - MPEG-TS footage (`.ts`, `.MTS`, `.M2TS`, `.vob`) shows the same frame in the preview as in the export, played or scrubbed.
 - Fixed memory that kept growing while dragging colours, shapes or text, and during long exports with captions.
 - **Fixed crashes and hangs:** clicking a clip right after deleting lines, a script that never finishes, very deep nesting, two exports at once, and clips placed off the frame or with a negative size.
 - **Fixed script damage:** recording a take or pasting after a line ending in a comment or `;`, and dragging the edge of a clip whose `.trim(` spans several lines (now refused with a note).

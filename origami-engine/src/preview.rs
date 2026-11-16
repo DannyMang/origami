@@ -23,29 +23,60 @@ type Key = (String, usize, usize);
 type Px = Arc<Vec<u8>>;
 type Laid = Arc<(Vec<Glyph>, usize, usize)>;
 
-type Info = (&'static [&'static str], &'static str, f64, f64, f64, f64, i64);
+type Info = (
+    &'static [&'static str],
+    &'static str,
+    f64,
+    f64,
+    f64,
+    f64,
+    i64,
+    f64,
+    Arc<[(f64, bool)]>,
+);
 
 static KNOWN: LazyLock<Mutex<HashMap<String, Info>>> = LazyLock::new(Mutex::default);
+static LANDS: LazyLock<Mutex<HashMap<(String, u64), f64>>> = LazyLock::new(Mutex::default);
+
+fn ask(path: &str, show: &str) -> String {
+    let args = ["-v", "error", "-select_streams", "v:0", "-show_entries", show, "-of", "csv=p=0"];
+    let out = ffprobe().args(args).arg(path).output().map(|o| o.stdout).unwrap_or_default();
+    String::from_utf8_lossy(&out).into()
+}
 
 fn probe(path: &str) -> Info {
-    let ask = || {
-        let show = [
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=codec_name,has_b_frames,pix_fmt,avg_frame_rate,time_base,duration",
-            "-of",
-            "csv=p=0",
-        ];
-        let out = ffprobe().args(show).arg(path).output().map(|o| o.stdout).unwrap_or_default();
-        let text = String::from_utf8_lossy(&out);
+    let make = || {
+        let show = "stream=codec_name,has_b_frames,pix_fmt,r_frame_rate,avg_frame_rate,time_base,start_time,duration:format=format_name,start_time";
+        let text = ask(path, show);
         let mut cols = text.lines().next().unwrap_or_default().split(',');
         let mut col = || cols.next().unwrap_or_default();
-        let (codec, late, pix, rate) = (col(), col(), col(), col());
-        let (tb, dur) = (col().strip_prefix("1/"), col());
+        let (codec, late, pix, real, rate) = (col(), col(), col(), col(), col());
+        let (tb, first, dur) = (col().strip_prefix("1/"), col(), col());
+        let (format, zero) = text.lines().last().unwrap_or_default().rsplit_once(',').unwrap_or_default();
         let (n, d) = rate.split_once('/').unwrap_or_default();
+        let num = |s: &str| s.parse::<f64>().unwrap_or(0.);
+        let (n, d, tb, zero) = (num(n), num(d), tb.map_or(0., num), num(zero));
+        let (ts, vfr) = (matches!(format, "mpegts" | "mpeg"), real != rate && tb > 0.);
+        let packets: Vec<Option<(f64, bool)>> = match ts || vfr {
+            true => ask(path, "packet=pts,flags")
+                .lines()
+                .map(|l| {
+                    let (pts, flags) = l.split_once(',')?;
+                    Some((pts.parse::<f64>().ok()? - (zero * tb).round(), flags.starts_with('K')))
+                })
+                .collect(),
+            false => vec![],
+        };
+        let mut stamps: Vec<(f64, bool)> = packets.iter().copied().collect::<Option<_>>().unwrap_or_default();
+        stamps.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut keys: Vec<f64> = packets.iter().flatten().filter(|s| s.1).map(|s| s.0).collect();
+        keys.extend(packets.iter().flatten().map(|s| s.0).reduce(f64::max));
+        let gap = keys.windows(2).map(|w| w[1] - w[0]).fold(0., f64::max) / tb * n / d;
+        let late = match (ts, late != "0") {
+            (true, _) => gap.ceil() as i64 + 16,
+            (false, true) => 16,
+            _ => 0,
+        };
         let (lead, down): (&[&str], &str) = match (codec, pix) {
             ("h264", _) => (&[], ""),
             ("hevc", "yuv420p10le") if cfg!(target_arch = "aarch64") => (
@@ -62,17 +93,25 @@ fn probe(path: &str) -> Info {
             ("hevc", _) => (&["-hwaccel", "videotoolbox", "-threads", "1"], ""),
             _ => (&["-hwaccel", "videotoolbox"], ""),
         };
-        (
-            lead,
-            down,
-            n.parse().unwrap_or(0.),
-            d.parse().unwrap_or(0.),
-            dur.parse().unwrap_or(0.),
-            tb.and_then(|b| b.parse().ok()).unwrap_or(0.),
-            (late != "0") as i64,
-        )
+        let start = first.parse().map_or(0., |f: f64| f - zero);
+        let stamps = if ts { vec![] } else { stamps };
+        (lead, down, n, d, num(dur), tb, late, start, stamps.into())
     };
-    *KNOWN.lock().unwrap().entry(path.into()).or_insert_with(ask)
+    KNOWN.lock().unwrap().entry(path.into()).or_insert_with(make).clone()
+}
+
+fn lands(src: &str, at: f64, start: f64) -> f64 {
+    let make = || {
+        let args = ["-hide_banner", "-ss", &at.to_string(), "-i", src, "-map", "0:v:0", "-frames:v", "1"];
+        let out = ffmpeg().args(args).args(["-vf", "showinfo", "-f", "null", "-"]).output();
+        let text = String::from_utf8_lossy(&out.map(|o| o.stderr).unwrap_or_default()).to_string();
+        let pts = text
+            .split("pts_time:")
+            .nth(1)
+            .and_then(|s| s.split_whitespace().next()?.parse().ok());
+        at.max(start) + pts.unwrap_or(0.)
+    };
+    *LANDS.lock().unwrap().entry((src.into(), at.to_bits())).or_insert_with(make)
 }
 
 fn raw(args: &[&str], len: usize) -> Option<Vec<u8>> {
@@ -231,9 +270,20 @@ fn seam(c: &Clip, t: f64, fps: f64, (n, d, tb): (f64, f64, f64), dur: f64) -> (f
     }
 }
 
+fn stamp(c: &Clip, t: f64, fps: f64, tb: f64, stamps: &[(f64, bool)]) -> i64 {
+    let at = |s: f64| stamps.partition_point(|p| p.0 < s.round());
+    let first = at(c.src_in * tb).min(stamps.len() - 1);
+    let end = at(stamps[first].0 + (c.end - c.start) * c.speed * tb).max(first + 1);
+    let tick =
+        |p: &(f64, bool)| (((p.0 - stamps[first].0) / c.speed + c.start / (1. / tb)) as i64 * fps as i64 + tb as i64 / 2) / tb as i64;
+    let (k, kept) = ((t * fps).round() as i64, &stamps[first..end]);
+    let (before, by) = (kept.partition_point(|p| tick(p) < k), kept.partition_point(|p| tick(p) <= k));
+    (first + before.min(by.max(1) - 1)) as i64
+}
+
 fn rate(src: &str, fps: f64) -> (f64, f64, f64) {
     match probe(src) {
-        (_, _, n, d, _, tb, _) if n > 0. && d > 0. => (n, d, tb),
+        (_, _, n, d, _, tb, ..) if n > 0. && d > 0. => (n, d, tb),
         _ => (fps, 1., 0.),
     }
 }
@@ -303,8 +353,18 @@ impl Preview {
         } else {
             c.src.clone()
         };
-        let (n, d, tb) = rate(&src, fps);
-        ((src, tw, th), index(c, t, fps, (n, d, tb), probe(&c.src).4), (n, d))
+        let ((n, d, tb), (.., late, start, stamps)) = (rate(&src, fps), probe(&src));
+        let src_in = match (late > 0, stamps.is_empty()) {
+            (true, true) => ((lands(&src, c.src_in, start) - start) * n / d).round() * d / n,
+            (true, false) => lands(&src, c.src_in, start) - start,
+            _ => (c.src_in - start).max(0.),
+        };
+        let i = match stamps.is_empty() {
+            true if src_in == c.src_in => index(c, t, fps, (n, d, tb), probe(&c.src).4),
+            true => index(&Clip { src_in, ..c.clone() }, t, fps, (n, d, tb), probe(&c.src).4),
+            false => stamp(&Clip { src_in, ..c.clone() }, t, fps, tb, &stamps),
+        };
+        ((src, tw, th), i, (n, d))
     }
 
     pub fn seam(c: &Clip, t: f64, fps: u32) -> (f64, f64) {
@@ -317,6 +377,7 @@ impl Preview {
             return;
         }
         KNOWN.lock().unwrap().remove(src);
+        LANDS.lock().unwrap().retain(|k, _| k.0 != src);
         self.decoders.retain(|(k, _)| k.0 != src);
         let old: Vec<_> = self.frames.iter().map(|(k, _)| k.clone()).filter(|k| k.0.0 == src).collect();
         for k in old {
@@ -370,17 +431,22 @@ impl Preview {
         let found = match self.near(key, k) {
             Some(i) => self.decoders.remove(i),
             None => {
-                let (lead, down, .., late) = probe(&key.0);
-                let seek = (from - late).max(0);
-                let args = ["-ss", &(seek as f64 * d / n).to_string(), "-i", &key.0];
+                let (lead, down, .., tb, late, start, stamps) = probe(&key.0);
+                let (at, pick) = match stamps.is_empty() {
+                    false => {
+                        let k = stamps.iter().take(from as usize + 1).rposition(|s| s.1).unwrap_or(0);
+                        ((stamps[k].0 / tb - 5e-4).max(0.), format!("trim=start_frame={}", from - k as i64))
+                    }
+                    true => {
+                        let seek = (from - late).max(0);
+                        let fill = format!("fps={n}/{d}:start_time={}", (from - seek) as f64 * d / n);
+                        (seek as f64 * d / n + start, fill)
+                    }
+                };
+                let args = ["-ss", &at.to_string(), "-i", &key.0];
                 let out = [
                     "-vf",
-                    &format!(
-                        "fps={n}/{d}:start_time={},{down}scale={}:{}",
-                        (from - seek) as f64 * d / n,
-                        key.1,
-                        key.2
-                    ),
+                    &format!("{pick},{down}scale={}:{}", key.1, key.2),
                     "-fps_mode",
                     "passthrough",
                     "-f",
@@ -846,6 +912,120 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::copy(&take, &file).unwrap();
         assert!(blue(&mut pv));
+    }
+
+    // In footage with B-frames, a picture shown just before a keyframe can be decoded only after the
+    // pictures before it: a jump straight to it should still show it, as playing up to it does.
+    #[test]
+    fn jumps_before_keyframes_show_the_frame() {
+        let file = std::env::temp_dir().join("origami-bframes-test.mp4");
+        let src = "color=black:s=64x36:r=30:d=2,format=yuv444p,geq=lum='16+8*(N-25*floor(N/25))':cb=128:cr=128";
+        let made = ffmpeg()
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", src, "-c:v", "libx264", "-g", "24"])
+            .args(["-x264-params", "bframes=3:open-gop=1:scenecut=0", "-pix_fmt", "yuv420p"])
+            .arg(&file)
+            .status();
+        assert!(made.unwrap().success());
+        let tl = Timeline {
+            fps: 30,
+            size: (64, 36),
+            duration: 2.,
+            clips: vec![Clip {
+                src: file.to_string_lossy().into(),
+                w: 64,
+                h: 36,
+                end: 2.,
+                ..clip("video", "")
+            }],
+            ..Default::default()
+        };
+        let mut played = Preview::default();
+        let wrong: Vec<usize> = (0..60)
+            .filter(|k| played.frame(&tl, *k as f64 / 30., (64, 36)) != Preview::default().frame(&tl, *k as f64 / 30., (64, 36)))
+            .collect();
+        assert!(wrong.is_empty(), "{wrong:?}");
+    }
+
+    // Variable-frame-rate footage should show the frame a plain export shows: the clip starts on the
+    // first frame at or after the trim point, each later frame shows from the timeline frame its time
+    // rounds to, and of two frames rounding to the same timeline frame the first one is shown there.
+    #[test]
+    fn stamps_match_export() {
+        let shown = |stamps: &[(f64, bool)], (start, end, src_in, speed): (f64, f64, f64, f64), fps: f64, frames: &[i64]| {
+            let c = Clip {
+                start,
+                end,
+                src_in,
+                speed,
+                ..clip("video", "")
+            };
+            frames
+                .iter()
+                .map(|k| stamp(&c, *k as f64 / fps, fps, 15360., stamps))
+                .collect::<Vec<_>>()
+        };
+        let uneven: Vec<_> = (0..180).map(|n| ((n + n / 2) as f64 * 512., n % 24 == 0)).collect();
+        let sixty: Vec<_> = (0..480).map(|n| ((n + n / 3 * 2) as f64 * 256., n % 30 == 0)).collect();
+        assert_eq!(
+            shown(&uneven, (0., 2.7, 0.5, 1.), 30., &[0, 1, 2, 3, 4, 5, 6, 7]),
+            [10, 11, 11, 12, 13, 13, 14, 15]
+        );
+        assert_eq!(shown(&uneven, (0., 1.334, 1., 1.5), 24., &[0, 1, 2, 3, 31]), [20, 21, 22, 24, 59]);
+        assert_eq!(shown(&uneven, (0., 0.466667, 8.5, 1.), 30., &[0, 1, 2, 13]), [170, 171, 171, 179]);
+        assert_eq!(
+            shown(&sixty, (0., 3., 0., 1.), 30., &[0, 1, 2, 3, 4, 5, 6, 7]),
+            [0, 1, 2, 3, 5, 6, 7, 8]
+        );
+        assert_eq!(shown(&sixty, (0., 1.98, 1.01, 0.5), 30., &[0, 1, 2, 3, 4]), [37, 38, 38, 38, 39]);
+    }
+
+    // MPEG-TS footage, whose times start late and whose sound starts before its pictures, should show
+    // the frame the export shows, played or jumped to: the export of a trimmed clip starts on the
+    // first keyframe ffmpeg lands on.
+    #[test]
+    fn transport_streams_match_export() {
+        let dir = std::env::temp_dir().join("origami-ts-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = "color=black:s=64x36:r=30:d=4,format=yuv444p,geq=lum='16+8*(N-25*floor(N/25))':cb=128:cr=128";
+        let made = ffmpeg()
+            .args([
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                src,
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=d=4",
+                "-shortest",
+            ])
+            .args(["-c:v", "libx264", "-g", "24", "-pix_fmt", "yuv420p", "-c:a", "aac"])
+            .arg(dir.join("a.ts"))
+            .status();
+        assert!(made.unwrap().success());
+        std::fs::write(
+            dir.join("edit.js"),
+            "settings({ fps: 30, size: [64, 36] })\nvideo('a.ts').trim(0.72, 2.2)",
+        )
+        .unwrap();
+        let tl = origami_lang::eval(&dir.join("edit.js"), false, crate::footprint).unwrap();
+        let out = dir.join("out.mp4").to_string_lossy().to_string();
+        crate::render(&tl, &out, |_| {}).unwrap();
+        let args = ["-v", "error", "-i", &out, "-f", "rawvideo", "-pix_fmt", "gray", "-"];
+        let px = ffmpeg().args(args).output().unwrap().stdout;
+        let mut played = Preview::default();
+        let wrong: Vec<usize> = (0..px.len() / (64 * 36))
+            .filter(|k| {
+                let t = *k as f64 / 30.;
+                let made = px[k * 64 * 36 + 18 * 64 + 32];
+                let [a, b] = [played.frame(&tl, t, (64, 36)), Preview::default().frame(&tl, t, (64, 36))];
+                [a, b].iter().any(|p| p[(18 * 64 + 32) * 4].abs_diff(made) > 4)
+            })
+            .collect();
+        assert!(px.len() == 44 * 64 * 36 && wrong.is_empty(), "{wrong:?}");
     }
 
     // A sidecar picture is shifted by the drawn size of one full-size pixel, which is more than a
