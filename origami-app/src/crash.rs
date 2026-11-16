@@ -22,9 +22,7 @@ fn rescue(what: &str, log: &Path) {
     if let Some((script, text)) = UNSAVED.try_lock().ok().and_then(|u| u.clone()) {
         let _ = fs::write(spare(&script), text);
     }
-    let when = Command::new("date")
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    let when = origami_lang::output(&mut Command::new("date")).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
     let me = thread::current();
     let entry = format!(
         "{} thread '{}' {what}\n{}\n",

@@ -6,7 +6,7 @@ use crate::{
     text::{self, Glyph},
 };
 use lru::LruCache;
-use origami_lang::{Clip, Kind, Part, Timeline, Val, ffmpeg, ffprobe};
+use origami_lang::{Clip, Kind, Part, Timeline, Val, ffmpeg, ffprobe, output};
 use std::{
     collections::HashMap,
     fs,
@@ -40,7 +40,7 @@ static LANDS: LazyLock<Mutex<HashMap<(String, u64), f64>>> = LazyLock::new(Mutex
 
 fn ask(path: &str, show: &str) -> String {
     let args = ["-v", "error", "-select_streams", "v:0", "-show_entries", show, "-of", "csv=p=0"];
-    let out = ffprobe().args(args).arg(path).output().map(|o| o.stdout).unwrap_or_default();
+    let out = output(ffprobe().args(args).arg(path)).map(|o| o.stdout).unwrap_or_default();
     String::from_utf8_lossy(&out).into()
 }
 
@@ -97,13 +97,15 @@ fn probe(path: &str) -> Info {
         let stamps = if ts { vec![] } else { stamps };
         (lead, down, n, d, num(dur), tb, late, start, stamps.into())
     };
-    KNOWN.lock().unwrap().entry(path.into()).or_insert_with(make).clone()
+    let known = KNOWN.lock().unwrap().get(path).cloned();
+    let info = known.unwrap_or_else(make);
+    KNOWN.lock().unwrap().entry(path.into()).or_insert(info).clone()
 }
 
 fn lands(src: &str, at: f64, start: f64) -> f64 {
     let make = || {
         let args = ["-hide_banner", "-ss", &at.to_string(), "-i", src, "-map", "0:v:0", "-frames:v", "1"];
-        let out = ffmpeg().args(args).args(["-vf", "showinfo", "-f", "null", "-"]).output();
+        let out = output(ffmpeg().args(args).args(["-vf", "showinfo", "-f", "null", "-"]));
         let text = String::from_utf8_lossy(&out.map(|o| o.stderr).unwrap_or_default()).to_string();
         let pts = text
             .split("pts_time:")
@@ -111,12 +113,15 @@ fn lands(src: &str, at: f64, start: f64) -> f64 {
             .and_then(|s| s.split_whitespace().next()?.parse().ok());
         at.max(start) + pts.unwrap_or(0.)
     };
-    *LANDS.lock().unwrap().entry((src.into(), at.to_bits())).or_insert_with(make)
+    let key = (src.to_string(), at.to_bits());
+    let known = LANDS.lock().unwrap().get(&key).copied();
+    let found = known.unwrap_or_else(make);
+    *LANDS.lock().unwrap().entry(key).or_insert(found)
 }
 
 fn raw(args: &[&str], len: usize) -> Option<Vec<u8>> {
     let tail = ["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "bgra", "-"];
-    let out = ffmpeg().args(["-v", "error"]).args(args).args(tail).output().ok()?;
+    let out = output(ffmpeg().args(["-v", "error"]).args(args).args(tail)).ok()?;
     (out.stdout.len() == len).then_some(out.stdout)
 }
 
@@ -131,7 +136,7 @@ pub fn thumb(path: &str, t: f64, w: usize, h: usize) -> Option<Vec<u8>> {
 
 pub fn peaks(path: &str) -> Vec<f32> {
     let args = ["-v", "error", "-i", path, "-ac", "1", "-ar", "4000", "-f", "u8", "-"];
-    let pcm = ffmpeg().args(args).output().map(|o| o.stdout).unwrap_or_default();
+    let pcm = output(ffmpeg().args(args)).map(|o| o.stdout).unwrap_or_default();
     let peaks: Vec<f32> = pcm
         .chunks(200)
         .map(|c| c.iter().map(|&s| (s as f32 - 128.).abs()).fold(0., f32::max))
@@ -517,17 +522,18 @@ impl Preview {
                     true => &["-probesize", "32768", "-analyzeduration", "0"],
                     false => &[],
                 };
-                let child = ffmpeg()
-                    .args(["-v", "error"])
-                    .args(lead)
-                    .args(lrf)
-                    .args(args)
-                    .args(out)
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::null())
-                    .spawn()
-                    .ok()?;
+                let child = origami_lang::start(
+                    ffmpeg()
+                        .args(["-v", "error"])
+                        .args(lead)
+                        .args(lrf)
+                        .args(args)
+                        .args(out)
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::null()),
+                )
+                .ok()?;
                 self.decoders.drain(..self.decoders.len().saturating_sub(5));
                 (key.clone(), Decoder { child, next: from })
             }
@@ -889,10 +895,11 @@ mod tests {
         let dir = std::env::temp_dir().join("origami-sidecar-test");
         std::fs::create_dir_all(&dir).unwrap();
         let make = |file: &str, src: &str| {
-            let made = ffmpeg()
-                .args(["-v", "error", "-y", "-f", "lavfi", "-i", src, "-f", "mp4"])
-                .arg(dir.join(file))
-                .status();
+            let made = origami_lang::status(
+                ffmpeg()
+                    .args(["-v", "error", "-y", "-f", "lavfi", "-i", src, "-f", "mp4"])
+                    .arg(dir.join(file)),
+            );
             assert!(made.unwrap().success());
         };
         for name in ["text", "short"] {
@@ -933,10 +940,11 @@ mod tests {
     #[test]
     fn montages_keep_the_decoder_on_screen() {
         let file = std::env::temp_dir().join("origami-montage-test.mp4");
-        let made = ffmpeg()
-            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=red:s=64x36:r=30:d=1", "-f", "mp4"])
-            .arg(&file)
-            .status();
+        let made = origami_lang::status(
+            ffmpeg()
+                .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=red:s=64x36:r=30:d=1", "-f", "mp4"])
+                .arg(&file),
+        );
         assert!(made.unwrap().success());
         let clips = (0..8).map(|i| Clip {
             src: file.to_string_lossy().into(),
@@ -968,10 +976,11 @@ mod tests {
         let (file, take) = (dir.join("swap.mp4"), dir.join("take.mp4"));
         for (ink, path) in [("red", &file), ("blue", &take)] {
             let src = format!("color={ink}:s=64x36:r=30:d=2");
-            let made = ffmpeg()
-                .args(["-v", "error", "-y", "-f", "lavfi", "-i", &src, "-f", "mp4"])
-                .arg(path)
-                .status();
+            let made = origami_lang::status(
+                ffmpeg()
+                    .args(["-v", "error", "-y", "-f", "lavfi", "-i", &src, "-f", "mp4"])
+                    .arg(path),
+            );
             assert!(made.unwrap().success());
         }
         let c = Clip {
@@ -1002,11 +1011,12 @@ mod tests {
     fn jumps_before_keyframes_show_the_frame() {
         let file = std::env::temp_dir().join("origami-bframes-test.mp4");
         let src = "color=black:s=64x36:r=30:d=2,format=yuv444p,geq=lum='16+8*(N-25*floor(N/25))':cb=128:cr=128";
-        let made = ffmpeg()
-            .args(["-v", "error", "-y", "-f", "lavfi", "-i", src, "-c:v", "libx264", "-g", "24"])
-            .args(["-x264-params", "bframes=3:open-gop=1:scenecut=0", "-pix_fmt", "yuv420p"])
-            .arg(&file)
-            .status();
+        let made = origami_lang::status(
+            ffmpeg()
+                .args(["-v", "error", "-y", "-f", "lavfi", "-i", src, "-c:v", "libx264", "-g", "24"])
+                .args(["-x264-params", "bframes=3:open-gop=1:scenecut=0", "-pix_fmt", "yuv420p"])
+                .arg(&file),
+        );
         assert!(made.unwrap().success());
         let tl = Timeline {
             fps: 30,
@@ -1069,24 +1079,25 @@ mod tests {
         let dir = std::env::temp_dir().join("origami-ts-test");
         std::fs::create_dir_all(&dir).unwrap();
         let src = "color=black:s=64x36:r=30:d=4,format=yuv444p,geq=lum='16+8*(N-25*floor(N/25))':cb=128:cr=128";
-        let made = ffmpeg()
-            .args([
-                "-v",
-                "error",
-                "-y",
-                "-f",
-                "lavfi",
-                "-i",
-                src,
-                "-f",
-                "lavfi",
-                "-i",
-                "sine=d=4",
-                "-shortest",
-            ])
-            .args(["-c:v", "libx264", "-g", "24", "-pix_fmt", "yuv420p", "-c:a", "aac"])
-            .arg(dir.join("a.ts"))
-            .status();
+        let made = origami_lang::status(
+            ffmpeg()
+                .args([
+                    "-v",
+                    "error",
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    src,
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=d=4",
+                    "-shortest",
+                ])
+                .args(["-c:v", "libx264", "-g", "24", "-pix_fmt", "yuv420p", "-c:a", "aac"])
+                .arg(dir.join("a.ts")),
+        );
         assert!(made.unwrap().success());
         std::fs::write(
             dir.join("edit.js"),
@@ -1097,7 +1108,7 @@ mod tests {
         let out = dir.join("out.mp4").to_string_lossy().to_string();
         crate::render(&tl, &out, |_| {}).unwrap();
         let args = ["-v", "error", "-i", &out, "-f", "rawvideo", "-pix_fmt", "gray", "-"];
-        let px = ffmpeg().args(args).output().unwrap().stdout;
+        let px = output(ffmpeg().args(args)).unwrap().stdout;
         let mut played = Preview::default();
         let wrong: Vec<usize> = (0..px.len() / (64 * 36))
             .filter(|k| {

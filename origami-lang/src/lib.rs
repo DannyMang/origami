@@ -27,7 +27,7 @@ use std::{
     thread,
     time::{Duration, Instant, UNIX_EPOCH},
 };
-pub use tool::{ffmpeg, ffprobe};
+pub use tool::{ffmpeg, ffprobe, output, start, status};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -239,12 +239,13 @@ fn scan(path: &Path, prev: Option<&Media>, relock: bool, rel: &str) -> Result<Me
     if prev.is_some_and(|p| p.sha != sha) && !relock {
         bail!("{rel} changed since origami.lock (use --relock)");
     }
-    let out = ffprobe()
-        .args(["-v", "error", "-of", "json", "-show_entries"])
-        .arg("format=duration:stream=codec_type,width,height:stream_side_data=rotation")
-        .arg(path)
-        .output()
-        .context("ffprobe not found")?;
+    let out = output(
+        ffprobe()
+            .args(["-v", "error", "-of", "json", "-show_entries"])
+            .arg("format=duration:stream=codec_type,width,height:stream_side_data=rotation")
+            .arg(path),
+    )
+    .context("ffprobe not found")?;
     let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
     let streams = v["streams"].as_array().cloned().unwrap_or_default();
     let has = |t| streams.iter().any(|s| s["codec_type"] == t);
@@ -1003,7 +1004,7 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let make = |args: &[&str]| {
-            let made = ffmpeg().args(["-v", "error", "-y"]).args(args).current_dir(&dir).status();
+            let made = status(ffmpeg().args(["-v", "error", "-y"]).args(args).current_dir(&dir));
             assert!(made.unwrap().success());
         };
         make(&["-f", "lavfi", "-i", "color=black:s=64x36:r=30:d=2", "v.mp4"]);

@@ -345,10 +345,11 @@ mod tests {
         let (path, clip) = (dir.join("edit.js"), dir.join("v.mp4"));
         let make = |secs: u32| {
             let src = format!("color=red:s=64x36:r=30:d={secs}");
-            let made = origami_lang::ffmpeg()
-                .args(["-v", "error", "-y", "-f", "lavfi", "-i", &src])
-                .arg(&clip)
-                .status();
+            let made = origami_lang::status(
+                origami_lang::ffmpeg()
+                    .args(["-v", "error", "-y", "-f", "lavfi", "-i", &src])
+                    .arg(&clip),
+            );
             assert!(made.unwrap().success());
         };
         make(2);

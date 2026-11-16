@@ -1,12 +1,14 @@
 use std::{
     env,
     ffi::OsStr,
-    fs,
+    fs, io,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    process::Command,
-    sync::LazyLock,
+    process::{Child, Command, ExitStatus, Output, Stdio},
+    sync::{LazyLock, Mutex, PoisonError},
 };
+
+static SPAWN: Mutex<()> = Mutex::new(());
 
 static TOOLS: LazyLock<[PathBuf; 2]> = LazyLock::new(|| {
     let exe = env::current_exe()
@@ -32,9 +34,58 @@ pub fn ffprobe() -> Command {
     Command::new(&TOOLS[1])
 }
 
+pub fn start(cmd: &mut Command) -> io::Result<Child> {
+    let _one = SPAWN.lock().unwrap_or_else(PoisonError::into_inner);
+    cmd.spawn()
+}
+
+pub fn status(cmd: &mut Command) -> io::Result<ExitStatus> {
+    start(cmd)?.wait()
+}
+
+pub fn output(cmd: &mut Command) -> io::Result<Output> {
+    start(cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()))?.wait_with_output()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        sync::{
+            atomic::{AtomicBool, Ordering::Relaxed},
+            mpsc,
+        },
+        thread,
+        time::Duration,
+    };
+
+    // Reading a short program's output should end when that program ends, however many long-lived
+    // programs other threads start at the same moment.
+    #[test]
+    fn output_ends_beside_long_lived_programs() {
+        let round = |_| {
+            let (busy, (done, ended)) = (AtomicBool::new(true), mpsc::channel());
+            thread::scope(|s| {
+                for _ in 0..8 {
+                    let (busy, done) = (&busy, done.clone());
+                    s.spawn(move || {
+                        while busy.load(Relaxed) {
+                            output(&mut Command::new("true")).unwrap();
+                        }
+                        done.send(()).unwrap();
+                    });
+                }
+                let hold = || (0..50).map(|_| start(Command::new("sleep").arg("60")).unwrap()).collect::<Vec<_>>();
+                let held: Vec<_> = (0..4).map(|_| s.spawn(hold)).collect();
+                let mut held: Vec<Child> = held.into_iter().flat_map(|h| h.join().unwrap()).collect();
+                busy.store(false, Relaxed);
+                let prompt = (0..8).all(|_| ended.recv_timeout(Duration::from_secs(10)).is_ok());
+                held.iter_mut().for_each(|c| c.kill().and_then(|_| c.wait().map(drop)).unwrap());
+                prompt
+            })
+        };
+        assert!((0..12).all(round));
+    }
 
     // A copy next to the program should win over PATH, PATH should be searched in order skipping
     // relative entries and files that cannot be run, the usual install folders should be tried when

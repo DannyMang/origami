@@ -32,23 +32,24 @@ fn main() -> Result<()> {
             let tl = origami_lang::eval(script.as_ref(), flag("--relock"), footprint)?;
             let size = format!("{}x{}", tl.size.0, tl.size.1);
             let px = Preview::default().frame(&tl, t.parse()?, (tl.size.0 as usize, tl.size.1 as usize));
-            let mut child = origami_lang::ffmpeg()
-                .args([
-                    "-v",
-                    "error",
-                    "-f",
-                    "rawvideo",
-                    "-pixel_format",
-                    "bgra",
-                    "-video_size",
-                    &size,
-                    "-i",
-                    "-",
-                    "-y",
-                    out,
-                ])
-                .stdin(Stdio::piped())
-                .spawn()?;
+            let mut child = origami_lang::start(
+                origami_lang::ffmpeg()
+                    .args([
+                        "-v",
+                        "error",
+                        "-f",
+                        "rawvideo",
+                        "-pixel_format",
+                        "bgra",
+                        "-video_size",
+                        &size,
+                        "-i",
+                        "-",
+                        "-y",
+                        out,
+                    ])
+                    .stdin(Stdio::piped()),
+            )?;
             child.stdin.take().unwrap().write_all(&px)?;
             if !child.wait()?.success() {
                 bail!("could not write {out}");

@@ -276,10 +276,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("origami-clip-{name}"));
         fs::create_dir_all(&dir).unwrap();
         for (file, src) in [("a.wav", "sine=d=10"), ("v.mp4", "color=black:s=64x64:r=30:d=10")] {
-            let made = origami_lang::ffmpeg()
-                .args(["-v", "error", "-y", "-f", "lavfi", "-i", src])
-                .arg(dir.join(file))
-                .status();
+            let made = origami_lang::status(
+                origami_lang::ffmpeg()
+                    .args(["-v", "error", "-y", "-f", "lavfi", "-i", src])
+                    .arg(dir.join(file)),
+            );
             assert!(made.unwrap().success());
         }
         cx.add_window_view(|window, cx| {

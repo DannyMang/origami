@@ -1,7 +1,7 @@
 use crate::preview::Preview;
 use crate::{grade, lut::Lut, shape, text};
 use anyhow::{Context, Result, bail};
-use origami_lang::{Clip, Kind, Timeline, Val, ffmpeg};
+use origami_lang::{Clip, Kind, Timeline, Val, ffmpeg, start, status};
 use std::{
     env, fs,
     io::{BufRead, BufReader, Read, Write},
@@ -23,20 +23,22 @@ static LIVE: Mutex<Vec<u32>> = Mutex::new(vec![]);
 const STALL: Duration = Duration::from_secs(if cfg!(test) { 5 } else { 30 });
 
 fn kill(pid: u32) {
-    let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
+    let _ = status(Command::new("kill").args(["-9", &pid.to_string()]));
 }
 
 pub fn halt() {
-    LIVE.lock().map(|l| l.iter().copied().for_each(kill)).unwrap_or_default();
+    let live = LIVE.lock().map(|l| l.clone()).unwrap_or_default();
+    live.into_iter().for_each(kill);
 }
 
 fn tether(pid: u32) -> Option<Child> {
-    Command::new("sh")
-        .args(["-c", &format!("read x; kill -9 {pid}")])
-        .stdin(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()
+    start(
+        Command::new("sh")
+            .args(["-c", &format!("read x; kill -9 {pid}")])
+            .stdin(Stdio::piped())
+            .stderr(Stdio::null()),
+    )
+    .ok()
 }
 
 fn room() -> PathBuf {
@@ -351,14 +353,15 @@ pub fn render(tl: &Timeline, out: &str, mut progress: impl FnMut(f64)) -> Result
         );
     }
     let dir = room();
-    let mut child = ffmpeg()
-        .args(["-v", "error", "-nostats", "-progress", "pipe:1"])
-        .args(args(tl, out, &dir))
-        .stdin(if piped(tl) { Stdio::piped() } else { Stdio::null() })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("ffmpeg not found")?;
+    let mut child = start(
+        ffmpeg()
+            .args(["-v", "error", "-nostats", "-progress", "pipe:1"])
+            .args(args(tl, out, &dir))
+            .stdin(if piped(tl) { Stdio::piped() } else { Stdio::null() })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
+    .context("ffmpeg not found")?;
     let (pipe, size, pid, stuck) = (
         child.stdin.take(),
         (tl.size.0 as usize, tl.size.1 as usize),
@@ -440,7 +443,7 @@ mod tests {
             "-shortest",
         ];
         for file in ["a.mp4", "b.mp4"] {
-            let made = ffmpeg().args(["-v", "error", "-y"]).args(args).arg(dir.join(file)).status();
+            let made = status(ffmpeg().args(["-v", "error", "-y"]).args(args).arg(dir.join(file)));
             assert!(made.unwrap().success());
         }
         let tl = |src: &str| {
@@ -458,7 +461,7 @@ mod tests {
         .enumerate()
         {
             render(&tl(src), &out(&format!("{i}.mp4")), |_| {}).unwrap();
-            let heard = ffmpeg().args(["-v", "error"]).args(audio_args(&tl(src), 0., 48000, 1.)).output();
+            let heard = origami_lang::output(ffmpeg().args(["-v", "error"]).args(audio_args(&tl(src), 0., 48000, 1.)));
             assert!(heard.unwrap().status.success(), "{src}");
         }
         let (one, two) = (tl("text('one').for(2)"), tl("text('two').for(2)"));
@@ -495,10 +498,11 @@ mod tests {
     fn clips_meet_on_the_frame() {
         let dir = env::temp_dir().join("origami-meet-test");
         fs::create_dir_all(&dir).unwrap();
-        let made = ffmpeg()
-            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=white:s=64x36:r=30:d=2"])
-            .arg(dir.join("w.mp4"))
-            .status();
+        let made = status(
+            ffmpeg()
+                .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=white:s=64x36:r=30:d=2"])
+                .arg(dir.join("w.mp4")),
+        );
         assert!(made.unwrap().success());
         let src =
             "settings({ fps: 30, size: [64, 36] })\ncat(color('#ff0000').for(0.1), color('#00ff00').for(0.2), video('w.mp4').trim(0, 1))";
@@ -508,7 +512,7 @@ mod tests {
         let out = dir.join("meet.mp4").to_string_lossy().to_string();
         render(&tl, &out, |_| {}).unwrap();
         let args = ["-v", "error", "-i", &out, "-f", "rawvideo", "-pix_fmt", "gray", "-"];
-        let px = ffmpeg().args(args).output().unwrap().stdout;
+        let px = origami_lang::output(ffmpeg().args(args)).unwrap().stdout;
         let shown = Preview::default().frame(&tl, 9. / 30., (64, 36))[(18 * 64 + 32) * 4];
         assert!(px[9 * 64 * 36 + 18 * 64 + 32] > 200 && shown > 200);
     }
@@ -522,10 +526,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         for (file, rate) in [("w30.mp4", 30), ("w15.mp4", 15)] {
             let src = format!("color=white:s=64x36:r={rate}:d=6");
-            let made = ffmpeg()
-                .args(["-v", "error", "-y", "-f", "lavfi", "-i", &src])
-                .arg(dir.join(file))
-                .status();
+            let made = status(ffmpeg().args(["-v", "error", "-y", "-f", "lavfi", "-i", &src]).arg(dir.join(file)));
             assert!(made.unwrap().success());
         }
         let src = "settings({ fps: 30 })\ncat(video('w30.mp4').trim(4.01), video('w30.mp4').trim(0, 1).speed(0.5), video('w15.mp4').trim(0, 1), video('w30.mp4').trim(5.51))";
@@ -539,7 +540,7 @@ mod tests {
         let out = dir.join("ends.mp4").to_string_lossy().to_string();
         render(&tl, &out, |_| {}).unwrap();
         let args = ["-v", "error", "-i", &out, "-f", "rawvideo", "-pix_fmt", "gray", "-"];
-        let px = ffmpeg().args(args).output().unwrap().stdout;
+        let px = origami_lang::output(ffmpeg().args(args)).unwrap().stdout;
         let made: Vec<u8> = px.chunks(64 * 36).map(|f| f[18 * 64 + 32]).collect();
         assert_eq!(made.len(), n);
         assert!(shown.iter().chain(&made).all(|v| *v > 200), "{shown:?} {made:?}");
@@ -552,10 +553,11 @@ mod tests {
         let dir = env::temp_dir().join("origami-self-test");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("sub")).unwrap();
-        let made = ffmpeg()
-            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=white:s=64x36:r=30:d=1"])
-            .arg(dir.join("a.mp4"))
-            .status();
+        let made = status(
+            ffmpeg()
+                .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=white:s=64x36:r=30:d=1"])
+                .arg(dir.join("a.mp4")),
+        );
         assert!(made.unwrap().success());
         fs::write(dir.join("subs.srt"), "1\n00:00:00,000 --> 00:00:01,000\nhi\n").unwrap();
         std::os::unix::fs::symlink(dir.join("a.mp4"), dir.join("link.mp4")).unwrap();
@@ -604,14 +606,15 @@ mod tests {
         let dir = env::temp_dir().join("origami-stall-test");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        let made = ffmpeg()
-            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=white:s=64x36:r=30:d=1"])
-            .arg(dir.join("a.mp4"))
-            .status();
+        let made = status(
+            ffmpeg()
+                .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=white:s=64x36:r=30:d=1"])
+                .arg(dir.join("a.mp4")),
+        );
         assert!(made.unwrap().success());
         fs::write(dir.join("edit.js"), "video('a.mp4').trim(0, 1)").unwrap();
         let mut tl = origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap();
-        assert!(Command::new("mkfifo").arg(dir.join("never.mp4")).status().unwrap().success());
+        assert!(status(Command::new("mkfifo").arg(dir.join("never.mp4"))).unwrap().success());
         tl.clips[0].src = dir.join("never.mp4").to_string_lossy().to_string();
         let out = dir.join("out.mp4").to_string_lossy().to_string();
         let e = render(&tl, &out, |_| {}).unwrap_err().to_string();
@@ -623,7 +626,7 @@ mod tests {
     #[test]
     fn dies_with_the_program() {
         let args = ["-v", "error", "-re", "-f", "lavfi", "-i", "color=d=60", "-f", "null", "-"];
-        let mut ff = ffmpeg().args(args).spawn().unwrap();
+        let mut ff = start(ffmpeg().args(args)).unwrap();
         drop(tether(ff.id()));
         let gone = (0..500).any(|_| {
             thread::sleep(Duration::from_millis(10));

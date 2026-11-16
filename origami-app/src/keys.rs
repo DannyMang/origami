@@ -285,7 +285,7 @@ impl Origami {
     fn editor(&self) {
         let Some(c) = self.focused() else { return };
         let editor = env::var("EDITOR").unwrap_or("zed".into());
-        let _ = Command::new(editor).arg(format!("{}:{}", self.script.display(), c.line)).spawn();
+        let _ = origami_lang::start(Command::new(editor).arg(format!("{}:{}", self.script.display(), c.line)));
     }
 
     pub fn run(&mut self, cmd: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -385,13 +385,18 @@ mod tests {
             assert!(Arc::ptr_eq(o.export.as_ref().unwrap(), &job));
         });
         fs::write(dir.join("v.js"), "video('a.mp4').trim(0, 1)").unwrap();
-        let made = origami_lang::ffmpeg()
-            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=white:s=64x36:r=30:d=1"])
-            .arg(dir.join("a.mp4"))
-            .status();
+        let made = origami_lang::status(
+            origami_lang::ffmpeg()
+                .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=white:s=64x36:r=30:d=1"])
+                .arg(dir.join("a.mp4")),
+        );
         assert!(made.unwrap().success());
         let mut tl = origami_lang::eval(&dir.join("v.js"), false, origami_engine::footprint).unwrap();
-        assert!(Command::new("mkfifo").arg(dir.join("never.mp4")).status().unwrap().success());
+        assert!(
+            origami_lang::status(Command::new("mkfifo").arg(dir.join("never.mp4")))
+                .unwrap()
+                .success()
+        );
         tl.clips[0].src = dir.join("never.mp4").to_string_lossy().to_string();
         let from = Instant::now();
         let stuck = thread::spawn(move || render(&tl, &dir.join("out.mp4").to_string_lossy(), |_| {}));

@@ -165,13 +165,16 @@ static SAVED: Mutex<(u64, String)> = Mutex::new((u64::MAX, String::new()));
 fn clock(script: &Path) -> String {
     let mtime = fs::metadata(script).and_then(|m| m.modified()).ok();
     let secs = mtime.and_then(|m| m.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
-    let mut saved = SAVED.lock().unwrap();
-    if saved.0 != secs / 60 {
-        let out = Command::new("date").args(["-r", &secs.to_string(), "+%H:%M"]).output();
-        let text = out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
-        *saved = (secs / 60, text.unwrap_or_default());
+    let saved = SAVED.lock().unwrap().clone();
+    if saved.0 == secs / 60 {
+        return saved.1;
     }
-    saved.1.clone()
+    let out = origami_lang::output(Command::new("date").args(["-r", &secs.to_string(), "+%H:%M"]));
+    let text = out
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    *SAVED.lock().unwrap() = (secs / 60, text.clone());
+    text
 }
 
 fn bitmap(px: Vec<u8>, w: usize, h: usize) -> Arc<RenderImage> {

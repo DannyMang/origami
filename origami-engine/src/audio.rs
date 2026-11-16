@@ -1,7 +1,7 @@
 use crate::export::audio_args;
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use origami_lang::{Timeline, ffmpeg};
+use origami_lang::{Timeline, ffmpeg, start};
 use std::{
     collections::VecDeque,
     io::Read,
@@ -33,14 +33,15 @@ impl Player {
     pub fn new(tl: &Timeline, t: f64, speed: f64) -> Result<Self> {
         let dev = cpal::default_host().default_output_device().context("no audio device")?;
         let rate = dev.default_output_config()?.sample_rate();
-        let mut child = ffmpeg()
-            .args(["-v", "error"])
-            .args(audio_args(tl, t, rate.0, speed))
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .context("ffmpeg not found")?;
+        let mut child = start(
+            ffmpeg()
+                .args(["-v", "error"])
+                .args(audio_args(tl, t, rate.0, speed))
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null()),
+        )
+        .context("ffmpeg not found")?;
         let mut out = child.stdout.take().unwrap();
         let buf = Arc::new(Mutex::new(VecDeque::<f32>::new()));
         let (played, fed, eof) = (
