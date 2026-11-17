@@ -19,6 +19,8 @@ jobs:
       RUSTFLAGS: -Dwarnings
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - run: brew install ffmpeg
       - run: rustup update stable && rustup default stable
       - uses: actions/cache@v4
@@ -55,3 +57,4 @@ jobs:
         with:
           name: Origami-${{ matrix.os }}
           path: dist/Origami.dmg
+          if-no-files-found: error

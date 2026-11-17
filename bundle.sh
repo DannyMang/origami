@@ -18,12 +18,13 @@ cargo build --release --manifest-path origami-app/Cargo.toml
 cargo build --release --manifest-path origami-engine/Cargo.toml
 
 rm -rf dist
-mkdir -p "$bin"
+mkdir -p "$bin" "$app/Contents/Resources"
 cp "${CARGO_TARGET_DIR:-origami-app/target}/release/origami-app" "$bin/"
 cp "${CARGO_TARGET_DIR:-origami-engine/target}/release/origami" "$bin/"
 if [ -n "${FFMPEG_DIR:-}" ]; then
   cp "$FFMPEG_DIR/ffmpeg" "$FFMPEG_DIR/ffprobe" "$bin/"
 fi
+cp LICENSE.md THIRD-PARTY.md "$app/Contents/Resources/"
 
 cat > "$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -72,14 +73,19 @@ cat > "$app/Contents/Info.plist" <<EOF
 EOF
 plutil -lint "$app/Contents/Info.plist"
 
-if [ -n "${SIGN_ID:-}" ]; then
-  for tool in origami ffmpeg ffprobe; do
-    [ ! -e "$bin/$tool" ] || codesign --force --timestamp --options runtime --sign "$SIGN_ID" "$bin/$tool"
-  done
-  codesign --force --timestamp --options runtime --entitlements origami.entitlements --sign "$SIGN_ID" "$app"
-fi
+sign=(codesign --force --options runtime --sign "${SIGN_ID:--}")
+[ -z "${SIGN_ID:-}" ] || sign+=(--timestamp)
+for tool in origami ffmpeg ffprobe; do
+  [ ! -e "$bin/$tool" ] || "${sign[@]}" --identifier "$BUNDLE_ID.$tool" "$bin/$tool"
+done
+"${sign[@]}" --entitlements origami.entitlements "$app"
+codesign --verify --deep --strict "$app"
 
-hdiutil create -volname Origami -srcfolder "$app" -format UDZO dist/Origami.dmg
+mkdir dist/dmg
+ditto "$app" dist/dmg/Origami.app
+ln -s /Applications dist/dmg/Applications
+hdiutil create -volname Origami -srcfolder dist/dmg -format UDZO dist/Origami.dmg
+rm -rf dist/dmg
 
 if [ -n "${SIGN_ID:-}" ]; then
   codesign --force --timestamp --sign "$SIGN_ID" dist/Origami.dmg
