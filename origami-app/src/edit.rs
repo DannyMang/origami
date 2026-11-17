@@ -23,6 +23,46 @@ pub fn links(chain: &str) -> Vec<String> {
     out
 }
 
+#[derive(Default)]
+pub struct History(Vec<(usize, usize, Vec<String>)>);
+
+impl History {
+    pub fn push(&mut self, lines: Vec<String>) {
+        if let Some((head, tail, old)) = self.0.last_mut() {
+            *head = old.iter().zip(&lines).take_while(|(a, b)| a == b).count();
+            *tail = old[*head..]
+                .iter()
+                .rev()
+                .zip(lines[*head..].iter().rev())
+                .take_while(|(a, b)| a == b)
+                .count();
+            *old = old.drain(*head..old.len() - *tail).collect();
+        }
+        self.0.push((0, 0, lines));
+    }
+
+    pub fn pop(&mut self) -> Option<Vec<String>> {
+        let (.., top) = self.0.pop()?;
+        if let Some((head, tail, mid)) = self.0.last_mut() {
+            *mid = [&top[..*head], mid, &top[top.len() - *tail..]].concat();
+            (*head, *tail) = (0, 0);
+        }
+        Some(top)
+    }
+
+    pub fn last(&self) -> Option<&Vec<String>> {
+        self.0.last().map(|e| &e.2)
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn clear(&mut self) {
+        self.0.clear()
+    }
+}
+
 impl Origami {
     pub fn glyph(&self) -> f32 {
         self.font * 0.6023
@@ -312,6 +352,64 @@ impl Origami {
 
 #[cfg(test)]
 mod tests {
+    // A long run of random edits, undos and redos should bring back every earlier script exactly.
+    #[test]
+    fn history_keeps_every_step() {
+        let (mut seed, mut lines) = (7u64, vec![String::new(); 3]);
+        let mut roll = |n: usize| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as usize % n.max(1)
+        };
+        let (mut past, mut future) = (super::History::default(), super::History::default());
+        let (mut was, mut ahead): (Vec<Vec<String>>, Vec<Vec<String>>) = (vec![], vec![]);
+        for _ in 0..20000 {
+            match roll(10) {
+                0..2 => {
+                    if let Some(old) = past.pop() {
+                        assert_eq!(Some(&old), was.pop().as_ref());
+                        ahead.push(std::mem::replace(&mut lines, old));
+                        future.push(ahead.last().unwrap().clone());
+                    }
+                }
+                2 => {
+                    if let Some(new) = future.pop() {
+                        assert_eq!(Some(&new), ahead.pop().as_ref());
+                        was.push(std::mem::replace(&mut lines, new));
+                        past.push(was.last().unwrap().clone());
+                    }
+                }
+                k => {
+                    let old = lines.clone();
+                    let at = roll(lines.len() + 1);
+                    match k {
+                        3 => lines.insert(at, format!("{}", roll(3))),
+                        4 if at < lines.len() => drop(lines.remove(at)),
+                        5 => lines.splice(at.., (0..roll(4)).map(|i| i.to_string())).for_each(drop),
+                        6 => lines = lines.iter().rev().cloned().collect(),
+                        _ if at < lines.len() => lines[at].push(['a', 'b'][roll(2)]),
+                        _ => {}
+                    }
+                    match roll(5) {
+                        0 => assert_eq!(past.pop().as_ref(), was.pop().as_ref()),
+                        1 => continue,
+                        _ => {}
+                    }
+                    was.push(old.clone());
+                    past.push(old);
+                    future.clear();
+                    ahead.clear();
+                }
+            }
+            assert_eq!((past.len(), future.len(), past.last()), (was.len(), ahead.len(), was.last()));
+        }
+        while let Some(old) = past.pop() {
+            assert_eq!(Some(old), was.pop());
+        }
+        while let Some(new) = future.pop() {
+            assert_eq!(Some(new), ahead.pop());
+        }
+    }
+
     // A chain such as .trim(...).exposure(...) should be split into its separate calls.
     #[test]
     fn links() {
@@ -425,7 +523,7 @@ mod tests {
         }
         fs::write(&path, "").unwrap();
         settle(&view, cx);
-        view.update(cx, |o, _| (o.cursor, o.past) = (Some((0, 0)), vec![]));
+        view.update(cx, |o, _| (o.cursor, o.past) = (Some((0, 0)), Default::default()));
         cx.simulate_keystrokes("t cmd-s");
         settle(&view, cx);
         assert_eq!(fs::read_to_string(&path).unwrap(), "t\n");

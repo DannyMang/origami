@@ -85,7 +85,7 @@ impl Origami {
         let _ = fs::write(list, all.join("\n"));
         cx.set_menus(menus(&self.recent));
         (self.script, self.mtime, self.t, self.dirty, self.clash) = (path, None, 0., false, false);
-        (self.past, self.future, self.cursor, self.top, self.left) = (vec![], vec![], None, 0., 0.);
+        (self.past, self.future, self.cursor, self.top, self.left) = (Default::default(), Default::default(), None, 0., 0.);
         (self.folded, self.fresh) = (vec![], true);
         let stamp = |p: &Path| fs::metadata(p).and_then(|m| m.modified()).ok();
         let spare = crash::spare(&self.script);
@@ -493,9 +493,10 @@ mod tests {
             o.base = o.lines.clone();
             o.reshape(&Grab::Move, &c, 0.5);
             assert_eq!(o.lines[4], "  text(\"b\").for(2).shift(0.5000),");
-            (o.past, o.turning) = (vec![o.lines.clone()], Some(crate::knob::Turn::Wheel));
+            (o.past, o.turning) = (Default::default(), Some(crate::knob::Turn::Wheel));
+            o.past.push(o.lines.clone());
             o.release();
-            assert!(o.past.is_empty());
+            assert_eq!(o.past.len(), 0);
         });
     }
 

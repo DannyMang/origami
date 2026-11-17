@@ -6,10 +6,11 @@ use crate::{
 };
 use gpui::{Div, Window, div, prelude::*, px, rgb};
 use origami_lang::Kind;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 const RED: u32 = 0xd07277;
 
+#[derive(Clone)]
 pub struct Issue {
     pub row: usize,
     pub span: (usize, usize),
@@ -17,41 +18,52 @@ pub struct Issue {
 }
 
 impl Origami {
-    pub fn issues(&self) -> Vec<Issue> {
+    fn flags(&self, row: usize, line: &str) -> Vec<Issue> {
         let mut out = vec![];
-        for (row, line) in self.lines.iter().enumerate() {
-            let cols = |b: usize| line[..b].chars().count();
-            let mut flag = |a: usize, b: usize, text: String| {
-                out.push(Issue {
-                    row,
-                    span: (cols(a), cols(b)),
-                    text,
-                })
-            };
-            for (call, name, end, found) in calls(line) {
-                for k in found.iter().filter(|k| k.label != "#") {
-                    let what = if k.label.parse::<usize>().is_ok() { &call } else { &k.label };
-                    match k.hi <= k.lo {
-                        true if k.value < 0. && call != "shift" => flag(k.span.0, k.span.1, format!("{call} cannot be negative")),
-                        false if k.value < k.lo - 1e-9 || k.value > k.hi + 1e-9 => {
-                            flag(k.span.0, k.span.1, format!("{what} takes {} to {}", k.lo, k.hi))
-                        }
-                        _ => {}
-                    }
-                }
-                let media = |c: &&origami_lang::Clip| c.line as usize == row + 1 && matches!(c.kind, Kind::Video | Kind::Sound);
-                let total = self.tl.clips.iter().find(media).map_or(0., |c| c.total);
-                match (call.as_str(), &found[..]) {
-                    ("trim", [a, b]) if b.value <= a.value => flag(name, end + 1, "trim start must be before its end".into()),
-                    ("trim", [.., b]) if total > 0. && b.value > total + 0.05 => {
-                        flag(b.span.0, b.span.1, format!("the file is only {total:.2} s long"))
-                    }
-                    ("trim", [a, ..]) if total > 0. && a.value > total => {
-                        flag(a.span.0, a.span.1, format!("the file is only {total:.2} s long"))
+        let cols = |b: usize| line[..b].chars().count();
+        let mut flag = |a: usize, b: usize, text: String| {
+            out.push(Issue {
+                row,
+                span: (cols(a), cols(b)),
+                text,
+            })
+        };
+        for (call, name, end, found) in calls(line) {
+            for k in found.iter().filter(|k| k.label != "#") {
+                let what = if k.label.parse::<usize>().is_ok() { &call } else { &k.label };
+                match k.hi <= k.lo {
+                    true if k.value < 0. && call != "shift" => flag(k.span.0, k.span.1, format!("{call} cannot be negative")),
+                    false if k.value < k.lo - 1e-9 || k.value > k.hi + 1e-9 => {
+                        flag(k.span.0, k.span.1, format!("{what} takes {} to {}", k.lo, k.hi))
                     }
                     _ => {}
                 }
             }
+            let media = |c: &&origami_lang::Clip| c.line as usize == row + 1 && matches!(c.kind, Kind::Video | Kind::Sound);
+            let total = self.tl.clips.iter().find(media).map_or(0., |c| c.total);
+            match (call.as_str(), &found[..]) {
+                ("trim", [a, b]) if b.value <= a.value => flag(name, end + 1, "trim start must be before its end".into()),
+                ("trim", [.., b]) if total > 0. && b.value > total + 0.05 => {
+                    flag(b.span.0, b.span.1, format!("the file is only {total:.2} s long"))
+                }
+                ("trim", [a, ..]) if total > 0. && a.value > total => {
+                    flag(a.span.0, a.span.1, format!("the file is only {total:.2} s long"))
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    pub fn issues(&self) -> Vec<Issue> {
+        let (mut out, key) = (vec![], (self.rev, Arc::as_ptr(&self.tl) as usize));
+        let mut kept = self.linted.borrow_mut();
+        kept.resize_with(self.lines.len(), Default::default);
+        for ((row, line), (seen, at, found)) in self.lines.iter().enumerate().zip(kept.iter_mut()) {
+            if seen != line || *at != key {
+                (*seen, *at, *found) = (line.clone(), key, self.flags(row, line));
+            }
+            out.extend(found.iter().cloned());
         }
         let mut open: Vec<(usize, usize, char)> = vec![];
         for (row, line) in self.lines.iter().enumerate() {

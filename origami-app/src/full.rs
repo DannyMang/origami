@@ -184,7 +184,8 @@ mod tests {
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut app = crate::fresh(cx.focus_handle(), vec![]);
             (app.script, app.lines, app.tl) = (path.clone(), src.lines().map(String::from).collect(), Arc::new(tl));
-            (app.full, app.past) = (true, vec![vec![]]);
+            app.full = true;
+            app.past.push(vec![]);
             window.focus(&app.focus);
             app
         });

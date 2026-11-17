@@ -5,6 +5,7 @@ use crate::{
 use gpui::{Context, Div, MouseButton, MouseDownEvent, Pixels, Point, Window, div, img, prelude::*, px, rgb, rgba};
 use origami_engine::tone;
 use origami_lang::Clip;
+use std::borrow::Cow;
 
 pub struct Knob {
     pub label: String,
@@ -181,15 +182,15 @@ fn scan(line: &str, call: &str, from: usize, end: usize) -> Vec<Knob> {
             _ => {}
         }
         if let Some(value) = found {
-            let label = match () {
-                _ if square > 0 => ["x", "y"][pair % 2].to_string(),
-                _ if !key.is_empty() => key.clone(),
-                _ => arg.to_string(),
+            let label: Cow<str> = match () {
+                _ if square > 0 => ["x", "y"][pair % 2].into(),
+                _ if !key.is_empty() => key.as_str().into(),
+                _ => arg.to_string().into(),
             };
             pair += (square > 0) as usize;
             if let Some((lo, hi)) = range(call, &label) {
                 out.push(Knob {
-                    label,
+                    label: label.into(),
                     span: (from, i + 1),
                     value,
                     lo,

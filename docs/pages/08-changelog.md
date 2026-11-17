@@ -15,6 +15,8 @@ What changed in each version of Origami. The launch screen shows the version you
 - If ffmpeg is missing, Origami says so and how to install it: `brew install ffmpeg`, then reopen Origami.
 - The Open Recent list moved to `~/Library/Application Support/Origami`; your old list is carried over.
 - **Safer to open other people's projects.** A project can no longer make Origami write outside its folder through a planted link, make ffmpeg open a web address, or preset a web address as the export destination. Devices, pipes and oversized caption files are refused instead of freezing the app. The update notice only links to Origami's own GitHub page.
+- Undo history uses far less memory: each step keeps only the lines that changed.
+- Typing in very long scripts is up to three times faster.
 - Fixed a rare freeze where the preview, thumbnails or an export could wait forever on an ffmpeg that had already finished.
 - **Menu bar.** Origami, File, Edit, View, Window and Help menus, with every existing shortcut on its item. New: ⌘N new file, ⌘O open, ⇧⌘E export, ⌘W close, ⌘M minimize, ⌘H hide.
 - **Open….** A button on the launch screen and ⌘O open any script, and double-clicking a `.js` file in Finder (or Open With › Origami) opens it. Opening another script or quitting asks before losing unsaved changes, and quitting asks before stopping a running export.

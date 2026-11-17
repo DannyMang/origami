@@ -329,7 +329,9 @@ mod tests {
             } else {
                 format!("{DEF}{src}")
             };
-            view.update(cx, |o, _| (o.lines, o.past) = (src.lines().map(String::from).collect(), vec![]));
+            view.update(cx, |o, _| {
+                (o.lines, o.past) = (src.lines().map(String::from).collect(), Default::default())
+            });
             for (verb, z, t) in steps {
                 sync(&view, cx);
                 view.update(cx, |o, cx| {

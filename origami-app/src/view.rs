@@ -1296,4 +1296,42 @@ mod tests {
             assert_eq!((o.scans().2[0].row, o.scans().3.len()), (1, 2));
         });
     }
+
+    // Warnings kept line by line between edits should match warnings worked out afresh after a
+    // line changes, a line is added above the others and a new timeline gives a file's length.
+    #[gpui::test]
+    fn kept_warnings_match_fresh(cx: &mut gpui::TestAppContext) {
+        let path = std::env::temp_dir().join("origami-kept-warnings-test.js");
+        std::fs::write(&path, "color('#000').for(1)").unwrap();
+        let mut tl = origami_lang::eval(&path, false, origami_engine::footprint).unwrap();
+        (tl.clips[0].kind, tl.clips[0].total, tl.clips[0].line) = (origami_lang::Kind::Video, 5., 5);
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            let src = [
+                "stack(",
+                "  text('a').opacity(3),",
+                "  video('a.mp4').trim(2, 1),",
+                "  video('b.mp4').trim(0, 9),",
+                ")",
+            ];
+            app.lines = src.map(String::from).into();
+            app
+        });
+        view.update(cx, |o, _| {
+            let all = |o: &crate::Origami| o.issues().into_iter().map(|i| (i.row, i.span, i.text)).collect::<Vec<_>>();
+            let check = |o: &crate::Origami| {
+                let kept = all(o);
+                o.linted.take();
+                assert_eq!(kept, all(o));
+                kept.len()
+            };
+            assert_eq!(check(o), 2);
+            o.lines[1] = "  text('a').opacity(0.5),".into();
+            assert_eq!(check(o), 1);
+            o.lines.insert(0, "let x = 1".into());
+            assert_eq!(check(o), 1);
+            (o.tl, o.rev) = (std::sync::Arc::new(tl), o.rev + 1);
+            assert_eq!(check(o), 2);
+        });
+    }
 }

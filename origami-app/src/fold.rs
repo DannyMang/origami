@@ -8,7 +8,9 @@ pub struct Region {
 }
 
 pub fn depth(l: &str) -> i32 {
-    l.chars().fold(0, |d, c| d + "([{".contains(c) as i32 - ")]}".contains(c) as i32)
+    l.bytes().fold(0, |d, c| {
+        d + matches!(c, b'(' | b'[' | b'{') as i32 - matches!(c, b')' | b']' | b'}') as i32
+    })
 }
 
 fn kind(l: &str) -> Option<&'static str> {

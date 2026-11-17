@@ -456,7 +456,9 @@ mod tests {
         let state = |cx: &mut VisualTestContext| view.update(cx, |o, _| (o.lines.join("\n"), o.past.len()));
         view.update(cx, |o, _| {
             (o.full, o.finding, o.cursor) = (false, None, None);
-            (o.lines, o.past) = (vec!["c".into()], vec![vec!["a".into()], vec!["b".into()]]);
+            (o.lines, o.past) = (vec!["c".into()], Default::default());
+            o.past.push(vec!["a".into()]);
+            o.past.push(vec!["b".into()]);
         });
         assert!(press(cx, "cmd-z"));
         assert_eq!(state(cx), ("b".into(), 1));
