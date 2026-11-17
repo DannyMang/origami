@@ -546,7 +546,7 @@ mod tests {
         view.update(cx, |_, cx| cx.on_app_quit(Origami::keep).detach());
         view.update(cx, edit);
         view.update_in(cx, |o, window, cx| o.run("q!", window, cx));
-        let _ = view.update(cx, |o, cx| o.keep(cx));
+        drop(view.update(cx, |o, cx| o.keep(cx)));
         assert!(!spare.exists());
         view.update(cx, edit);
         cx.cx.update(|cx| cx.shutdown());

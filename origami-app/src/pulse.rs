@@ -1,5 +1,5 @@
 use crate::{
-    Origami,
+    Origami, crash,
     menu::menus,
     release::VERSION,
     view::{BAR, DIM, TEXT},
@@ -29,18 +29,10 @@ type Said = (String, String, usize);
 
 static SAID: LazyLock<Mutex<Said>> = LazyLock::new(|| Mutex::new(read(&file())));
 
-static MAC: LazyLock<String> = LazyLock::new(|| {
-    let out = origami_lang::output(Command::new("/usr/bin/sw_vers").arg("-productVersion"));
-    out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default()
-});
-
-fn home() -> PathBuf {
-    PathBuf::from(env::var("HOME").unwrap_or_default())
-}
+static MAC: LazyLock<String> = LazyLock::new(|| crash::reply(Command::new("/usr/bin/sw_vers").arg("-productVersion")));
 
 fn file() -> PathBuf {
-    home().join("Library/Application Support/Origami/pulse")
+    crash::home().join("Library/Application Support/Origami/pulse")
 }
 
 fn said() -> MutexGuard<'static, Said> {
@@ -141,7 +133,7 @@ fn crash(log: &str) -> Option<(String, String)> {
 }
 
 pub fn launch() {
-    let log = fs::read(home().join("Library/Logs/Origami/origami.log")).unwrap_or_default();
+    let log = fs::read(crash::journal()).unwrap_or_default();
     let log = String::from_utf8_lossy(&log);
     let mark = mem::replace(&mut said().2, log.len());
     if mark != log.len() {

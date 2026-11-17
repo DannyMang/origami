@@ -107,7 +107,7 @@ impl Origami {
         }
         let fps = p.tl.fps.max(1) as f64;
         let want = (p.t * fps).round() as i64;
-        if p.busy || p.shown == Some(want) && !(p.rough && !self.eyeing) || !p.tl.clips.iter().any(|c| c.video) {
+        if p.busy || p.shown == Some(want) && (!p.rough || self.eyeing) || !p.tl.clips.iter().any(|c| c.video) {
             return;
         }
         p.busy = true;
@@ -338,7 +338,7 @@ mod tests {
         let at = |cx: &mut gpui::VisualTestContext| view.update(cx, |o, _| (o.peek.as_ref().unwrap().t, o.eyeing));
         cx.simulate_mouse_move(bar(0.5), None, Modifiers::default());
         cx.simulate_mouse_down(bar(0.5), MouseButton::Left, Modifiers::default());
-        assert_eq!(at(cx).1, true);
+        assert!(at(cx).1);
         cx.simulate_mouse_move(bar(0.25), Some(MouseButton::Left), Modifiers::default());
         assert!((at(cx).0 - 1.).abs() < 0.05, "{:?}", at(cx));
         cx.simulate_mouse_up(bar(0.25), MouseButton::Left, Modifiers::default());

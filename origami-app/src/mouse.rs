@@ -3,20 +3,20 @@ use crate::{
     clip::set,
     crash,
     menu::menus,
-    saves::Shelf,
     scene::{FOOT, LEAD, sink},
+    shelf::Shelf,
     view::{HEAD, RULER},
 };
 use gpui::{Context, Pixels, ScrollWheelEvent, Window, px};
 use origami_lang::{Clip, Kind};
 use std::{
-    env, fs, mem,
+    fs, mem,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 pub fn recent() -> PathBuf {
-    carried(Path::new(&env::var("HOME").unwrap_or_default()))
+    carried(&crash::home())
 }
 
 fn carried(home: &Path) -> PathBuf {
@@ -291,6 +291,7 @@ impl Origami {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
 
     // The recent list should live in Application Support, start from the old ~/.origami list the first
     // time, leave that old file alone, and never replace a new list with the old one.

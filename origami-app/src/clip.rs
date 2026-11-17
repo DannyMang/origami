@@ -213,7 +213,7 @@ impl Origami {
 
     pub fn lay(&mut self) {
         if self.copied.is_empty() {
-            return self.note = "nothing copied yet: select a clip and press cmd+C".into();
+            return self.note = "nothing copied yet: select a clip and press cmd+c".into();
         }
         let name: String = self.copied.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
         if !self.copied[name.len()..].starts_with('(') && !self.lines.iter().any(|l| named(l) == Some(&name)) {

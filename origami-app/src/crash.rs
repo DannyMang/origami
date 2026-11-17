@@ -16,14 +16,31 @@ use std::{
 
 pub static UNSAVED: Mutex<Option<(PathBuf, String)>> = Mutex::new(None);
 
+pub fn home() -> PathBuf {
+    match cfg!(test) {
+        true => env::temp_dir().join("origami-home-test"),
+        false => PathBuf::from(env::var("HOME").unwrap_or_default()),
+    }
+}
+
+pub fn journal() -> PathBuf {
+    home().join("Library/Logs/Origami/origami.log")
+}
+
+pub fn reply(cmd: &mut Command) -> String {
+    origami_lang::output(cmd)
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
 pub fn kept(script: &Path, what: &str) -> PathBuf {
     let key = script
         .as_os_str()
         .as_bytes()
         .iter()
         .fold(0xcbf29ce484222325, |h: u64, b| (h ^ *b as u64).wrapping_mul(0x100000001b3));
-    let home = PathBuf::from(env::var("HOME").unwrap_or_default());
-    home.join("Library/Application Support/Origami")
+    home()
+        .join("Library/Application Support/Origami")
         .join(what)
         .join(format!("{key:016x}"))
 }
@@ -54,11 +71,11 @@ fn rescue(what: &str, log: &Path) {
     if let Some((script, text)) = UNSAVED.try_lock().ok().and_then(|u| u.clone()) {
         stash(&script, &text);
     }
-    let when = origami_lang::output(&mut Command::new("/bin/date")).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    let when = reply(&mut Command::new("/bin/date"));
     let me = thread::current();
     let entry = format!(
         "{} thread '{}' {what}\n{}\n",
-        when.unwrap_or_default(),
+        when,
         me.name().unwrap_or("<unnamed>"),
         Backtrace::force_capture()
     );
@@ -71,7 +88,7 @@ fn rescue(what: &str, log: &Path) {
 }
 
 pub fn guard() {
-    let log = PathBuf::from(env::var("HOME").unwrap_or_default()).join("Library/Logs/Origami/origami.log");
+    let log = journal();
     let default = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
         origami_engine::halt();

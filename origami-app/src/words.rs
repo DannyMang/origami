@@ -465,7 +465,7 @@ mod tests {
         assert_eq!((line(cx), shown(cx)), ((first.clone(), 0, false), "it".into()));
         view.update(cx, |o, _| o.lines[0] = first.replace("'it'", "'other'"));
         click(&view, cx, (0.5, 0.5), 2);
-        assert_eq!(line(cx).2, false);
+        assert!(!line(cx).2);
         view.update(cx, |o, _| o.lines[0] = first.clone());
         click(&view, cx, (0.5, 0.5), 2);
         cx.simulate_keystrokes("!");

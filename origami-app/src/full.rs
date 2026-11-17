@@ -161,16 +161,16 @@ mod tests {
         cx.simulate_mouse_move(rail(0.9), None, Modifiers::default());
         assert_eq!(at(cx), (true, false, 2.));
         click(cx, (w + WIDE) / 2. - 24., h - 48.);
-        assert_eq!(at(cx).0, false);
+        assert!(!at(cx).0);
         cx.simulate_keystrokes("f");
-        assert_eq!(at(cx).0, true);
+        assert!(at(cx).0);
         let shown = |cx: &mut gpui::VisualTestContext| view.update_in(cx, |o, window, cx| o.bar(window, cx).is_some());
         view.update(cx, |o, _| o.stir -= Duration::from_secs(3));
         assert!(!shown(cx));
         cx.simulate_mouse_move(far, None, Modifiers::default());
         assert!(shown(cx));
         cx.simulate_keystrokes("escape");
-        assert_eq!(at(cx).0, false);
+        assert!(!at(cx).0);
     }
 
     // In fullscreen the script and the timeline are hidden, so keys that would edit them do nothing,

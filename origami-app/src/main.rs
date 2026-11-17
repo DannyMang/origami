@@ -18,6 +18,7 @@ mod release;
 mod saves;
 mod scene;
 mod search;
+mod shelf;
 mod ship;
 mod stage;
 mod tune;
@@ -159,7 +160,7 @@ struct Origami {
     loading: usize,
     export: Option<Arc<Mutex<(String, bool)>>>,
     ship: Option<ship::Ship>,
-    shelf: Option<Arc<saves::Shelf>>,
+    shelf: Option<Arc<shelf::Shelf>>,
     saves: Option<saves::Saves>,
     shelving: bool,
     take: Option<voice::Take>,
@@ -181,10 +182,7 @@ fn clock(script: &Path) -> String {
     if saved.0 == secs / 60 {
         return saved.1;
     }
-    let out = origami_lang::output(Command::new("/bin/date").args(["-r", &secs.to_string(), "+%H:%M"]));
-    let text = out
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
+    let text = crash::reply(Command::new("/bin/date").args(["-r", &secs.to_string(), "+%H:%M"]));
     *SAVED.lock().unwrap() = (secs / 60, text.clone());
     text
 }
@@ -573,7 +571,7 @@ fn main() {
     thread::spawn(Player::warm);
     let app = Application::new();
     app.on_open_urls(|urls| {
-        if let Some(path) = urls.iter().filter_map(|u| menu::local(u)).last() {
+        if let Some(path) = urls.iter().filter_map(|u| menu::local(u)).next_back() {
             *menu::ARRIVED.lock().unwrap() = Some(path);
         }
     });

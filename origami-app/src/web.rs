@@ -94,7 +94,7 @@ impl Origami {
             t.iter()
                 .filter_map(move |(name, l)| Some((port(source(l)?, l.attr, true)?, port(i, name, false)?, l.wire)))
         });
-        let wires: Vec<((f32, f32), (f32, f32), Option<(bool, f64)>)> = wires.collect();
+        let wires: Vec<_> = wires.collect();
         let badges = wires.iter().filter_map(|&(a, b, wire)| {
             let (mul, n) = wire?;
             let text = match (mul, n < 0.) {

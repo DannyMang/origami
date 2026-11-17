@@ -184,7 +184,7 @@ impl Origami {
         self.sel = Some(self.tl.clips.len() as u32);
         self.reveal(row);
         pulse::beat("voiceover recorded");
-        self.note = format!("added voice_{0} \u{b7} voice/take-{0}.wav \u{b7} cmd+Z removes it", take.n);
+        self.note = format!("added voice_{0} \u{b7} voice/take-{0}.wav \u{b7} cmd+z removes it", take.n);
     }
 
     pub fn recorder(&self, cx: &mut Context<Self>) -> Div {
@@ -411,7 +411,7 @@ mod tests {
         let (got, past, note, on) = view.update(cx, |o, _| (o.lines.join("\n"), o.past.len(), o.note.clone(), o.take.is_some()));
         let want = "const a = sound(\"a.mp3\")\n  .volume(0.5)\nconst voice_2 = sound(\"voice/take-2.wav\")\n\nstack(\n  color(\"#203040\").for(4),\n  a,\n  voice_2.at(1.5),\n)";
         assert_eq!((got.as_str(), past, on), (want, 1, false));
-        assert_eq!(note, "added voice_2 \u{b7} voice/take-2.wav \u{b7} cmd+Z removes it");
+        assert_eq!(note, "added voice_2 \u{b7} voice/take-2.wav \u{b7} cmd+z removes it");
         assert_eq!(fs::read_to_string(dir.join("edit.js")).unwrap(), format!("{want}\n"));
         assert_eq!(fs::read_to_string(dir.join("voice/take-1.wav")).unwrap(), "old");
         cx.simulate_keystrokes("cmd-z");

@@ -91,7 +91,7 @@ impl Origami {
             self.search(if again { "enter" } else { &k }, key.modifiers.shift);
             return cx.notify();
         }
-        if self.choose(&k, plain) || self.cursor.is_none() && self.leaf(&k, plain) {
+        if self.choose(&k, plain) || self.cursor.is_none() && self.leaf(&k, plain, cx) {
             return cx.notify();
         }
         if self.knobbed.take().is_some() && k == "escape" {
@@ -357,8 +357,6 @@ mod tests {
         );
     }
 
-    // Clicking the timecode should copy a time that, pasted into .at(...), starts on the frame shown,
-    // even at high frame rates.
     // Exporting while an export runs should say so instead of starting a second render, and halting
     // (as on quit or a crash) should stop a running export's ffmpeg at once.
     #[gpui::test]
@@ -402,6 +400,8 @@ mod tests {
         assert!(stuck.join().unwrap().is_err() && from.elapsed() < Duration::from_secs(10));
     }
 
+    // Clicking the timecode should copy a time that, pasted into .at(...), starts on the frame shown,
+    // even at high frame rates.
     #[gpui::test]
     fn copies_the_frame_shown(cx: &mut gpui::TestAppContext) {
         let path = env::temp_dir().join("origami-timecode-test.js");
