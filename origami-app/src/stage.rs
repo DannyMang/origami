@@ -161,8 +161,8 @@ mod tests {
         Bounds::new(point(px(x), px(y)), size(px(w), px(h)))
     }
 
-    // The preview picture is fitted inside its panel with empty bars beside or above it. A pointer
-    // position on screen should translate to the right spot in the picture.
+    // The preview picture is fitted inside its panel with empty bars beside or above it, and a pointer
+    // position on screen maps to the matching spot in the picture, even outside it.
     #[test]
     fn pointer_maps_through_the_letterbox() {
         let wide = letterbox(room(0., 68., 1000., 520.), 10., (800, 400));
@@ -203,9 +203,9 @@ mod tests {
         assert_eq!((rest(0.1, 0., 0.), rest(0.5, 2., 3.)), (0.1, -0.5));
     }
 
-    // Dragging a clip in the preview should rewrite its .pos(...) in the script: a plain position when
-    // it has no keys, a new or updated key at the playhead when it does. A drag that changes nothing
-    // leaves the script alone.
+    // Dragging a clip in the preview rewrites only the moved parts of its .pos(...) in the script, as a
+    // plain position when it has no keys or a new or updated key at the playhead when it does, and a
+    // drag that changes nothing leaves the script alone.
     #[test]
     fn drags_rewrite_pos() {
         let src = "const shot = color(\"#203040\").for(6)

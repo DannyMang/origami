@@ -488,9 +488,9 @@ mod tests {
         assert_eq!(view.update(cx, |o, _| o.lines.clone()), ["stack("]);
     }
 
-    // Opening scripts with mistakes should mark the line that is wrong. Undoing back to an empty
-    // script should stay empty and redo should bring the text back, deleting the script file outside the app should keep the code
-    // on screen and offer to save it again, and :e with a name that does not exist opens nothing.
+    // A script that never ends reports that it took too long and one with a mistake marks the wrong line,
+    // undoing back to an empty script saves it empty, deleting the script file outside the app keeps the
+    // code on screen and offers to save it again, and :e with a name that does not exist opens nothing.
     #[gpui::test]
     fn loads_and_marks(cx: &mut TestAppContext) {
         let dir = std::env::temp_dir().join("origami-loads-test");

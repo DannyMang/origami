@@ -456,11 +456,11 @@ pub mod tests {
 
     pub static ONE: Mutex<()> = Mutex::new(());
 
-    // The export dialog should open on the project's name at High quality, export what was picked when
-    // Enter is pressed (here ProRes at twice the size, only the selected clip, as a .mov), remember those
-    // choices for the next time it opens, and close on Esc without exporting. Exporting onto a file that
-    // already exists should ask first: Cancel leaves the dialog open and the file alone, Keep Both saves
-    // the new export next to it with a number, and Replace writes over it.
+    // The export dialog opens on the project's name at High quality, Enter exports what was picked (here
+    // ProRes at twice the size, only the selected clip, as a .mov) and the next opening remembers the file,
+    // format and size, Esc closes it without exporting, and exporting onto a file that already exists asks
+    // first, Cancel leaving the dialog open and the file alone, Keep Both saving the new export beside it
+    // with a number and Replace writing over it.
     #[gpui::test]
     fn exports_what_is_picked(cx: &mut gpui::TestAppContext) {
         let _one = ONE.lock();

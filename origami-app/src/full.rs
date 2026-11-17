@@ -110,9 +110,9 @@ mod tests {
     use origami_engine::footprint;
     use std::sync::Arc;
 
-    // Fullscreen preview should open and close from its button, the F key and Escape. Its bar should
-    // scrub the playhead, stop when the button is let go even outside the window, and hide after a
-    // few seconds without mouse movement.
+    // Fullscreen preview opens from its button or the F key and closes from its own button or Escape, and
+    // its bar scrubs the playhead, stops when the mouse button is let go even outside the window, hides
+    // after a few seconds without mouse movement and comes back when the mouse moves.
     #[gpui::test]
     fn scrub(cx: &mut gpui::TestAppContext) {
         let path = std::env::temp_dir().join("origami-full-test.js");

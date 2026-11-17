@@ -94,7 +94,7 @@ impl Origami {
             cx.background_executor()
                 .spawn(async move {
                     if let Some(s) = old {
-                        s.drain()
+                        s.drain(true)
                     }
                 })
                 .detach();
@@ -329,8 +329,8 @@ mod tests {
         );
     }
 
-    // Scrolling the wheel over the timeline should zoom in, and scrolling back should never zoom out
-    // further than showing the whole timeline.
+    // A double click on the timeline moves the playhead there, scrolling the wheel over it zooms in, and
+    // scrolling back never zooms out further than showing the whole timeline.
     #[gpui::test]
     fn zooms(cx: &mut gpui::TestAppContext) {
         let path = env::temp_dir().join("origami-zoom-test.js");
@@ -460,9 +460,9 @@ mod tests {
         assert!(gone);
     }
 
-    // Dragging a clip that shares its line with another clip, or whose call is spread over several
-    // lines, should leave the script alone with a note, and should not add an undo step. A clip on
-    // its own line still moves. Pressing a knob without turning it adds no undo step either.
+    // Moving, trimming or shifting a clip that shares its line with another, or trimming one whose call
+    // is spread over several lines, leaves the script alone with a note and no undo step, while a clip
+    // on its own line still moves and letting go of a knob that changed nothing adds no undo step.
     #[gpui::test]
     fn drags_refuse_unsafe_rewrites(cx: &mut gpui::TestAppContext) {
         let shared = "stack(text(\"a\").for(2), text(\"b\").for(2).at(1))";

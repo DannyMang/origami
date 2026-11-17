@@ -3,7 +3,10 @@ use std::{
     fs::{self, DirBuilder, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     mem,
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt},
+    os::unix::{
+        ffi::OsStrExt,
+        fs::{DirBuilderExt, OpenOptionsExt},
+    },
     path::{Path, PathBuf},
     process::Command,
     sync::Mutex,
@@ -48,7 +51,7 @@ struct Log {
 
 pub struct Shelf {
     dir: PathBuf,
-    name: String,
+    script: PathBuf,
     pub queue: Mutex<Vec<(String, u64, Option<String>)>>,
     log: Mutex<Option<Log>>,
 }
@@ -87,6 +90,17 @@ fn slice(path: &Path, from: u64, to: u64) -> Option<Vec<u8>> {
     let mut buf = vec![0; (to - from) as usize];
     file.read_exact(&mut buf).ok()?;
     Some(buf)
+}
+
+fn swap(path: &Path, bytes: &[u8], sync: bool) -> io::Result<()> {
+    let fresh = path.with_extension("new");
+    let _ = fs::remove_file(&fresh);
+    let mut file = make(&fresh)?;
+    file.write_all(bytes)?;
+    if sync {
+        file.sync_data()?;
+    }
+    fs::rename(&fresh, path)
 }
 
 fn room(dir: &Path) -> io::Result<()> {
@@ -245,24 +259,31 @@ impl Shelf {
     pub fn new(script: &Path) -> Self {
         Shelf {
             dir: crash::kept(script, "history"),
-            name: place(script).0,
+            script: script.into(),
             queue: Mutex::default(),
             log: Mutex::default(),
         }
     }
 
     pub fn holds(&self, script: &Path) -> bool {
-        self.dir == crash::kept(script, "history")
+        self.script == script
     }
 
     pub fn put(&self, text: String, mark: Option<String>) {
         self.queue.lock().unwrap().push((text, now(), mark));
     }
 
-    pub fn drain(&self) {
+    pub fn drain(&self, sync: bool) {
         let mut log = self.log.lock().unwrap();
         let _ = room(&self.dir);
         let _held = make(&self.dir.join("lock")).and_then(|f| f.lock().map(|_| f));
+        match self.mine() {
+            Some(false) => return self.queue.lock().unwrap().clear(),
+            Some(true) => {}
+            None => {
+                let _ = make(&self.dir.join("path")).and_then(|mut f| f.write_all(self.script.as_os_str().as_bytes()));
+            }
+        }
         loop {
             let batch = mem::take(&mut *self.queue.lock().unwrap());
             if batch.is_empty() {
@@ -270,13 +291,24 @@ impl Shelf {
             }
             for (text, t, mark) in batch {
                 let kept = log.take().filter(|l| l.size == self.size());
-                let log = log.insert(kept.unwrap_or_else(|| self.load(t)));
+                let log = log.insert(kept.unwrap_or_else(|| self.load(t, sync)));
                 log.size = match self.add(log, text, t, mark) {
                     Ok(end) if end <= CAP => self.size(),
                     _ => (u64::MAX, 0),
                 };
             }
+            if sync {
+                for name in ["log", "index"] {
+                    let _ = make(&self.dir.join(name)).and_then(|f| f.sync_data());
+                }
+            }
         }
+    }
+
+    fn mine(&self) -> Option<bool> {
+        let path = self.dir.join("path");
+        let kept = slice(&path, 0, len(&path)).filter(|p| !p.is_empty())?;
+        Some(kept == self.script.as_os_str().as_bytes())
     }
 
     fn size(&self) -> (u64, u64) {
@@ -284,6 +316,9 @@ impl Shelf {
     }
 
     pub fn list(&self) -> Vec<Entry> {
+        if self.mine() == Some(false) {
+            return vec![];
+        }
         let index = self.dir.join("index");
         let all = slice(&index, 0, len(&index)).unwrap_or_default();
         all.split(|b| *b == b'\n').filter_map(entry).collect()
@@ -314,8 +349,9 @@ impl Shelf {
         Some(lines)
     }
 
-    fn load(&self, now: u64) -> Log {
-        let (all, size) = (self.list(), len(&self.dir.join("log")));
+    fn load(&self, now: u64, sync: bool) -> Log {
+        let (listed, size) = (self.list(), len(&self.dir.join("log")));
+        let all: Vec<Entry> = listed.iter().filter(|e| e.end <= size).cloned().collect();
         let cut = match size > CAP {
             true => all
                 .iter()
@@ -336,8 +372,8 @@ impl Shelf {
                 ..e.clone()
             })
             .collect();
-        if cut > 0 || list.len() < all.len() {
-            let _ = self.rewrite(&list, cut);
+        if cut > 0 || list.len() < listed.len() {
+            let _ = self.rewrite(&list, cut, sync);
         }
         let newest = list.last().and_then(|e| {
             let text = self.read(e)?.iter().flat_map(|l| [l.as_str(), "\n"]).collect();
@@ -350,18 +386,12 @@ impl Shelf {
         }
     }
 
-    fn rewrite(&self, list: &[Entry], cut: u64) -> io::Result<()> {
+    fn rewrite(&self, list: &[Entry], cut: u64, sync: bool) -> io::Result<()> {
         let (log, index) = (self.dir.join("log"), self.dir.join("index"));
         if cut > 0 {
-            let fresh = self.dir.join("log.new");
-            let _ = fs::remove_file(&fresh);
-            make(&fresh)?.write_all(&slice(&log, cut, len(&log)).ok_or(io::ErrorKind::InvalidData)?)?;
-            fs::rename(&fresh, &log)?;
+            swap(&log, &slice(&log, cut, len(&log)).ok_or(io::ErrorKind::InvalidData)?, sync)?;
         }
-        let fresh = self.dir.join("index.new");
-        let _ = fs::remove_file(&fresh);
-        make(&fresh)?.write_all(list.iter().map(line).collect::<String>().as_bytes())?;
-        fs::rename(&fresh, &index)
+        swap(&index, list.iter().map(line).collect::<String>().as_bytes(), sync)
     }
 
     fn add(&self, log: &mut Log, text: String, t: u64, mark: Option<String>) -> io::Result<u64> {
@@ -390,7 +420,7 @@ impl Shelf {
         let adds: Vec<&str> = ops.iter().filter_map(|op| Some(came[op.1?]).filter(|_| op.0.is_none())).collect();
         let (clip, what) = match (&mark, &log.newest) {
             (Some(m), _) => (String::new(), m.clone()),
-            (_, None) if len(&index) == 0 => (String::new(), format!("first save of {}", self.name)),
+            (_, None) if len(&index) == 0 => (String::new(), format!("first save of {}", place(&self.script).0)),
             _ => sum(&dels, &adds),
         };
         let mut file = make(&path)?;
@@ -446,7 +476,7 @@ pub mod tests {
     pub fn save(shelf: &Shelf, lines: &[&str], t: u64, mark: Option<&str>) {
         let text = lines.iter().map(|l| format!("{l}\n")).collect();
         shelf.queue.lock().unwrap().push((text, t, mark.map(String::from)));
-        shelf.drain();
+        shelf.drain(false);
     }
 
     fn texts(shelf: &Shelf) -> Vec<Option<Vec<String>>> {
@@ -564,7 +594,7 @@ pub mod tests {
             save(&first, &[&n.to_string()], NOW - a, None);
         }
         let again = Shelf::new(&script);
-        again.load(NOW);
+        again.load(NOW, false);
         assert_eq!(again.list().len(), 7);
         assert_eq!(texts(&again)[0], owned(&["2"]));
     }
@@ -628,6 +658,65 @@ pub mod tests {
             texts(&first),
             [owned(&["a", "b", "c"]), owned(&["a", "B", "c"]), owned(&["a", "BB", "c", "d"])]
         );
+    }
+
+    // A log and an index cut short at any byte, either one ahead of the other, keep exactly the versions
+    // stored whole in both, and those and every save after the cut read back exactly.
+    #[test]
+    fn survives_a_power_cut() {
+        let (first, script) = shelf("power");
+        let text = |n: u64| (0..2 + n % 3).map(|i| format!("v{n} {}", (i + n) % 4)).collect::<Vec<_>>();
+        for n in 0..10 {
+            let lines = text(n);
+            save(&first, &lines.iter().map(String::as_str).collect::<Vec<_>>(), NOW + 100 * n, None);
+        }
+        let (log, index) = (fs::read(first.dir.join("log")).unwrap(), fs::read(first.dir.join("index")).unwrap());
+        let (mut rows, mut at) = (vec![], 0);
+        for piece in index.split(|b| *b == b'\n') {
+            at += piece.len() + 1;
+            rows.extend(entry(piece).map(|e| (at - 1, e.end as usize, e.t)));
+        }
+        let seed = &mut 9u64;
+        let mut roll = |n: usize| {
+            *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (*seed >> 33) as usize % (n + 1)
+        };
+        let cuts: Vec<(usize, usize)> = (0..=log.len())
+            .map(|a| (a, index.len()))
+            .chain((0..=index.len()).map(|b| (log.len(), b)))
+            .chain((0..300).map(|_| (roll(log.len()), roll(index.len()))))
+            .collect();
+        for (a, b) in cuts {
+            fs::write(first.dir.join("log"), &log[..a]).unwrap();
+            fs::write(first.dir.join("index"), &index[..b]).unwrap();
+            let again = Shelf::new(&script);
+            save(&again, &["new", "a"], NOW + 5000, None);
+            save(&again, &["new", "b"], NOW + 5100, None);
+            let kept = rows.iter().filter(|r| r.0 <= b && r.1 <= a).map(|r| Some(text((r.2 - NOW) / 100)));
+            let want: Vec<_> = kept.chain([owned(&["new", "a"]), owned(&["new", "b"])]).collect();
+            assert_eq!(texts(&again), want, "log cut at {a}, index cut at {b}");
+        }
+    }
+
+    // A history folder that records another script's path lists nothing for this script and takes none
+    // of its saves, while an empty record is claimed again by the next save.
+    #[test]
+    fn keeps_to_its_own_script() {
+        let (first, script) = shelf("owner");
+        save(&first, &["a"], NOW, None);
+        let path = first.dir.join("path");
+        assert_eq!(fs::read(&path).unwrap(), script.as_os_str().as_bytes());
+        let other = Shelf {
+            dir: first.dir.clone(),
+            ..Shelf::new(&script.with_file_name("other.js"))
+        };
+        assert!(other.list().is_empty());
+        save(&other, &["b"], NOW + 100, None);
+        assert!(other.queue.lock().unwrap().is_empty() && other.list().is_empty());
+        fs::write(&path, "").unwrap();
+        save(&first, &["c"], NOW + 200, None);
+        assert_eq!(fs::read(&path).unwrap(), script.as_os_str().as_bytes());
+        assert_eq!(texts(&first), [owned(&["a"]), owned(&["c"])]);
     }
 
     // A link or a pipe planted where the history lives is replaced, never followed or opened, and the

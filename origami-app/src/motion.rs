@@ -890,8 +890,8 @@ stack(shot, title.shift(1), tag, note, text(\"inline\").for(2))";
         edit(src, row, Kind::Text, name, |_| new.into())
     }
 
-    // A keys(...) expression in the script should be read into its separate keys and written back
-    // exactly as it was. Anything that is not a plain list of keys is left alone.
+    // A keys(...) expression reads into its separate keys, with each time placed in seconds, and writes
+    // back exactly as it was, while anything that is not a plain list of keys is not read as keys.
     #[test]
     fn reads_and_writes_keys() {
         let src = "keys([0, 0], [0.9, 1, \"slowOut\"], [-0.6, 1], [\"100%\", 0, bezier(0.3, 0, 0.6, 1)])";
@@ -916,9 +916,9 @@ stack(shot, title.shift(1), tag, note, text(\"inline\").for(2))";
         }
     }
 
-    // Dragging a key in the Motion tab should change its time and value, snap to whole frames, keep
-    // the way its time is written (seconds, from the end, or percent), and never pass the keys beside
-    // it. Values are kept within what each property allows.
+    // Dragging a key in the Motion tab changes its time and value, snaps to whole frames, keeps the way
+    // its time is written (seconds, from the end, or percent) and never passes the keys beside it or the
+    // start, with values rounded and kept within what each property allows.
     #[test]
     fn moves_a_key() {
         let mut k = keys("keys([0, 0], [0.9, 1, \"slowOut\"], [-0.6, 1], [\"100%\", 0])");
@@ -948,9 +948,9 @@ stack(shot, title.shift(1), tag, note, text(\"inline\").for(2))";
         );
     }
 
-    // Clicking the key diamond should add a key at the playhead or remove the one already there;
-    // removing the last key turns the property back into a plain number. Changing a value while
-    // animated updates the key at the playhead or adds one.
+    // Clicking the key diamond adds a key at the playhead or removes the one already there, turning the
+    // property back into a plain number when the last key goes, and changing an animated value updates
+    // the key at the playhead or adds one, while an unanimated value is simply set.
     #[test]
     fn toggles_a_key_at_the_playhead() {
         assert_eq!(toggle("", 1.5, 0.5, 4., 30.), "keys([1.5, 0.5])");
@@ -964,9 +964,9 @@ stack(shot, title.shift(1), tag, note, text(\"inline\").for(2))";
         assert_eq!(assign("null", 3.9, 0.2, 4., 30.), "0.2");
     }
 
-    // Changing a property in the Motion tab should edit the matching call in the clip's script, or add
-    // the call when it is missing, without disturbing the rest. A script too unusual to edit safely is
-    // left unchanged.
+    // Changing a property in the Motion tab edits the matching call in the clip's script, or adds the
+    // call when it is missing, without disturbing the rest, and leaves a script too unusual to edit
+    // safely unchanged.
     #[test]
     fn patches_the_chain() {
         let row = |s: &str, n: usize| s.lines().nth(n).unwrap().to_string();
@@ -1157,9 +1157,10 @@ stack(shot, title.at(1), tag, twin, text(\"inline\"))";
         assert_eq!(name("const k = () => text(\"a\")", 0, Kind::Text), None);
     }
 
-    // Connecting a property to another clip's should write the reference into the script, and refuse
-    // with a reason when the other clip is defined later or has no name. Breaking a connection writes
-    // the current value back as a plain number.
+    // Connecting a property to another clip's writes the reference into the script or refuses with a
+    // reason when the other clip comes later, has no name or the property cannot follow, changing a
+    // connected value rewrites only its offset or multiplier, and breaking a connection writes the
+    // current value back as a plain number.
     #[test]
     fn connects_and_breaks() {
         let row = |s: &str, n: usize| s.lines().nth(n).unwrap().to_string();

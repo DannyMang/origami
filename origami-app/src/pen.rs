@@ -51,10 +51,9 @@ mod tests {
     use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point};
     use std::{env, fs, mem, sync::Arc};
 
-    // Text placed with the type tool should be written as one new line at the playhead and at the
-    // clicked spot, rounded to three decimals: inside the script's stack when it ends in one, and
-    // otherwise by wrapping the last clip or cat in a stack. The new call is reported by where it
-    // starts on its line.
+    // Text placed with the type tool is written as one new call at the playhead and the clicked spot,
+    // rounded to three decimals, inside the script's stack when it ends in one and otherwise wrapping the
+    // last clip or cat in a stack, and is reported by where the call starts on its line.
     #[test]
     fn lands() {
         let on = |src: &str, t: f64, at: (f64, f64)| {
@@ -82,12 +81,10 @@ mod tests {
         assert_eq!(on("", 2., (0.5, 0.5)), "text(\"text\").at(2).for(3).pos(0.5, 0.5)");
     }
 
-    // The T button sits beside the speed button. Clicking it or pressing t arms the type tool, and
-    // clicking it again or pressing escape disarms it. While it is armed, a click in the picture adds
-    // a text clip there at the playhead and starts typing its words on the picture, replacing the
-    // placeholder: enter saves them and one undo then removes the whole clip, escape removes the
-    // clip again. A click beside the picture adds nothing. It works the same in keyboard mode, and
-    // does nothing on the launch screen.
+    // The T button beside the speed button, t and escape arm and disarm the type tool, and while it is
+    // armed, in mouse and keyboard mode alike, a click in the picture adds a text clip there at the
+    // playhead whose words are typed on the picture, enter keeping them so one undo removes the whole
+    // clip and escape removing it, while a click beside the picture or t on the launch screen does nothing.
     #[gpui::test]
     fn types(cx: &mut TestAppContext) {
         let path = env::temp_dir().join("origami-pen-test.js");

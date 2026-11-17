@@ -315,11 +315,10 @@ mod tests {
         }
     }
 
-    // Timeline commands (split, duplicate, copy, cut, paste, delete) should rewrite the script the way
-    // you would by hand and leave the clips at the right times; a split cuts where the frame on screen
-    // starts, with times to the millisecond unless a frame needs more decimals, so no frame is lost,
-    // and says where it cut when that is not the playhead.
-    // When a clip cannot be changed safely, the script is left alone and a note says why.
+    // Split, duplicate, copy, cut, paste and delete rewrite the script the way you would by hand and leave
+    // the clips at the right times, a split cutting where the frame on screen starts, to the millisecond
+    // unless a frame needs more decimals and with a note when that is not the playhead, while a clip that
+    // cannot be changed safely leaves the script alone with a note saying why.
     #[gpui::test]
     fn shapes(cx: &mut TestAppContext) {
         let (view, cx) = open(cx, "shapes");
@@ -528,9 +527,9 @@ mod tests {
         assert_eq!(view.update(cx, |o, _| (o.menu, o.lines.len())), ("", src.lines().count() - 1));
     }
 
-    // The right-click menu on a timeline clip and its keyboard shortcuts should do the same things,
-    // each one undoable, and dragging a clip sideways should shift it. While text is selected in the
-    // script, the same keys act on the text instead.
+    // The right-click menu on a timeline clip and its shortcut keys make the same undoable edits, Escape
+    // or a click elsewhere closes the menu, dragging a clip sideways shifts it, the keys change nothing in
+    // keyboard mode, and while text is selected in the script they act on the text instead.
     #[gpui::test]
     fn menu(cx: &mut TestAppContext) {
         let (view, cx) = open(cx, "menu");

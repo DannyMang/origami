@@ -279,10 +279,10 @@ mod tests {
     use gpui::{ClipboardItem, Entity, Modifiers, MouseButton, MouseDownEvent, TestAppContext, VisualTestContext};
     use std::{env, fs};
 
-    // The words of a text or caption can be rewritten only where they are one quoted string in the
-    // call on that line: a name, a template with ${}, joined strings, a method called text or the
-    // file of captions( ) are left alone. New words are written with the quotes the script already
-    // uses, with quotes, backslashes and line breaks escaped so they read back the same.
+    // The words of a text or caption are found only where they are one quoted string in the call on that
+    // line, never in a name, a template with ${}, joined strings, a comment, a method called text or the
+    // file of captions( ), and new words are escaped for the quotes the script already uses so they read
+    // back the same.
     #[test]
     fn finds_plain_words() {
         let at = |line: &'static str, said: &str| quoted(line, 0, said).map(|(r, q)| (&line[r], q));
@@ -361,11 +361,10 @@ mod tests {
         cx.run_until_parked();
     }
 
-    // Double-clicking a text in the preview should let its words be typed on the picture, in mouse
-    // mode and in keyboard mode: the picture follows every key, a caret shows where the next letter
-    // goes, and no other shortcut fires. Enter writes the words into the script as one undo step,
-    // escape leaves the script alone, a click elsewhere saves like enter, and shift+enter starts a
-    // new line. A text emptied of its words is not saved.
+    // Double-clicking a text in the preview, in mouse or keyboard mode, lets its words be typed on the
+    // picture with a caret and no other shortcut firing, enter, cmd+s or a click elsewhere writing them
+    // into the script as one undo step, escape leaving the script alone, shift+enter starting a new line,
+    // pasted text cleaned, and words emptied or on a line changed meanwhile never saved.
     #[gpui::test]
     fn retypes(cx: &mut TestAppContext) {
         let src = "let name = text('it', { size: 60 }).for(4)\nstack(\n  color(\"#203040\").for(4),\n  name,\n)";

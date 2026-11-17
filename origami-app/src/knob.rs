@@ -642,9 +642,9 @@ mod tests {
         knobs(line, at).map_or(vec![], |k| k.3.into_iter().map(|k| (k.label, k.value)).collect())
     }
 
-    // Pointing at a value in the script should offer the right drag controls for it: one per number in
-    // a call, a colour and strength for colours, points for curves. Nothing is offered for names,
-    // keyframes, or values that follow another clip.
+    // Pointing at a value offers the right drag controls (one per number in a call, a colour and strength
+    // for colours, points for curves) that write back in the script's own form, while names, keyframes
+    // and values that follow another clip offer none.
     #[test]
     fn finds() {
         let tied = "  .pos(title.pos.x, add(title2.pos.y, -0.06)).opacity(mul(title.opacity, 2)).scale(a1.scale)";
@@ -714,8 +714,8 @@ mod tests {
         found
     }
 
-    // Drag controls should stop at sensible limits: a trim cannot go past the clip's length or cross
-    // its other end, and sliders stay inside their range.
+    // Drag controls stop at sensible limits, a trim never going past the clip's length or crossing its
+    // other end and sliders staying inside their range, and values with no known range get no slider.
     #[test]
     fn bounds() {
         for free in ["a.for(5)", "a.at(2)", "a.shift(-1)", "a.loop(3)", "a.trim(0, 9)", "a.fade(1)"] {
@@ -731,9 +731,9 @@ mod tests {
         assert_eq!(part(&slides("a.temperature(-250)", 3, None)[0]), 0.);
     }
 
-    // On the curve pad, dragging a point should move it, clicking empty space should add one, and
-    // double-clicking a point should remove it, each rewriting the curve in the script. A drag let go
-    // outside the window ends there.
+    // On the curve pad, dragging a point moves it, clicking empty space adds one and double-clicking a
+    // point removes it, each rewriting the curve in the script, and a drag let go outside the window
+    // ends there as one undo step.
     #[gpui::test]
     fn pad(cx: &mut gpui::TestAppContext) {
         use gpui::{Modifiers, MouseButton, point};

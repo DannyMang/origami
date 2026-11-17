@@ -61,7 +61,7 @@ impl Origami {
             stash(&self.script, &self.text());
         }
         if let Some(s) = &self.shelf {
-            s.drain();
+            s.drain(false);
         }
         ready(())
     }

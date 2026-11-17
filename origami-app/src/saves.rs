@@ -209,7 +209,7 @@ impl Origami {
             let list = cx
                 .background_executor()
                 .spawn(async move {
-                    shelf.drain();
+                    shelf.drain(true);
                     open.then(|| shelf.list().into_iter().rev().collect())
                 })
                 .await;

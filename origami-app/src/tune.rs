@@ -155,9 +155,9 @@ mod tests {
     use gpui::{Modifiers, MouseButton, point};
     use origami_engine::footprint;
 
-    // While the playhead is dragged along the ruler the preview should come from the camera's .LRF
-    // sidecar, and the full picture should replace it once the button is let go. With proxy: false
-    // in settings the sidecar is never used.
+    // While the playhead is dragged along the ruler the preview comes from the camera's .LRF sidecar and
+    // the full picture replaces it once the button is let go, unless proxy: false in settings turns the
+    // sidecar off.
     #[gpui::test]
     fn proxies(cx: &mut gpui::TestAppContext) {
         let dir = std::env::temp_dir().join("origami-proxy-test");
@@ -209,9 +209,9 @@ mod tests {
         cx.simulate_mouse_up(point(px(x), px(y)), MouseButton::Left, Modifiers::default());
     }
 
-    // Picking a preview quality should add or update the settings line at the top of the script,
-    // keep the other settings, and take the entry out again when auto is picked. A rewritten script
-    // should still load with the chosen quality.
+    // Picking a preview quality adds or updates the settings line at the top of the script, keeping the
+    // other settings, takes the entry out again for auto, and the rewritten script loads with the chosen
+    // quality.
     #[test]
     fn rewrites_settings() {
         let tuned = |text: &str, to: &str| tuned(text, to).unwrap();
@@ -312,8 +312,9 @@ mod tests {
         }
     }
 
-    // The preview row in the "more" menu of the timeline bar should rewrite the script and save it
-    // with one click per choice, and each click should be one step of undo.
+    // The preview row in the "more" menu of the timeline bar rewrites and saves the script with one click
+    // per choice, each click one step of undo, and leaves a settings call it cannot rewrite alone with a
+    // note.
     #[gpui::test]
     fn picks(cx: &mut gpui::TestAppContext) {
         let path = std::env::temp_dir().join("origami-tune-test.js");

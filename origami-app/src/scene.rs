@@ -952,10 +952,11 @@ mod tests {
         assert_eq!((sink(50., 100., 200.), sink(f32::MAX, 231., 170.)), (0., 61.));
     }
 
-    // The font row in the click controls of a text call should open a list of this Mac's fonts that
-    // typing narrows. Picking one writes it into that call's options, adding them when there are none
-    // and replacing a variable only there; default removes it. Each pick is one undo and leaves the
-    // list open, escape changes nothing, and options the app cannot rewrite get a note instead of a list.
+    // The font row of a text call opens a scrolling list of this Mac's fonts that typing narrows and that
+    // shows the current font, each pick writing one undo step into that call's options (adding them when
+    // there are none, replacing a variable only there, removing the font for default, never writing a
+    // font name that is not plain text), while escape changes nothing, options the app cannot rewrite get
+    // a note instead, and the list also opens from the Motion tab.
     #[gpui::test]
     fn picks_fonts(cx: &mut gpui::TestAppContext) {
         use gpui::{Modifiers, VisualTestContext};
