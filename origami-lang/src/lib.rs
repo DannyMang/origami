@@ -4,18 +4,19 @@ mod tool;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use boa_engine::{
-    Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue, NativeFunction, Source, js_string, object::builtins::JsArray,
-    property::Attribute, script::Script,
+    Context, JsArgs, JsError, JsNativeError, JsObject, JsResult, JsString, JsValue, NativeFunction, Source, js_string,
+    object::builtins::JsArray, property::Attribute, script::Script,
 };
 pub use error::Error;
 pub use grade::{Curves, Grade, Secondary, Vignette, Wheels};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
     collections::BTreeMap,
     fs,
     io::{self, Read, Seek, SeekFrom},
+    mem,
     path::{Path, PathBuf},
     pin::pin,
     sync::{
@@ -45,7 +46,23 @@ pub enum Kind {
 #[serde(untagged)]
 pub enum Val {
     Fixed(f64),
-    Frames(u32, Vec<f32>),
+    Frames(u32, #[serde(deserialize_with = "frames")] Vec<f32>),
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Run {
+    Kept(usize),
+    Given(Vec<f32>),
+}
+
+fn frames<'a, D: Deserializer<'a>>(d: D) -> Result<Vec<f32>, D::Error> {
+    match Run::deserialize(d)? {
+        Run::Kept(i) => KEPT
+            .with_borrow_mut(|k| k.get_mut(i).map(mem::take))
+            .ok_or_else(|| D::Error::custom("no such run")),
+        Run::Given(s) => Ok(s),
+    }
 }
 
 impl Val {
@@ -171,6 +188,7 @@ thread_local! {
     static FAIL: RefCell<Option<Error>> = RefCell::default();
     static READ: RefCell<Vec<(u32, PathBuf)>> = RefCell::default();
     static COLD: RefCell<(bool, Vec<(String, PathBuf)>, Lock)> = RefCell::default();
+    static KEPT: RefCell<Vec<Vec<f32>>> = RefCell::default();
 }
 
 fn find(dir: &Path, rel: &str) -> Option<PathBuf> {
@@ -359,6 +377,17 @@ fn extent(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> 
     Ok(if num(3) == 0. { w } else { h }.into())
 }
 
+fn assigns(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
+    let src = args.get_or_undefined(0).to_string(cx)?.to_std_string_escaped();
+    let rows: Vec<JsValue> = src
+        .split('\n')
+        .enumerate()
+        .filter(|(_, s)| s.contains('='))
+        .map(|(i, s)| JsArray::from_iter([JsValue::from(i as u32 + 1), JsString::from(s).into()], cx).into())
+        .collect();
+    Ok(JsArray::from_iter(rows, cx).into())
+}
+
 fn tag(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
     let mut text = |i: usize| -> JsResult<String> { Ok(args.get(i).cloned().unwrap_or_default().to_string(cx)?.to_std_string_escaped()) };
     let (src, made, bare, called) = (text(0)?, text(1)?, text(2)?, text(3)?);
@@ -385,13 +414,37 @@ fn tag(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
     Ok(JsString::from(out + &src[from..]).into())
 }
 
-fn ramp(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
-    let mut list = |i: usize| -> JsResult<Vec<f64>> {
-        let all = JsArray::from_object(args.get_or_undefined(i).to_object(cx)?)?;
-        (0..all.length(cx)?).map(|j| all.get(j, cx)?.to_number(cx)).collect()
+fn pairs(keys: &JsValue, d: f64, cx: &mut Context) -> JsResult<Option<Vec<(f64, f64, bool)>>> {
+    let all = JsArray::from_object(keys.to_object(cx)?)?;
+    let pair = |j, cx: &mut Context| {
+        let Some(p) = all.get(j, cx)?.as_object().filter(JsObject::is_array) else {
+            return Ok(None);
+        };
+        let (s, v, e) = (p.get(0, cx)?, p.get(1, cx)?, p.get(2, cx)?);
+        let share = s.as_string().map(|s| s.to_std_string_escaped()).and_then(|s| {
+            let part = |c: char| c.is_ascii_digit() || c == '.';
+            let body = s.strip_suffix('%').filter(|b| !b.is_empty() && b.chars().all(part))?;
+            let lead = body.match_indices('.').nth(1).map_or(body, |(i, _)| &body[..i]);
+            Some(lead.parse().unwrap_or(f64::NAN) / 100. * d)
+        });
+        let t = s.as_number().map(|s| if s < 0. { d + s } else { s }).or(share);
+        Ok(t.zip(v.as_number()).map(|(t, v)| (t, v, !e.is_undefined())))
     };
-    let (t, v, mut i) = (list(0)?, list(1)?, 0);
-    let (n, fps) = (args.get_or_undefined(2).to_number(cx)?, args.get_or_undefined(3).to_number(cx)?);
+    (0..all.length(cx)?).map(|j| pair(j, cx)).collect()
+}
+
+fn plain(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
+    let keys = pairs(args.get_or_undefined(0), 0., cx)?;
+    Ok(keys.is_some_and(|k| k.iter().all(|k| !k.2)).into())
+}
+
+fn ramp(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
+    let mut num = |i: usize| args.get_or_undefined(i).to_number(cx);
+    let (d, n, fps, mut i) = (num(1)?, num(2)?, num(3)?, 0);
+    let Some(keys) = pairs(args.get_or_undefined(0), d, cx)? else {
+        return Ok(JsValue::undefined());
+    };
+    let (t, v): (Vec<f64>, Vec<f64>) = keys.iter().map(|k| (k.0, k.1)).unzip();
     let at = |f: usize| {
         let x = f as f64 / fps;
         while i < t.len() && !(x < t[i]) {
@@ -404,6 +457,35 @@ fn ramp(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
         })
     };
     Ok(JsArray::from_iter((0..n as usize).map(at).collect::<Vec<_>>(), cx).into())
+}
+
+fn single(v: f64) -> f32 {
+    let (f, near) = ((v + 0.) as f32, |k: f64| (v * k) as f32);
+    if near(1. + 1e-15) == f && near(1. - 1e-15) == f {
+        return f;
+    }
+    let text = if v.abs() < 1e21 { format!("{v}") } else { format!("{v:e}") };
+    serde_json::from_str(&text).unwrap_or(f)
+}
+
+fn keep(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
+    let all = JsArray::from_object(args.get_or_undefined(0).to_object(cx)?)?;
+    let mut s = vec![];
+    for j in 0..all.length(cx)? {
+        match all.get(j, cx)?.as_number().filter(|v| v.is_finite()) {
+            Some(v) => s.push(v),
+            None => return Ok(JsValue::undefined()),
+        }
+    }
+    if s.iter().all(|v| *v == s[0]) {
+        return Ok(false.into());
+    }
+    Ok(KEPT
+        .with_borrow_mut(|k| {
+            k.push(s.into_iter().map(single).collect());
+            k.len() - 1
+        })
+        .into())
 }
 
 type Job = Box<dyn FnOnce(&mut Context) + Send>;
@@ -464,8 +546,11 @@ fn boot() -> Context {
         (js_string!("__lut"), lut),
         (js_string!("__font"), font),
         (js_string!("__measure"), extent),
+        (js_string!("__assigns"), assigns),
         (js_string!("__tag"), tag),
+        (js_string!("__plain"), plain),
         (js_string!("__ramp"), ramp),
+        (js_string!("__keep"), keep),
     ] {
         cx.register_global_builtin_callable(name, 1, NativeFunction::from_fn_ptr(f))
             .unwrap();
@@ -566,6 +651,7 @@ fn build(cx: &mut Context, script: &Path, relock: bool, src: Option<&str>, measu
         root = load(cx);
     }
     set(cx, js_string!("__root"), root?)?;
+    KEPT.take();
     let out = timed(cx, "__out(__root)", None)?.or_else(|e| fault(cx, e))?;
     let out = say(cx, out)?;
     let new = ST.take().2;
@@ -676,17 +762,64 @@ stack(
 
     // Keys given straight to a clip are worked out for the whole clip at once. They should give exactly
     // the values the same keys give when asked one frame at a time: keys out of order, two keys at one
-    // time, times counted from the end, eases, and a second opacity multiplied in.
+    // time, times counted from the end or written as a percentage in any accepted form, eases, and a
+    // second opacity multiplied in.
     #[test]
     fn keys_at_once_match_frame_by_frame() {
         let t = tl("settings({ fps: 24 })
-const all = [keys([0.5, 1], [0.2, 0.25], [0.2, 0.75], [-0.3, 0.1]), keys([0, 0], ['40%', 1, 'slowOut'], [2, 0.5]), keys([0.3, 0.7])]
+const all = [keys([0.5, 1], [0.2, 0.25], [0.2, 0.75], [-0.3, 0.1]), keys([0, 0], ['40%', 1, 'slowOut'], [2, 0.5]), keys([0.3, 0.7]),
+  keys(['12.5%', 3], ['5.%', 1], ['.5%', 2], ['61.8.9%', 4], ['100%', 0])]
 const slow = k => (t, d) => k(t, d)
 stack(all.flatMap(k => [k, slow(k)].map(v => text('a').for(1.3).opacity(0.5).opacity(v).rotate(v))))");
         for pair in t.clips.chunks(2) {
             assert_eq!((&pair[0].opacity, &pair[0].rotate), (&pair[1].opacity, &pair[1].rotate));
         }
         assert!(matches!((&t.clips[0].rotate, &t.clips[4].rotate), (Val::Frames(_, s), Val::Fixed(_)) if s.len() == 32));
+        assert!(matches!(&t.clips[6].rotate, Val::Frames(_, s) if s[0] == 3. && s[31] < 0.1));
+    }
+
+    // A value worked out for every frame should reach the timeline as the same number that writing
+    // it out as text and reading it back gives, zero below zero and values half-way between two
+    // steps included, and a value that never changes should stay one plain number.
+    #[test]
+    fn frame_values_arrive_as_written() {
+        let odd = [
+            0.9311594069004059,
+            1.1078019738197327,
+            0.11360756680369377,
+            2.2057770490646362,
+            1e-9,
+            12345678.9,
+        ];
+        let t = tl(&format!(
+            "settings({{ fps: 6 }})\nconst v = {odd:?}\ntext('a').for(1).rotate(t => v[Math.round(t * 6)]).opacity(t => -0).pos(t => t ? -0 : 1, t => -t * 1e-320)"
+        ));
+        let read: Vec<f32> = odd.iter().map(|v| serde_json::from_str(&v.to_string()).unwrap()).collect();
+        let c = &t.clips[0];
+        assert!(matches!(&c.rotate, Val::Frames(3, s) if *s == read && s[0] != odd[0] as f32));
+        assert!(matches!(&c.pos, (Some(Val::Frames(_, x)), Some(Val::Frames(_, y))) if x[1].is_sign_positive() && y[1].is_sign_negative()));
+        assert!(matches!(c.opacity, Val::Fixed(v) if v == 0. && v.is_sign_positive()));
+    }
+
+    // A clip that follows a keyframed property, straight or through add and mul, should get exactly
+    // the values it gets when the same keys are asked one frame at a time: with built-in eases, a
+    // curve and an ease written as a function, a leader that starts later and one never placed.
+    #[test]
+    fn follows_at_once_match_frame_by_frame() {
+        let t = tl("settings({ fps: 24 })
+const slow = k => (t, d) => k(t, d)
+const all = [keys([0, 0.1], [1, 0.5], ['90%', 0.9]), keys([0.2, 1], [1.5, 0, 'bounceOut'], [3, 0.4, bezier(0.2, 0.1, 0.3, 0.9)]), keys([0, 0], [2, 1, x => x * x])]
+stack(...all.flatMap((k, i) => [k, slow(k)].map(v => {
+  const lead = text('lead').for(3).pos(v, 0.5).opacity(0.5).opacity(v).rotate(v)
+  const tag = text('tag').for(4).pos(lead.pos.x, add(lead.pos.x, 0.1)).opacity(mul(lead.opacity, 0.5)).rotate(lead.rotate).scale(add(lead.opacity, 1))
+  return i ? [lead.at(1), tag, text('far').for(2).pos(tag.pos).at(2)] : [tag]
+})))");
+        let tags: Vec<_> = t.clips.iter().filter(|c| c.src != "lead").collect();
+        let moves = |c: &Clip| (c.pos.clone(), c.opacity.clone(), c.rotate.clone(), c.scale.clone());
+        for (a, b) in [(0, 1), (2, 4), (3, 5), (6, 8), (7, 9)] {
+            assert_eq!(moves(tags[a]), moves(tags[b]));
+        }
+        assert!(matches!(&tags[2].pos.0, Some(Val::Frames(_, s)) if s.len() == 96 && s[0] == 1. && s[95] != s[40]));
     }
 
     // Animated text (per-word motion, typewriter reveal, scale, rotation) should survive being saved

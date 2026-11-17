@@ -32,10 +32,12 @@ use mouse::Grab;
 use origami_engine::{Player, Preview, footprint, halt, peaks, thumb};
 use origami_lang::{Clip, Kind, Timeline};
 use std::{
+    cell::RefCell,
     collections::HashMap,
     env, fs, mem,
     path::{Path, PathBuf},
     process::Command,
+    rc::Rc,
     sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -60,6 +62,7 @@ struct Origami {
     mtime: Option<SystemTime>,
     tl: Arc<Timeline>,
     rev: usize,
+    scans: RefCell<(u64, Rc<view::Scans>)>,
     err: String,
     bad: u32,
     note: String,
@@ -444,6 +447,7 @@ fn fresh(focus: FocusHandle, recent: Vec<PathBuf>) -> Origami {
         mtime: None,
         tl: Arc::default(),
         rev: 0,
+        scans: RefCell::default(),
         err: String::new(),
         bad: 0,
         note: String::new(),

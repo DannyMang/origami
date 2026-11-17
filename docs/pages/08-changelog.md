@@ -28,6 +28,10 @@ What changed in each version of Origami. The launch screen shows the version you
 - Moved, scaled or rotated layers draw up to a quarter faster.
 - Every edit, drag and slider updates the picture sooner: the script runs in about half the time.
 - Projects with many keyframes respond faster: every edit, drag, slider, undo and save on a project with long keyframed labels updates the picture in about half the time, and the cost no longer climbs with the number of keys.
+- Big projects respond faster again: an edit, drag, slider, undo or save on a project with many keyframes updates the picture in about a third less time, and a script with hundreds of keyframed labels runs three to four times faster.
+- Labels that follow another clip's position or opacity no longer slow the project down as the leader gains keyframes.
+- On Macs with 8 GB of memory Origami keeps about a gigabyte less in memory after scrubbing. Replaying more than about two seconds decodes again.
+- Scrolling a very long script is smoother.
 - **Exports about twice as fast**, using the Mac's built-in video encoder at the same picture quality. Files are larger, about twice the size of before. Frames wider or taller than 4096 pixels are saved as HEVC.
 - Jumping far in 10-bit HEVC footage (such as DJI's) and opening a project are about 50 ms faster.
 - The Motion tab draws more than twice as fast on big projects.

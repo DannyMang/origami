@@ -1,7 +1,9 @@
 use crate::{
     Asset, Mode, Origami,
+    fold::Region,
     full::corners,
     keys::stamp,
+    lint::Issue,
     menu::place,
     release::VERSION,
     stage::{draw, letterbox},
@@ -13,7 +15,17 @@ use gpui::{
     Window, canvas, deferred, div, img, point, prelude::*, px, relative, rgb, rgba,
 };
 use origami_lang::{Clip, Kind, Timeline};
-use std::{mem, ops::Range, time::Instant};
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+    mem,
+    ops::Range,
+    rc::Rc,
+    sync::Arc,
+    time::Instant,
+};
+
+pub type Scans = (Vec<Region>, Vec<bool>, Vec<Issue>, Vec<(usize, usize, usize)>);
 
 pub const BG: u32 = 0x282c33;
 pub const PANEL: u32 = 0x2f343e;
@@ -563,6 +575,17 @@ impl Origami {
             .child(self.grip(false, cx))
     }
 
+    pub fn scans(&self) -> Rc<Scans> {
+        let (mut hash, seek) = (DefaultHasher::new(), self.seeker.as_ref().map(|s| s.as_str()));
+        let script = (&self.lines, &self.folded, self.bad, &self.err);
+        (script, self.rev, Arc::as_ptr(&self.tl), seek, &self.finding, self.modes).hash(&mut hash);
+        let mut kept = self.scans.borrow_mut();
+        if kept.0 != hash.finish() {
+            *kept = (hash.finish(), Rc::new((self.regions(), self.hidden(), self.issues(), self.hits())));
+        }
+        kept.1.clone()
+    }
+
     fn script(&self, focus: Option<&Clip>, rows: usize, cx: &mut Context<Self>) -> Div {
         let active = focus.map_or(0, |c| c.line as usize);
         let caret = self.cursor;
@@ -573,7 +596,8 @@ impl Origami {
             false => format!("saved {}", self.saved),
         };
         let name = self.script.file_name().unwrap_or_default().to_string_lossy().to_string();
-        let (regions, hidden, issues, found) = (self.regions(), self.hidden(), self.issues(), self.hits());
+        let scans = self.scans();
+        let (regions, hidden, issues, found) = &*scans;
         let row = |(i, s): (usize, &String)| {
             let on = i + 1 == active;
             let region = regions.iter().find(|r| r.start == i);
@@ -1240,5 +1264,34 @@ impl Render for Origami {
         }))
         .children(self.peep(window, cx))
         .children(self.help.then_some(help))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::rc::Rc;
+
+    // The code pane's folds, lint and search hits should be worked out once and kept while nothing
+    // they depend on changes, and worked out again when the script, a fold, the error or the search
+    // does.
+    #[gpui::test]
+    fn scans_follow_the_script(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            app.lines = ["stack(", "  text('a')),", "  text('b'),", ")"].map(String::from).into();
+            app
+        });
+        view.update(cx, |o, _| {
+            let first = o.scans();
+            assert!(Rc::ptr_eq(&first, &o.scans()));
+            assert_eq!((first.1.clone(), first.2.len(), first.3.len()), (vec![false; 4], 1, 0));
+            o.lines[1] = "  text('a'),".into();
+            assert_eq!(o.scans().2.len(), 0);
+            o.fold(0, Some(true));
+            assert_eq!(o.scans().1, [false, true, true, true]);
+            (o.bad, o.err, o.finding) = (2, "wrong".into(), Some("text".into()));
+            o.aim();
+            assert_eq!((o.scans().2[0].row, o.scans().3.len()), (1, 2));
+        });
     }
 }

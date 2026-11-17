@@ -154,15 +154,13 @@ impl Origami {
         let (row, col) = self
             .hover
             .filter(|_| self.knobbed.is_none() && self.offers.1.is_empty() && self.turning.is_none())?;
-        let issue = self
-            .issues()
-            .into_iter()
-            .find(|i| i.row == row && i.span.0 <= col && col <= i.span.1);
+        let scans = self.scans();
+        let issue = scans.2.iter().find(|i| i.row == row && i.span.0 <= col && col <= i.span.1);
         let (from, text, bad) = match issue {
-            Some(i) => (i.span.0, i.text, true),
+            Some(i) => (i.span.0, i.text.clone(), true),
             None => self.about(row, col).filter(|_| self.tipped).map(|a| (a.0, a.1, false))?,
         };
-        let (hidden, top) = (self.hidden(), self.top as usize);
+        let (hidden, top) = (&scans.1, self.top as usize);
         if row < top || hidden.get(row) != Some(&false) {
             return None;
         }

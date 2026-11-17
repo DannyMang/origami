@@ -3,8 +3,8 @@
   const S = { fps: 30, size: null, preview: 'auto', proxy: true }
   let L = {}, at = 0, N = 0, P = [], D = 0, W = [1, 1], note
   const M = new Map(), reads = ['x', 'y', 'scale', 'rotate', 'opacity'], even = n => Math.round(n / 2) * 2
-  const digits = /^\d+$/, named = /(?:const|let|var)\s+(\w+)\s*=/, made = 'video sound image text captions caption color', bare = 'keys rect line add mul cat stack settings'
-  const DAY = 86400, run = Symbol()
+  const digits = /^\d+$/, share = /^[\d.]+%$/, written = 'keys are written keys([0, 0], ["50%", 1], [-0.5, 0])', named = /(?:const|let|var)\s+(\w+)\s*=/, made = 'video sound image text captions caption color', bare = 'keys rect line add mul cat stack settings'
+  const DAY = 86400, run = Symbol(), calm = Symbol()
   const must = (ok, say) => { if (!ok) throw new Error(`line ${at}: ${say}`) }
   const paint = c => {
     must(/^#?([\da-f]{3,4}|[\da-f]{6}|[\da-f]{8})$/i.test(c), `${JSON.stringify(c)} is not a colour: write hex, like "#ffffff" or "#ffffff80", and click it for the colour wheel`)
@@ -15,23 +15,25 @@
     must(Math.abs(s) <= DAY && !(some && s <= 0), `${k} takes a time${some ? ' above 0' : ''}, in seconds or "m:ss", up to 24 hours`)
     return s
   }
-  const line = g => new Proxy(g(0), { get: (t, n) => digits.test(String(n)) ? g(+n) : t[n] })
+  const whole = n => typeof n === 'string' && (String(n >>> 0) === n || digits.test(n))
+  const line = g => new Proxy(g(0), { get: (t, n) => whole(n) ? g(+n) : t[n] })
   const anim = (k, v) => {
     if (v?.of) {
       const { of, k: p } = v, name = `${of.label ?? 'a group'}.${p === 'x' || p === 'y' ? 'pos.' : ''}${p}`
       if (of.kids || !reads.includes(p) || k.startsWith('each')) throw new Error(`line ${at}: ${k} cannot follow ${name} (pos.x, pos.y, scale, rotate and opacity of one clip can be followed, outside each)`)
       let f
-      v = (t, d, T) => (f ??= read(of, p))(T)
+      const led = T => (f ??= read(of, p))(T)
+      v = Object.assign((t, d, T) => led(T), { [run]: (n, d, from) => Array.from({ length: n }, (_, i) => led(from + i / S.fps)) })
     }
     if (typeof v !== 'number' && typeof v !== 'function') throw new Error(`line ${at}: ${k} takes a number or a function of time`)
-    return typeof v === 'number' ? v : Object.assign((t, d, T) => v(t, d, T), { line: at, [run]: v[run] })
+    return typeof v === 'number' ? v : Object.assign((t, d, T) => v(t, d, T), { line: at, [run]: v[run], [calm]: v[calm] })
   }
   const num = (v, t, d, T) => typeof v === 'number' ? v : v(t, d, T)
   const times = (k, a, x) => {
     const b = anim(k, x)
     if (typeof a === 'number' && typeof b === 'number') return a * b
-    const all = typeof a === 'number' && b[run] && ((n, d) => b[run](n, d).map(x => a * x))
-    return anim(k, Object.assign((t, d, T) => num(a, t, d, T) * num(b, t, d, T), { [run]: all }))
+    const all = typeof a === 'number' && b[run] && ((n, d, from) => b[run](n, d, from).map(x => a * x))
+    return anim(k, Object.assign((t, d, T) => num(a, t, d, T) * num(b, t, d, T), { [run]: all, [calm]: all && b[calm] }))
   }
   const split = { char: /\S/gu, word: /\S+/gu, line: /.+/gu }
   const ops = {
@@ -80,7 +82,7 @@
     return grade(d, { [k]: { ...d.grade?.[k], [n]: v } })
   }
   const tone = {
-    sharpen: d => d,
+    sharpen: d => ({ ...d }),
     look: (d, p, k = 100) => grade(d, { look: [__lut(p, 'look', at), k] }),
     inputLut: (d, p) => grade(d, { inputLut: __lut(p, 'inputLut', at) }),
     curve: (d, n, p) => part('curve', ['luma', 'red', 'green', 'blue'], d, n, sorted(p)),
@@ -99,19 +101,24 @@
   for (const k of ['shadowTint', 'highlightTint']) tone[k] = (d, o) => grade(d, { [k]: [o.hue ?? 0, o.amount ?? 0] })
   Object.assign(ops, tone)
   const deep = ['speed', 'volume', 'mute', 'fade', 'scale', 'pos', 'opacity', 'rotate', 'shown', 'each', ...Object.keys(tone)]
-  const nums = ['speed', 'volume', 'loop', 'temperature', 'tint', 'saturation', 'exposure', 'contrast', 'highlights', 'shadows', 'whites', 'blacks', 'fadedFilm', 'vibrance', 'tintBalance']
+  const nums = new Set(['speed', 'volume', 'loop', 'temperature', 'tint', 'saturation', 'exposure', 'contrast', 'highlights', 'shadows', 'whites', 'blacks', 'fadedFilm', 'vibrance', 'tintBalance'])
   const called = Object.keys(ops).join(' ')
-  const clip = d => new Proxy(d, {
-    get: (d, k) => k === '$' ? d : k in ops ? line(n => Object.assign((...a) => {
+  const act = (d, k, n) => {
+    const f = (...a) => {
       at = n || at
-      if (nums.includes(k) && !Number.isFinite(a[0])) throw new Error(`line ${at}: ${k} takes a number`)
+      if (nums.has(k) && !Number.isFinite(a[0])) throw new Error(`line ${at}: ${k} takes a number`)
       if (!d.kids && d.kind !== 'text' && (k === 'shown' || k === 'each')) throw new Error(`line ${at}: ${k} is for text and caption`)
-      return clip({
-        ...(d.kids && deep.includes(k) ? { ...d, kids: d.kids.map(c => c[k](...a)) } : ops[k](d, ...a)),
-        line: n || d.line,
-      })
-    }, { of: d, k }, k === 'pos' && { x: { of: d, k: 'x' }, y: { of: d, k: 'y' } })) : d[k],
-  })
+      const o = d.kids && deep.includes(k) ? { ...d, kids: d.kids.map(c => c[k](a[0], a[1])) } : ops[k](d, a[0], a[1])
+      const made = Object.hasOwn(ops, k) ? o : { ...o }
+      made.line = n || d.line
+      return clip(made)
+    }
+    f.of = d
+    f.k = k
+    return k === 'pos' ? Object.assign(f, { x: { of: d, k: 'x' }, y: { of: d, k: 'y' } }) : f
+  }
+  const chained = { get: (d, k) => k === '$' ? d : k in ops ? line(n => act(d, k, n)) : d[k] }
+  const clip = d => new Proxy(d, chained)
   const base = { in: 0, out: null, speed: 1, gain: 1, fade: [0, 0], scale: 1, opacity: 1, rotate: 0, shown: 1, shift: 0, loop: 1 }
   const leaf = f => line(n => (...a) => { at = n; const d = f(...a); return clip({ ...base, ...d, line: n, home: n, label: L[n] ?? d.label, id: ++N }) })
   const stem = p => p.split('/').pop().replace(/\.\w+$/, '')
@@ -140,7 +147,7 @@
     return clip({ ...base, cat, kids: kids.flat() })
   })
   const pile = group(false, 'stack')
-  const out3 = x => 1 - (1 - x) ** 3
+  const out3 = x => 1 - (1 - x) ** 3, tame = f => Object.assign(f, { [calm]: true })
   const eases = {
     linear: x => x,
     step: () => 0,
@@ -154,35 +161,41 @@
       return 7.5625 * (x - c / 2.75) ** 2 + b
     },
   }
+  Object.values(eases).forEach(tame)
   const wire = (k, f) => line(n => (v, x) => {
     at = n
     if (typeof x !== 'number') throw new Error(`line ${at}: ${k} is written ${k}(title.pos.y, 0.5)`)
     const g = anim(k, v)
-    return typeof g === 'number' ? f(g, x) : (t, d, T) => f(g(t, d, T), x)
+    const all = g[run] && ((n, d, from) => g[run](n, d, from).map(y => f(y, x)))
+    return typeof g === 'number' ? f(g, x) : Object.assign((t, d, T) => f(g(t, d, T), x), { [run]: all, [calm]: g[calm] })
   })
   Object.assign(globalThis, {
     add: wire('add', (a, b) => a + b),
     mul: wire('mul', (a, b) => a * b),
     keys: line(n => (...k) => {
       at = n
-      const time = s => typeof s === 'number' || /^[\d.]+%$/.test(s)
-      if (!k.length || k.some(p => !Array.isArray(p) || !time(p[0]) || typeof p[1] !== 'number')) throw new Error(`line ${at}: keys are written keys([0, 0], ["50%", 1], [-0.5, 0])`)
-      const e = k.map(([, , e = 'linear']) => {
-        if (typeof e !== 'function' && !eases[e]) throw new Error(`line ${at}: "${e}" is not an ease (${Object.keys(eases).join(', ')}, bezier)`)
-        return eases[e] ?? e
-      })
-      let D, T
+      const e = []
+      let odd, D, T
+      for (let i = __plain(k) ? k.length : 0; i < k.length; i++) {
+        const p = k[i]
+        if (!Array.isArray(p) || typeof p[0] !== 'number' && !share.test(p[0]) || typeof p[1] !== 'number') throw new Error(`line ${at}: ${written}`)
+        const f = p[2] === undefined ? 'linear' : p[2]
+        if (typeof f !== 'function' && !eases[f]) odd ??= [f]
+        e.push(eases[f] ?? f)
+      }
+      must(k.length, written)
+      if (odd) throw new Error(`line ${at}: "${odd[0]}" is not an ease (${Object.keys(eases).join(', ')}, bezier)`)
+      const linear = e.every((f, i) => !i || f === eases.linear)
       const lay = d => {
         if (d !== D) [D, T] = [d, k.map(([s]) => typeof s === 'string' ? parseFloat(s) / 100 * d : s < 0 ? d + s : s)]
       }
-      const mix = (t, i) => i < 1 ? k.at(i)[1] : k[i - 1][1] + (k[i][1] - k[i - 1][1]) * e[i]((t - T[i - 1]) / (T[i] - T[i - 1]))
+      const mix = (t, i) => i < 1 ? k.at(i)[1] : k[i - 1][1] + (k[i][1] - k[i - 1][1]) * (e[i] ?? eases.linear)((t - T[i - 1]) / (T[i] - T[i - 1]))
       const one = (t, d) => {
         lay(d)
         return mix(t, T.findIndex(s => t < s))
       }
-      const all = (n, d) => {
+      const slow = (n, d) => {
         lay(d)
-        if (e.every((f, i) => !i || f === eases.linear)) return __ramp(T, k.map(p => p[1]), n, S.fps)
         const s = []
         for (let f = 0, i = 0; f < n; f++) {
           while (i < T.length && !(f / S.fps < T[i])) i++
@@ -190,14 +203,15 @@
         }
         return s
       }
-      return Object.assign(one, { [run]: all })
+      const all = (n, d) => linear && __ramp(k, d, n, S.fps) || slow(n, d)
+      return Object.assign(one, { [run]: all, [calm]: e.every(f => f[calm]) })
     }),
-    bezier: (x1, y1, x2, y2) => x => {
+    bezier: (x1, y1, x2, y2) => tame(x => {
       const B = (p, q, s) => 3 * p * s * (1 - s) ** 2 + 3 * q * s * s * (1 - s) + s ** 3
       let lo = 0, hi = 1
       for (let i = 0; i < 24; i++) B(x1, x2, (lo + hi) / 2) < x ? lo = (lo + hi) / 2 : hi = (lo + hi) / 2
       return B(y1, y2, (lo + hi) / 2)
-    },
+    }),
     delay: (v, s) => (t, d, T) => v(t - s, d, T - s),
     settings: line(n => (o = {}) => {
       at = n || at
@@ -258,9 +272,9 @@
   }
   globalThis.__prep = src => {
     L = {}
-    src.split('\n').forEach((s, i) => {
-      const m = s.includes('=') && s.match(named)
-      if (m) L[i + 1] = m[1]
+    __assigns(src).forEach(([n, s]) => {
+      const m = s.match(named)
+      if (m) L[n] = m[1]
     })
     return __tag(src, made, bare, called)
   }
@@ -284,10 +298,11 @@
   const frames = d => Math.max(1, Math.ceil(d * S.fps - 1e-6))
   const sample = (c, v) => {
     if (typeof v !== 'function') return v
-    const d = c.end - c.start, n = frames(d), s = v[run] ? v[run](n, d) : []
+    const d = c.end - c.start, n = frames(d), s = v[run] ? v[run](n, d, c.start) : []
     for (let i = s.length; i < n; i++) s.push(v(i / S.fps, d, c.start + i / S.fps))
-    if (!s.every(Number.isFinite)) throw new Error(`line ${v.line}: a function of time must return a number`)
-    return s.every(x => x === s[0]) ? s[0] : [v.line, s]
+    const kept = __keep(s)
+    if (kept === undefined) throw new Error(`line ${v.line}: a function of time must return a number`)
+    return kept === false ? s[0] : [v.line, kept]
   }
   const ir = (c, z) => ({
     kind: c.kind, src: c.src, w: c.w ?? 0, h: c.h ?? 0, start: c.start, end: c.end, src_in: c.in, speed: c.speed, z,
@@ -301,7 +316,9 @@
     const s = P.find(c => c.id === d.id) ?? { start: 0, end: own(d) ?? D }, n = s.end - s.start, seen = []
     const get = (v, j) => num(v, j / S.fps, n, s.start + j / S.fps)
     const i = ['x', 'y'].indexOf(k), v = i < 0 ? d[k] : d.pos?.[i]
+    let all
     const look = j => {
+      if (v?.[calm]) return (all ??= v[run](frames(n), n, s.start))[j]
       if (v != null) return get(v, j)
       if (!M.has(d)) {
         const top = Math.max(...Array.from({ length: frames(n) }, (_, j) => get(d.scale, j)))

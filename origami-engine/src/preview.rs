@@ -13,7 +13,7 @@ use std::{
     io::Read,
     num::NonZeroUsize,
     path::Path,
-    process::{Child, Stdio},
+    process::{Child, Command, Stdio},
     sync::{Arc, LazyLock, Mutex},
     thread,
     time::SystemTime,
@@ -37,6 +37,17 @@ type Info = (
 
 static KNOWN: LazyLock<Mutex<HashMap<String, Info>>> = LazyLock::new(Mutex::default);
 static LANDS: LazyLock<Mutex<HashMap<(String, u64), f64>>> = LazyLock::new(Mutex::default);
+static RAM: LazyLock<u64> = LazyLock::new(|| {
+    let told = output(Command::new("/usr/sbin/sysctl").args(["-n", "hw.memsize"])).map(|o| o.stdout);
+    String::from_utf8_lossy(&told.unwrap_or_default())
+        .trim()
+        .parse()
+        .unwrap_or(u64::MAX)
+});
+
+fn fit(ram: u64) -> (usize, usize) {
+    ((ram / 16).clamp(1 << 28, 1 << 30) as usize, if ram > 8 << 30 { 6 } else { 4 })
+}
 
 fn ask(path: &str, show: &str) -> String {
     let args = ["-v", "error", "-select_streams", "v:0", "-show_entries", show, "-of", "csv=p=0"];
@@ -374,12 +385,14 @@ pub struct Preview {
     at: f64,
     primed: (Vec<u32>, (usize, usize)),
     pub room: usize,
+    most: usize,
     pub fast: bool,
     pub rough: bool,
 }
 
 impl Default for Preview {
     fn default() -> Self {
+        let (room, most) = fit(*RAM);
         Self {
             decoders: vec![],
             frames: LruCache::new(NonZeroUsize::new(600).unwrap()),
@@ -390,7 +403,8 @@ impl Default for Preview {
             stamps: HashMap::new(),
             at: -1.,
             primed: Default::default(),
-            room: 1 << 30,
+            room,
+            most,
             fast: false,
             rough: false,
         }
@@ -534,7 +548,7 @@ impl Preview {
                         .stderr(Stdio::null()),
                 )
                 .ok()?;
-                self.decoders.drain(..self.decoders.len().saturating_sub(5));
+                self.decoders.drain(..self.decoders.len().saturating_sub(self.most - 1));
                 (key.clone(), Decoder { child, next: from })
             }
         };
@@ -1176,6 +1190,24 @@ mod tests {
             ..Default::default()
         };
         assert!(Preview::default().frame(&tl, 0., (0, 0)).is_empty());
+    }
+
+    // A Mac with 8 GB of memory or less should keep half a gigabyte of frames and four decoders, down
+    // to a quarter of a gigabyte on smaller ones; a larger Mac keeps up to a gigabyte and six.
+    #[test]
+    fn limits_follow_the_machine() {
+        let sized = [2, 8, 12, 16, 96].map(|gb| fit(gb << 30));
+        assert_eq!(sized, [(1 << 28, 4), (1 << 29, 4), (3 << 28, 6), (1 << 30, 6), (1 << 30, 6)]);
+        let (room, most) = fit(8 << 30);
+        let mut pv = Preview {
+            room,
+            most,
+            ..Default::default()
+        };
+        for i in 0..9 {
+            pv.decoder(&(format!("/none/{i}.mp4"), 64, 36), 0, 0, (30., 1.));
+        }
+        assert_eq!(pv.decoders.len(), 4);
     }
 
     // The preview should keep only the text and shape pictures the last frame drew, so a long run of
