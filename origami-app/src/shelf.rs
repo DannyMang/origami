@@ -1,6 +1,6 @@
 use crate::{crash, edit::same, knob::close, menu::place};
 use std::{
-    fs::{self, DirBuilder, File, OpenOptions},
+    fs::{self, DirBuilder, File, OpenOptions, TryLockError},
     io::{self, Read, Seek, SeekFrom, Write},
     mem,
     os::unix::{
@@ -9,8 +9,9 @@ use std::{
     },
     path::{Path, PathBuf},
     process::Command,
-    sync::Mutex,
-    time::{SystemTime, UNIX_EPOCH},
+    sync::{Mutex, MutexGuard},
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 const MERGE: u64 = 60;
@@ -120,6 +121,7 @@ fn line(e: &Entry) -> String {
 
 fn entry(line: &[u8]) -> Option<Entry> {
     let (t, z, adds, dels, clip, what, base, at, end): Line = serde_json::from_slice(line).ok()?;
+    (t < 1 << 40 && (-DAY..=DAY).contains(&z)).then_some(())?;
     Some(Entry {
         t,
         z,
@@ -193,11 +195,12 @@ pub fn diff<T: PartialEq>(a: &[T], b: &[T]) -> Vec<(Option<usize>, Option<usize>
     let (x, y) = (&a[head..a.len() - tail], &b[head..b.len() - tail]);
     let (n, m) = (x.len() as isize, y.len() as isize);
     let at = |k: isize| (k + n + m) as usize;
-    let (mut v, mut trace, mut kept) = (vec![0isize; 2 * (n + m) as usize + 2], vec![], 0);
+    let far = n == 0 || m == 0 || n + m > 1 << 20;
+    let (mut v, mut trace, mut kept) = (vec![0isize; if far { 0 } else { 2 * (n + m) as usize + 2 }], vec![], 0);
     'walk: for d in 0..=n + m {
         let (lo, hi) = ((n + m - d - 1).max(0) as usize, at(d + 1));
         kept += hi - lo + 1;
-        if kept > 1 << 22 {
+        if far || kept > 1 << 22 {
             trace.clear();
             break;
         }
@@ -273,12 +276,32 @@ impl Shelf {
         self.queue.lock().unwrap().push((text, now(), mark));
     }
 
-    pub fn drain(&self, sync: bool) {
-        let mut log = self.log.lock().unwrap();
-        let _ = room(&self.dir);
-        let _held = make(&self.dir.join("lock")).and_then(|f| f.lock().map(|_| f));
+    fn hold(&self, wait: Duration) -> Option<(MutexGuard<'_, Option<Log>>, io::Result<File>)> {
+        let start = Instant::now();
+        loop {
+            if let Ok(log) = self.log.try_lock() {
+                let _ = room(&self.dir);
+                let held = make(&self.dir.join("lock"));
+                if !held.as_ref().is_ok_and(|f| matches!(f.try_lock(), Err(TryLockError::WouldBlock))) {
+                    return Some((log, held));
+                }
+            }
+            if start.elapsed() >= wait {
+                return None;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    pub fn drain(&self, sync: bool, wait: Duration) -> bool {
+        let Some((mut log, _held)) = self.hold(wait) else {
+            return false;
+        };
         match self.mine() {
-            Some(false) => return self.queue.lock().unwrap().clear(),
+            Some(false) => {
+                self.queue.lock().unwrap().clear();
+                return true;
+            }
             Some(true) => {}
             None => {
                 let _ = make(&self.dir.join("path")).and_then(|mut f| f.write_all(self.script.as_os_str().as_bytes()));
@@ -287,7 +310,7 @@ impl Shelf {
         loop {
             let batch = mem::take(&mut *self.queue.lock().unwrap());
             if batch.is_empty() {
-                return;
+                return true;
             }
             for (text, t, mark) in batch {
                 let kept = log.take().filter(|l| l.size == self.size());
@@ -341,9 +364,10 @@ impl Shelf {
             }
             at = at.checked_sub(r.0)?;
         }
-        let mut lines: Vec<String> = vec![];
+        let (mut lines, mut work): (Vec<String>, usize) = (vec![], 0);
         for (_, head, tail, mid) in chain.into_iter().rev() {
-            let to = lines.len().checked_sub(*tail).filter(|to| to >= head)?;
+            work += lines.len() + mid.len();
+            let to = lines.len().checked_sub(*tail).filter(|to| to >= head && work < 1 << 28)?;
             lines.splice(*head..to, mid.iter().cloned()).for_each(drop);
         }
         Some(lines)
@@ -476,7 +500,7 @@ pub mod tests {
     pub fn save(shelf: &Shelf, lines: &[&str], t: u64, mark: Option<&str>) {
         let text = lines.iter().map(|l| format!("{l}\n")).collect();
         shelf.queue.lock().unwrap().push((text, t, mark.map(String::from)));
-        shelf.drain(false);
+        assert!(shelf.drain(false, Duration::from_secs(5)));
     }
 
     fn texts(shelf: &Shelf) -> Vec<Option<Vec<String>>> {
@@ -555,6 +579,8 @@ pub mod tests {
         }
         let ops = diff(&[0; 3000], &[1; 3000]);
         assert!(ordered(&ops, 3000, 3000) && ops.len() == 6000);
+        let ops = diff(&vec![0; 1 << 20], &[1, 1]);
+        assert!(ordered(&ops, 1 << 20, 2) && ops.len() == (1 << 20) + 2);
     }
 
     // Everything from the last week is kept, then the last version of each hour for a month, then the
@@ -599,8 +625,9 @@ pub mod tests {
         assert_eq!(texts(&again)[0], owned(&["2"]));
     }
 
-    // A torn write at the end of the history and garbage in the middle are skipped: the readable
-    // versions still read back, a version whose stored change is damaged is refused, and saves after a
+    // A torn write at the end of the history, garbage in the middle and rows with impossible times or
+    // time zones are skipped: the readable versions still read back, a version whose stored change is
+    // damaged or whose chain of changes is too long to rebuild quickly is refused, and saves after a
     // restart keep working.
     #[test]
     fn skips_damage() {
@@ -614,12 +641,30 @@ pub mod tests {
         bytes[at + 3] = b'#';
         bytes.extend(b"\n[9, 0, 0, [\"torn");
         fs::write(&log, bytes).unwrap();
-        let rows = fs::read_to_string(&index).unwrap().replacen('\n', "\n{oops}\n", 2) + "\n[1, 0";
+        let odd = "\n[1, 9223372036854775807, 0, 0, \"\", \"\", 0, 0, 0]\n[18446744073709551615, 0, 0, 0, \"\", \"\", 0, 0, 0]";
+        let rows = fs::read_to_string(&index).unwrap().replacen('\n', "\n{oops}\n", 2) + odd + "\n[1, 0";
         fs::write(&index, rows).unwrap();
         let again = Shelf::new(&script);
         save(&again, &["A", "B", "c"], NOW + 1000, None);
         assert_eq!(again.list().len(), 4);
         assert_eq!(texts(&again), [owned(&["a", "b"]), None, None, owned(&["A", "B", "c"])]);
+        let (long, mut log) = (shelf("long").0, String::from("[0,0,0,[\"x\"]]"));
+        let mut last = 0;
+        for k in 1..80_000 {
+            let row = format!("\n[{},0,{k},[\"x\"]]", log.len() - last + 1);
+            last = log.len() + 1;
+            log += &row;
+        }
+        room(&long.dir).unwrap();
+        fs::write(long.dir.join("log"), &log).unwrap();
+        let e = Entry {
+            base: 0,
+            at: last as u64,
+            end: log.len() as u64,
+            ..again.list()[0].clone()
+        };
+        let start = Instant::now();
+        assert_eq!((long.read(&e), start.elapsed() < Duration::from_secs(1)), (None, true));
     }
 
     // Two windows saving the same script never fold over or cut off each other's versions: every save

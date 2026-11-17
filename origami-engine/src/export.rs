@@ -49,7 +49,7 @@ impl Default for Opts {
 pub fn sized(tl: &Timeline, o: &Opts) -> (f64, (usize, usize)) {
     let k = match o.height {
         0 => 1.,
-        h => h as f64 / tl.size.1 as f64,
+        h => (h as f64 / tl.size.1 as f64).min(16384. / tl.size.0.max(tl.size.1) as f64),
     };
     let even = |v: u32| ((v as f64 * k / 2.).round() as usize).max(1) * 2;
     (k, (even(tl.size.0), even(tl.size.1)))
@@ -401,7 +401,7 @@ pub fn render(tl: &Timeline, out: &str, o: &Opts, mut progress: impl FnMut(f64))
             file.display()
         );
     }
-    if fs::symlink_metadata(out).is_ok_and(|m| m.is_symlink()) {
+    if fs::symlink_metadata(out).is_ok_and(|m| !m.is_file() && !m.is_dir()) {
         fs::remove_file(out)?;
     }
     let dir = room();
@@ -536,7 +536,8 @@ mod tests {
     }
 
     // Export options should change only what they say: a range starts on its first frame and keeps its
-    // length, a size scales the whole frame, audio can be left out, and each format writes its codec.
+    // length, a size scales the whole frame but never past 16384 on a side, audio can be left out, and each
+    // format writes its codec.
     #[test]
     fn exports_with_options() {
         let _tidy = TIDY.read();
@@ -545,6 +546,12 @@ mod tests {
         let src = "settings({ fps: 30, size: [64, 36] })\nstack(cat(color('#ff0000').for(1), color('#00ff00').for(1)), sound('s.wav').trim(0, 2))";
         fs::write(dir.join("edit.js"), src).unwrap();
         let tl = origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap();
+        let at = |size, height| sized(&Timeline { size, ..tl.clone() }, &Opts { height, ..Opts::default() }).1;
+        assert_eq!([0, 720, 1080, 2160].map(|h| at((16384, 2), h)), [(16384, 2); 4]);
+        assert_eq!(
+            [0, 720, 2160].map(|h| at((1920, 1080), h)),
+            [(1920, 1080), (1280, 720), (3840, 2160)]
+        );
         let probe = |out: &str, what: &[&str]| {
             let args = [&["-v", "error", "-i", out][..], what].concat();
             origami_lang::output(ffmpeg().args(args)).unwrap()
@@ -636,8 +643,8 @@ mod tests {
     }
 
     // An export onto a file the script reads, spelled another way (different case, a detour through ..,
-    // a symlink), is refused and leaves the file whole, and a link planted at the destination is
-    // replaced, not written through.
+    // a symlink), is refused and leaves the file whole, and a link or a named pipe planted at the
+    // destination is replaced, not written through.
     #[test]
     fn keeps_sources_safe() {
         let _tidy = TIDY.read();
@@ -666,6 +673,9 @@ mod tests {
         std::os::unix::fs::symlink(dir.join("precious"), dir.join("planted.mp4")).unwrap();
         render(&tl, &dir.join("planted.mp4").to_string_lossy(), &Opts::default(), |_| {}).unwrap();
         assert!(fs::read_to_string(dir.join("precious")).unwrap() == "keep" && !dir.join("planted.mp4").is_symlink());
+        assert!(status(Command::new("mkfifo").arg(dir.join("pipe.mp4"))).unwrap().success());
+        render(&tl, &dir.join("pipe.mp4").to_string_lossy(), &Opts::default(), |_| {}).unwrap();
+        assert!(fs::metadata(dir.join("pipe.mp4")).unwrap().is_file());
     }
 
     // Shapes, lines and text too large to draw, directly or through a scale or keyed scale, should

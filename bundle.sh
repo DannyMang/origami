@@ -9,6 +9,7 @@ if [ -f .env ]; then
   . ./.env
   set +a
 fi
+export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$HOME=~ --remap-path-prefix=$PWD=origami"
 [ -z "${SIGN_ID:-}" ] || : "${NOTARY_PROFILE:?set NOTARY_PROFILE to a notarytool keychain profile}"
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' origami-app/Cargo.toml | head -1)
 app=dist/Origami.app
@@ -21,6 +22,7 @@ rm -rf dist
 mkdir -p "$bin" "$app/Contents/Resources"
 cp "${CARGO_TARGET_DIR:-origami-app/target}/release/origami-app" "$bin/"
 cp "${CARGO_TARGET_DIR:-origami-engine/target}/release/origami" "$bin/"
+! strings -a "$bin/origami-app" "$bin/origami" | grep -qF "$HOME/" || { echo "binaries contain $HOME" >&2; exit 1; }
 if [ -n "${FFMPEG_DIR:-}" ]; then
   cp "$FFMPEG_DIR/ffmpeg" "$FFMPEG_DIR/ffprobe" "$bin/"
 fi

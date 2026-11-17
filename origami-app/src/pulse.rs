@@ -10,17 +10,19 @@ use origami_lang::Timeline;
 use regex::Regex;
 use serde_json::{Value, json};
 use std::{
-    env, fs,
-    io::Read,
-    mem,
+    env,
+    fs::{self, OpenOptions},
+    io::{Read, Seek, SeekFrom, Write},
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     sync::{LazyLock, Mutex, MutexGuard, PoisonError},
     thread,
 };
 
 const HOST: &str = "https://us.i.posthog.com";
-const KEY: &str = match option_env!("POSTHOG_KEY") {
+const NOFOLLOW_NONBLOCK: i32 = 0x0100 | 0x0004;
+const KEY: &str = match option_env!("ORIGAMI_POSTHOG_KEY") {
     Some(key) => key,
     None => "",
 };
@@ -40,7 +42,7 @@ fn said() -> MutexGuard<'static, Said> {
 }
 
 fn read(file: &Path) -> Said {
-    let kept = fs::read_to_string(file).unwrap_or_default();
+    let kept = origami_lang::load(file).unwrap_or_default();
     let mut lines = kept.lines();
     let mut next = || lines.next().unwrap_or_default().to_string();
     (next(), next(), next().parse().unwrap_or(0))
@@ -48,7 +50,7 @@ fn read(file: &Path) -> Said {
 
 fn write(file: &Path, (answer, id, mark): &Said) {
     let _ = file.parent().map(fs::create_dir_all);
-    let _ = fs::write(file, format!("{answer}\n{id}\n{mark}\n"));
+    let _ = origami_lang::save(file, format!("{answer}\n{id}\n{mark}\n"));
 }
 
 fn fresh() -> String {
@@ -92,10 +94,23 @@ fn post(event: &'static str, properties: Value) {
         return;
     }
     let _ = thread::Builder::new().spawn(move || {
-        let (body, to) = (payload(KEY, &id, event, properties).to_string(), format!("{HOST}/i/v0/e/"));
-        let json = "Content-Type: application/json";
-        origami_lang::output(Command::new("/usr/bin/curl").args(["-fs", "--max-time", "5", "-H", json, "-d", &body, &to]))
+        let body = payload(KEY, &id, event, properties).to_string();
+        let mut sent = origami_lang::start(
+            curl(&format!("{HOST}/i/v0/e/"))
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null()),
+        )?;
+        let _ = sent.stdin.take().map(|mut i| i.write_all(body.as_bytes()));
+        sent.wait()
     });
+}
+
+fn curl(to: &str) -> Command {
+    let mut cmd = Command::new("/usr/bin/curl");
+    let json = "Content-Type: application/json";
+    cmd.args(["-q", "--proto", "=https", "-fs", "--max-time", "5", "-H", json, "-d", "@-", to]);
+    cmd
 }
 
 pub fn beat(event: &'static str) {
@@ -124,22 +139,32 @@ const SHAPES: &str = concat!(
 );
 
 fn crash(log: &str) -> Option<(String, String)> {
-    let (at, what) = log.rsplit_once(" panicked at ")?.1.split_once(":\n")?;
+    let (at, what) = log.rsplit_once(crash::MARK)?.1.lines().next()?.split_once('\t')?;
     let from = at.rfind("/src/").and_then(|i| at[..i].rfind('/'));
     let from = from.or(at.rfind('/').filter(|_| at.starts_with('/'))).map_or(0, |i| i + 1);
     let fixed = |shape: &str, s: &str, or: &str| Some(Regex::new(shape).ok()?.find(s).map_or(or, |m| m.as_str()).to_string());
-    let what = fixed(SHAPES, what.lines().next().unwrap_or_default(), "panic")?;
+    let what = fixed(SHAPES, what, "panic")?;
     Some((what, fixed(r"^[a-z0-9_./-]+\.rs:\d+:\d+$", &at[from..], "unknown")?))
 }
 
+fn tail(log: &Path, mark: u64) -> Option<(String, u64)> {
+    let mut f = OpenOptions::new().read(true).custom_flags(NOFOLLOW_NONBLOCK).open(log).ok()?;
+    let end = f.metadata().ok().filter(|m| m.is_file())?.len();
+    let from = if mark <= end { mark } else { 0 }.max(end.saturating_sub(1 << 20));
+    f.seek(SeekFrom::Start(from)).ok()?;
+    let mut buf = vec![];
+    f.take(end - from).read_to_end(&mut buf).ok()?;
+    Some((String::from_utf8_lossy(&buf).into(), end))
+}
+
 pub fn launch() {
-    let log = fs::read(crash::journal()).unwrap_or_default();
-    let log = String::from_utf8_lossy(&log);
-    let mark = mem::replace(&mut said().2, log.len());
-    if mark != log.len() {
+    let mark = said().2;
+    let (log, end) = tail(&crash::journal(), mark as u64).unwrap_or_default();
+    if mark as u64 != end {
+        said().2 = end as usize;
         write(&file(), &said());
     }
-    if let Some((message, at)) = log.get(mark..).and_then(crash) {
+    if let Some((message, at)) = crash(&log) {
         post("crash", json!({ "message": message, "at": at }));
     }
     beat("app opened");
@@ -202,7 +227,8 @@ mod tests {
     }
 
     // An event carries the key, its name, the install id and exactly its own properties plus the
-    // anonymous flags, app version, macOS version and chip.
+    // anonymous flags, app version, macOS version and chip, and curl reads it from stdin, over HTTPS only,
+    // ignoring any curl settings file.
     #[test]
     fn builds_the_payload() {
         let sent = payload("key", "abc", "exported", json!({ "codec": "h264", "seconds": 12 }));
@@ -224,15 +250,21 @@ mod tests {
                 .len(),
             5
         );
+        let args: Vec<String> = curl("https://x/").get_args().map(|a| a.to_string_lossy().into()).collect();
+        assert!(args[..3] == ["-q", "--proto", "=https"] && args.ends_with(&["-d".into(), "@-".into(), "https://x/".into()]));
     }
 
     // A crash report is the newest panic's first line only when it is one of the standard library's
-    // fixed messages (with any text after the fixed part dropped), otherwise just "panic", and its source
-    // file without the folders above the crate, or "unknown" when that does not look like a source file.
+    // fixed messages (with any text after the fixed part dropped), otherwise just "panic", and the source
+    // file the panic hook recorded, without the folders above the crate, or "unknown" when that does not
+    // look like a source file, whatever the panic message itself says.
     #[test]
     fn scrubs_a_crash() {
         let log = |at: &str, what: &str| {
-            format!("Mon thread 'main' panicked at old.rs:1:1:\nold\n\nTue thread 'main' panicked at {at}:\n{what}\n   0: frame\n")
+            let first = what.lines().next().unwrap_or_default();
+            format!(
+                "Mon thread 'main' panicked at old.rs:1:1:\nold\n\u{1e}old.rs:1:1\told\nTue thread 'main' panicked at {at}:\n{what}\n   0: frame\n\u{1e}{at}\t{first}\n"
+            )
         };
         let report = |at: &str, what: &str| crash(&log(at, what)).unwrap();
         let app = "/Users/me/code/origami-app/src/view.rs:10:5";
@@ -276,16 +308,64 @@ mod tests {
             "gpui-0.2.2/src/app.rs:7:1"
         );
         assert_eq!(report("/Users/me/odd.rs:7:1", "x").1, "odd.rs:7:1");
-        assert_eq!(report("src/main.rs:3:9", "x").1, "src/main.rs:3:9");
         assert_eq!(
-            report("src/main.rs:3:9", "x panicked at Bob Smith.rs:1:1:\nleak"),
-            ("panic".into(), "unknown".into())
+            report("origami/origami-engine/src/lut.rs:4:2", "x").1,
+            "origami-engine/src/lut.rs:4:2"
         );
+        assert_eq!(
+            report(
+                "~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gpui-0.2.2/src/app.rs:7:1",
+                "x"
+            )
+            .1,
+            "gpui-0.2.2/src/app.rs:7:1"
+        );
+        assert_eq!(report("src/main.rs:3:9", "x").1, "src/main.rs:3:9");
+        assert_eq!(report("Bob Smith.rs:1:1", "x").1, "unknown");
         assert_eq!(crash("Mon saved unsaved code\n"), None);
+        let file = env::temp_dir().join("origami-scrub-test/origami.log");
+        let _ = fs::remove_file(&file);
+        let fake = "`x panicked at acme-merger/q3-layoffs-draft.rs:1:1:\nindex out of bounds: the len is 1 but the index is 2`";
+        let what = format!("byte index 1 is not a char boundary; it is inside 'é' of {fake}\n\u{1e}acme.rs:1:1\tcapacity overflow");
+        let at = format!("origami-app/src/words.rs:9:9\t{}", what.lines().next().unwrap());
+        crash::record(&format!("panicked at origami-app/src/words.rs:9:9:\n{what}"), &at, &file);
+        assert_eq!(
+            tail(&file, 0).and_then(|(log, _)| crash(&log)),
+            Some(("byte index 1 is not a char boundary".into(), "origami-app/src/words.rs:9:9".into()))
+        );
+    }
+
+    // The crash log is read from the last launch's mark and at most its last megabyte, never through a
+    // link or a pipe, and moves to origami.log.old once it is over 4 MB.
+    #[test]
+    fn reads_only_new_crashes() {
+        let dir = env::temp_dir().join("origami-tail-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("origami.log");
+        fs::write(&log, vec![b'x'; 3 << 20]).unwrap();
+        let read = |mark| tail(&log, mark).map(|(text, end)| (text.len(), end));
+        let want = [(1 << 20, 3 << 20), (5, 3 << 20), (1 << 20, 3 << 20)].map(Some);
+        assert_eq!([0, (3 << 20) - 5, 4 << 20].map(read), want);
+        fs::write(&log, vec![b'x'; 5 << 20]).unwrap();
+        crash::record("panicked at a.rs:1:1:\nboom", "a.rs:1:1\tboom", &log);
+        let (text, end) = tail(&log, 5 << 20).unwrap();
+        assert_eq!(
+            (crash(&text), end as usize),
+            (Some(("panic".into(), "a.rs:1:1".into())), text.len())
+        );
+        assert_eq!(fs::metadata(dir.join("origami.log.old")).unwrap().len(), 5 << 20);
+        fs::remove_file(&log).unwrap();
+        std::os::unix::fs::symlink(dir.join("origami.log.old"), &log).unwrap();
+        assert_eq!(tail(&log, 0), None);
+        fs::remove_file(&log).unwrap();
+        assert!(origami_lang::status(Command::new("mkfifo").arg(&log)).unwrap().success());
+        assert_eq!(tail(&log, 0), None);
     }
 
     // The answer, the install id and the crash mark survive a relaunch, the id is random, made only
-    // on a yes and kept when the answer changes, and a missing or damaged file reads as unanswered.
+    // on a yes and kept when the answer changes, a missing or damaged file or a pipe reads as
+    // unanswered, and a link or pipe in its place is replaced, not written through.
     #[test]
     fn keeps_the_answer_and_id() {
         let file = env::temp_dir().join("origami-pulse-test/Origami/pulse");
@@ -307,5 +387,16 @@ mod tests {
         assert_eq!(read(&file), ("yes".into(), id, 77));
         fs::write(&file, "yes").unwrap();
         assert_eq!(read(&file), ("yes".into(), String::new(), 0));
+        let other = file.with_file_name("other");
+        fs::write(&other, "keep").unwrap();
+        fs::remove_file(&file).unwrap();
+        std::os::unix::fs::symlink(&other, &file).unwrap();
+        write(&file, &again);
+        assert!(fs::read_to_string(&other).unwrap() == "keep" && !file.is_symlink());
+        fs::remove_file(&file).unwrap();
+        assert!(origami_lang::status(Command::new("mkfifo").arg(&file)).unwrap().success());
+        assert_eq!(read(&file), (String::new(), String::new(), 0));
+        write(&file, &again);
+        assert_eq!(read(&file), again);
     }
 }

@@ -25,6 +25,8 @@ Origami runs on Macs with Apple silicon (M1 or later) and macOS 15 or later. It 
 4. Open **System Settings › Privacy & Security** and scroll down to Security, where it says Origami was blocked. Click **Open Anyway**. The button is there for about an hour after step 3.
 5. Confirm with **Open Anyway** and your login password or Touch ID. Origami opens, and from then on it opens like any other app.
 
+To check the download, run `shasum -a 256 ~/Downloads/Origami.dmg` in Terminal and compare the result with the SHA-256 in the release notes.
+
 Control-click › Open no longer skips this check on macOS 15 and later. If you prefer the Terminal, run this instead of steps 3 to 5:
 
 ```
@@ -94,6 +96,7 @@ What it sends, in short (the [Privacy](docs/pages/00-intro.md#privacy) section h
 
 - **Update check.** Each time it opens, Origami downloads one small file from GitHub to see if a newer version is out. It sends nothing about you or your project. Start it with `ORIGAMI_NO_UPDATE_CHECK=1` to turn this off.
 - **Usage and crash reports, only if you say yes.** The launch screen asks once. Nothing is sent before you click Yes or after you click No thanks. After a yes, a few anonymous events go to PostHog, such as "app opened" and "exported", with a random install id and no script contents, file names, paths or user name. Origami › Share Usage and Crash Reports turns them off, and `ORIGAMI_NO_TELEMETRY=1` sends nothing and never asks.
+- `ORIGAMI_NO_TELEMETRY` and `ORIGAMI_NO_UPDATE_CHECK` only apply when Origami is started from a terminal that sets them, such as `ORIGAMI_NO_TELEMETRY=1 /Applications/Origami.app/Contents/MacOS/origami-app`; opening it from the Dock or Finder does not read them.
 - **Built from source:** a copy you build yourself never asks and never sends reports, unless you add your own PostHog key. It still checks for updates unless you turn that off.
 - **Microphone:** used only while you record a voiceover.
 - **Scripts** can read any file your account can read when they name it, but cannot use the network, run programs or write files other than their own `origami.lock`. Open scripts from people you trust.

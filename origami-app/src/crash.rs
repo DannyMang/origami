@@ -12,14 +12,16 @@ use std::{
     process::Command,
     sync::Mutex,
     thread,
+    time::Duration,
 };
 
 pub static UNSAVED: Mutex<Option<(PathBuf, String)>> = Mutex::new(None);
+pub const MARK: char = '\u{1e}';
 
 pub fn home() -> PathBuf {
     match cfg!(test) {
         true => env::temp_dir().join("origami-home-test"),
-        false => PathBuf::from(env::var("HOME").unwrap_or_default()),
+        false => env::home_dir().filter(|h| h.is_absolute()).unwrap_or_else(|| "/var/empty".into()),
     }
 }
 
@@ -61,16 +63,13 @@ impl Origami {
             stash(&self.script, &self.text());
         }
         if let Some(s) = &self.shelf {
-            s.drain(false);
+            s.drain(false, Duration::from_millis(240));
         }
         ready(())
     }
 }
 
-fn rescue(what: &str, log: &Path) {
-    if let Some((script, text)) = UNSAVED.try_lock().ok().and_then(|u| u.clone()) {
-        stash(&script, &text);
-    }
+pub fn record(what: &str, at: &str, log: &Path) {
     let when = reply(&mut Command::new("/bin/date"));
     let me = thread::current();
     let entry = format!(
@@ -79,7 +78,11 @@ fn rescue(what: &str, log: &Path) {
         me.name().unwrap_or("<unnamed>"),
         Backtrace::force_capture()
     );
+    let entry = format!("{}{MARK}{}\n", entry.replace(MARK, ""), at.replace([MARK, '\n'], " "));
     let _ = log.parent().map(fs::create_dir_all);
+    if fs::symlink_metadata(log).is_ok_and(|m| m.len() > 4 << 20) {
+        let _ = fs::rename(log, log.with_extension("log.old"));
+    }
     let _ = OpenOptions::new()
         .create(true)
         .append(true)
@@ -87,12 +90,23 @@ fn rescue(what: &str, log: &Path) {
         .and_then(|mut f| f.write_all(entry.as_bytes()));
 }
 
+fn rescue(what: &str, at: &str, log: &Path) {
+    if let Some((script, text)) = UNSAVED.try_lock().ok().and_then(|u| u.clone()) {
+        stash(&script, &text);
+    }
+    record(what, at, log);
+}
+
 pub fn guard() {
     let log = journal();
     let default = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
         origami_engine::halt();
-        rescue(&info.to_string(), &log);
+        let at = info
+            .location()
+            .map_or(String::new(), |l| format!("{}:{}:{}", l.file(), l.line(), l.column()));
+        let first = info.payload_as_str().unwrap_or_default().lines().next().unwrap_or_default();
+        rescue(&info.to_string(), &format!("{at}\t{first}"), &log);
         default(info);
     }));
 }
@@ -101,6 +115,7 @@ pub fn guard() {
 mod tests {
     use super::*;
     use gpui::TestAppContext;
+    use std::time::Instant;
 
     // A crash with unsaved changes should keep the code on screen in Origami's own folder under a name
     // made from the script's path, replacing a link there instead of writing through it, and log the
@@ -118,11 +133,12 @@ mod tests {
         fs::create_dir_all(spare(&script).parent().unwrap()).unwrap();
         std::os::unix::fs::symlink(dir.join("other"), spare(&script)).unwrap();
         *UNSAVED.lock().unwrap() = Some((script.clone(), "text(\"b\")\n".into()));
-        rescue("panicked at here:\nboom", &log);
+        rescue("panicked at here:\nboom", "here\tboom", &log);
         *UNSAVED.lock().unwrap() = None;
         assert_eq!(fs::read_to_string(spare(&script)).unwrap(), "text(\"b\")\n");
         assert_eq!(fs::read_to_string(dir.join("other")).unwrap(), "precious");
-        assert!(fs::read_to_string(&log).unwrap().contains("panicked at here:\nboom\n"));
+        let logged = fs::read_to_string(&log).unwrap();
+        assert!(logged.contains("panicked at here:\nboom\n") && logged.ends_with("\u{1e}here\tboom\n"));
         let (view, cx) = cx.add_window_view(|_, cx| {
             let mut app = crate::fresh(cx.focus_handle(), vec![]);
             app.open(script.clone(), cx);
@@ -141,5 +157,35 @@ mod tests {
         fs::write(dir.join("edit.js.recovered"), "text(\"c\")\n").unwrap();
         view.update(cx, |o, cx| o.open(script.clone(), cx));
         assert!(!view.update(cx, |o, _| o.dirty));
+    }
+
+    // Quitting while another program holds the script's history lock gives up within a quarter of a
+    // second, and the version it could not write is written by the next drain.
+    #[gpui::test]
+    fn quits_past_a_held_history(cx: &mut TestAppContext) {
+        let dir = env::temp_dir().join("origami-quit-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("edit.js");
+        fs::write(&script, "a\n").unwrap();
+        let history = kept(&script, "history");
+        let _ = fs::remove_dir_all(&history);
+        fs::create_dir_all(&history).unwrap();
+        let held = fs::File::create(history.join("lock")).unwrap();
+        held.lock().unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            app.open(script.clone(), cx);
+            app
+        });
+        let start = Instant::now();
+        let shelf = view.update(cx, |o, cx| {
+            o.shelve("b\n".into());
+            drop(o.keep(cx));
+            o.shelf.clone().unwrap()
+        });
+        assert!(start.elapsed() < Duration::from_millis(400) && shelf.list().is_empty());
+        drop(held);
+        assert!(shelf.drain(true, Duration::from_secs(5)) && shelf.list().len() == 1);
     }
 }

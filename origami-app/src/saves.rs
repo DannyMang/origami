@@ -1,10 +1,10 @@
 use crate::{
     Mode, Origami,
-    shelf::{DAY, Entry, diff, now},
+    shelf::{DAY, Entry, Shelf, diff, now},
     view::{BAR, BG, BLUE, BORDER, COMMENT, DIM, GREEN, GUTTER, INK, MUTED, PANEL, RED, TEXT, tokens},
 };
 use gpui::{Context, Div, HighlightStyle, MouseButton, ScrollWheelEvent, StyledText, deferred, div, prelude::*, px, rgb, rgba};
-use std::ops::Range;
+use std::{ops::Range, sync::Arc, time::Duration};
 
 const SHOWN: usize = 12;
 const FAINT: u32 = 0x6f7685;
@@ -203,23 +203,29 @@ impl Origami {
         let Some(shelf) = self.shelf.clone().filter(|s| !self.shelving && !s.queue.lock().unwrap().is_empty()) else {
             return;
         };
-        let open = self.saves.is_some();
+        let (open, mine) = (self.saves.is_some(), shelf.clone());
         self.shelving = true;
         cx.spawn(async move |this, cx| {
             let list = cx
                 .background_executor()
                 .spawn(async move {
-                    shelf.drain(true);
+                    shelf.drain(true, Duration::from_millis(100));
                     open.then(|| shelf.list().into_iter().rev().collect())
                 })
                 .await;
             this.update(cx, |this, cx| {
                 this.shelving = false;
-                this.reread(list);
+                if this.holds(&mine) {
+                    this.reread(list);
+                }
                 cx.notify();
             })
         })
         .detach();
+    }
+
+    fn holds(&self, shelf: &Arc<Shelf>) -> bool {
+        self.shelf.as_ref().is_some_and(|s| Arc::ptr_eq(s, shelf))
     }
 
     fn reread(&mut self, list: Option<Vec<Entry>>) {
@@ -259,13 +265,16 @@ impl Origami {
         let (Some(shelf), Some(e)) = (self.shelf.clone(), self.saves.as_ref().and_then(|s| s.list.get(i).cloned())) else {
             return;
         };
-        let now = self.lines.clone();
+        let (now, mine) = (self.lines.clone(), shelf.clone());
         cx.spawn(async move |this, cx| {
             let diff = cx
                 .background_executor()
                 .spawn(async move { shelf.read(&e).map(|lines| Diff::new(i, lines, now)) })
                 .await;
             this.update(cx, |this, cx| {
+                if !this.holds(&mine) {
+                    return;
+                }
                 let Some(s) = &mut this.saves else { return };
                 match diff {
                     Some(d) => {
@@ -661,10 +670,7 @@ impl Origami {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shelf::{
-        Shelf,
-        tests::{NOW, owned, save, shelf},
-    };
+    use crate::shelf::tests::{NOW, owned, save, shelf};
     use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext, point};
     use std::{env, fs, path::PathBuf};
 
@@ -826,6 +832,30 @@ mod tests {
         cx.simulate_keystrokes("cmd-z");
         assert_eq!(view.update(cx, |o, _| o.lines.clone()), shown);
         assert_eq!(fs::read_to_string(&path).unwrap(), "A\nmine\nC\n");
+    }
+
+    // A version or a version list still loading when another script opens never lands in that
+    // script's history list.
+    #[gpui::test]
+    fn keeps_versions_with_their_script(cx: &mut TestAppContext) {
+        let (view, cx, path) = open(cx, "mine", &[&["a"], &["b"], &["c"]]);
+        let other = path.with_file_name("other.js");
+        fs::write(&other, "y\n").unwrap();
+        let _ = fs::remove_dir_all(crate::crash::kept(&other, "history"));
+        let theirs = Shelf::new(&other);
+        save(&theirs, &["x"], now() - 1000, None);
+        save(&theirs, &["y"], now() - 500, None);
+        view.update(cx, |o, cx| {
+            o.history(Some(0));
+            o.compare(1, cx);
+            o.shelve("d\n".into());
+            o.stow(cx);
+            o.open(other.clone(), cx);
+            o.history(None);
+        });
+        cx.run_until_parked();
+        let shown = view.update(cx, |o, _| o.saves.as_ref().map(|s| (s.list.len(), s.pick, s.diff.is_none())));
+        assert_eq!(shown, Some((2, None, true)));
     }
 
     // :history, cmd+Y, File > History, j k enter esc and ]c [c reach the same states as clicking the

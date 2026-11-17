@@ -1,6 +1,6 @@
 use crate::Origami;
 use gpui::{Context, Pixels, Point, Window};
-use std::{fs, mem};
+use std::mem;
 
 fn reach(wide: f32, room: f32) -> f32 {
     (wide - room + 40.).max(0.)
@@ -102,7 +102,7 @@ impl Origami {
         self.dirty = self.clash;
         if !self.clash {
             let text = self.text();
-            let _ = fs::write(&self.script, &text);
+            let _ = origami_lang::save(&self.script, &text);
             self.shelve(text);
         }
     }
@@ -433,7 +433,7 @@ mod tests {
     }
 
     use gpui::{Entity, TestAppContext, VisualTestContext};
-    use std::fs;
+    use std::{fs, os::unix::fs::PermissionsExt};
 
     fn settle(view: &Entity<crate::Origami>, cx: &mut VisualTestContext) {
         cx.run_until_parked();
@@ -490,7 +490,9 @@ mod tests {
 
     // A script that never ends reports that it took too long and one with a mistake marks the wrong line,
     // undoing back to an empty script saves it empty, deleting the script file outside the app keeps the
-    // code on screen and offers to save it again, and :e with a name that does not exist opens nothing.
+    // code on screen and offers to save it again, :e with a name that does not exist opens nothing, and a
+    // save replaces a link put where the script was instead of writing through it and keeps the file's
+    // permissions.
     #[gpui::test]
     fn loads_and_marks(cx: &mut TestAppContext) {
         let dir = std::env::temp_dir().join("origami-loads-test");
@@ -554,5 +556,19 @@ mod tests {
                 (path.clone(), "no script named other.js here, nothing opened")
             );
         });
+        fs::write(dir.join("keep.js"), "k\n").unwrap();
+        std::os::unix::fs::symlink(dir.join("keep.js"), &path).unwrap();
+        let store = |cx: &mut VisualTestContext| {
+            view.update(cx, |o, _| {
+                o.clash = false;
+                o.store();
+            })
+        };
+        store(cx);
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+        store(cx);
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        let kept = (fs::read_to_string(dir.join("keep.js")).unwrap(), fs::read_to_string(&path).unwrap());
+        assert_eq!((kept, path.is_symlink(), mode), (("k\n".into(), "t\n".into()), false, 0o640));
     }
 }

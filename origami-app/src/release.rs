@@ -27,7 +27,18 @@ pub fn latest() -> Option<(String, String)> {
     if env::var_os("ORIGAMI_NO_UPDATE_CHECK").is_some() {
         return None;
     }
-    let out = origami_lang::output(Command::new("/usr/bin/curl").args(["-fsL", "--max-time", "5", FEED])).ok()?;
+    let out = origami_lang::output(Command::new("/usr/bin/curl").args([
+        "-q",
+        "--proto",
+        "=https",
+        "--proto-redir",
+        "=https",
+        "-fsL",
+        "--max-time",
+        "5",
+        FEED,
+    ]))
+    .ok()?;
     read(&out.stdout)
 }
 

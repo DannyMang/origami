@@ -153,9 +153,9 @@ impl Origami {
             Some((path, height, codec, quality, audio)) if path.is_absolute() => Ship {
                 path,
                 opts: Opts {
-                    height,
+                    height: if SIZES.iter().any(|s| s.0 == height) { height } else { 0 },
                     codec: CODECS.get(codec).map_or(Codec::H264, |c| c.0),
-                    quality,
+                    quality: if GRADES.iter().any(|g| g.0 == quality) { quality } else { 80 },
                     audio,
                     range: None,
                 },
@@ -457,10 +457,10 @@ pub mod tests {
     pub static ONE: Mutex<()> = Mutex::new(());
 
     // The export dialog opens on the project's name at High quality, Enter exports what was picked (here
-    // ProRes at twice the size, only the selected clip, as a .mov) and the next opening remembers the file,
-    // format and size, Esc closes it without exporting, and exporting onto a file that already exists asks
-    // first, Cancel leaving the dialog open and the file alone, Keep Both saving the new export beside it
-    // with a number and Replace writing over it.
+    // ProRes at twice the size, only the selected clip, as a .mov) and the next opening remembers the file
+    // and format but not a size the dialog does not offer, Esc closes it without exporting, and exporting
+    // onto a file that already exists asks first, Cancel leaving the dialog open and the file alone, Keep
+    // Both saving the new export beside it with a number and Replace writing over it.
     #[gpui::test]
     fn exports_what_is_picked(cx: &mut gpui::TestAppContext) {
         let _one = ONE.lock();
@@ -500,7 +500,7 @@ pub mod tests {
             let s = o.ship.as_ref().unwrap();
             assert_eq!(
                 (s.path.clone(), s.opts.codec, s.opts.height, s.clip),
-                (dir.join("trip.mov"), Codec::ProRes, 72, false)
+                (dir.join("trip.mov"), Codec::ProRes, 0, false)
             );
         });
         cx.simulate_keystrokes("escape");
@@ -527,7 +527,8 @@ pub mod tests {
     }
 
     // A remembered destination shipped inside a downloaded project, such as a web address in its
-    // .origami folder, is ignored and the dialog offers the file next to the script.
+    // .origami folder, is ignored and the dialog offers the file next to the script, and a remembered
+    // size or quality the dialog does not offer opens on the default one instead.
     #[gpui::test]
     fn ignores_a_remembered_web_address(cx: &mut gpui::TestAppContext) {
         let dir = env::temp_dir().join("origami-ship-test").join("far");
@@ -538,7 +539,30 @@ pub mod tests {
             app.script = dir.join("edit.js");
             app
         });
-        view.update(cx, |o, _| o.ask());
-        assert_eq!(view.update(cx, |o, _| o.ship.as_ref().unwrap().path.clone()), dir.join("far.mp4"));
+        let kept = view.update(cx, |o, _| o.kept());
+        fs::create_dir_all(kept.parent().unwrap()).unwrap();
+        let far = dir.join("x.mp4");
+        let shown = |cx: &mut gpui::VisualTestContext, row: String| {
+            fs::write(&kept, row).unwrap();
+            view.update(cx, |o, _| {
+                o.ask();
+                o.ship
+                    .as_ref()
+                    .map(|s| (s.path.clone(), s.opts.height, s.opts.codec, s.opts.quality))
+            })
+        };
+        let want = |path: &Path, height, codec, quality| Some((path.to_path_buf(), height, codec, quality));
+        let rows = [
+            (
+                r#"["http://127.0.0.1:9/a.ts",720,0,50,true]"#.to_string(),
+                want(&dir.join("far.mp4"), 0, Codec::H264, 80),
+            ),
+            (format!("[{far:?},100000,2,7,true]"), want(&far, 0, Codec::ProRes, 80)),
+            (format!("[{far:?},720,2,50,true]"), want(&far, 720, Codec::ProRes, 50)),
+        ];
+        for (row, want) in rows {
+            assert_eq!(shown(cx, row.clone()), want, "{row}");
+        }
+        fs::remove_file(&kept).unwrap();
     }
 }

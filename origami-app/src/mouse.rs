@@ -13,6 +13,7 @@ use std::{
     fs, mem,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 pub fn recent() -> PathBuf {
@@ -26,7 +27,7 @@ fn carried(home: &Path) -> PathBuf {
     );
     if !list.exists() && old.exists() {
         let _ = fs::create_dir_all(list.parent().unwrap());
-        let _ = fs::copy(old, &list);
+        let _ = origami_lang::load(&old).and_then(|text| origami_lang::save(&list, text));
     }
     list
 }
@@ -84,7 +85,7 @@ impl Origami {
         self.recent.truncate(6);
         let (list, all) = (recent(), self.recent.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>());
         let _ = fs::create_dir_all(list.parent().unwrap());
-        let _ = fs::write(list, all.join("\n"));
+        let _ = origami_lang::save(&list, all.join("\n"));
         cx.set_menus(menus(&self.recent));
         (self.script, self.mtime, self.t, self.dirty, self.clash) = (path, None, 0., false, false);
         (self.past, self.future, self.cursor, self.top, self.left) = (Default::default(), Default::default(), None, 0., 0.);
@@ -94,7 +95,7 @@ impl Origami {
             cx.background_executor()
                 .spawn(async move {
                     if let Some(s) = old {
-                        s.drain(true)
+                        s.drain(true, Duration::from_secs(10));
                     }
                 })
                 .detach();

@@ -74,7 +74,7 @@ cargo test --manifest-path origami-lang/Cargo.toml
 
 Running the app with no argument opens the launch screen. Run `cargo test` and `cargo fmt` in each crate you touch; a build must produce zero warnings.
 Set `ORIGAMI_NO_UPDATE_CHECK` (any value) to stop the app checking for a newer version at startup.
-A build from source sends no usage or crash reports and never asks to, unless `POSTHOG_KEY` is set when it is compiled; `./bundle.sh` reads it from a gitignored `.env` at the repo root when that file exists.
+A build from source sends no usage or crash reports and never asks to, unless `ORIGAMI_POSTHOG_KEY` is set when it is compiled; `./bundle.sh` reads it from a gitignored `.env` at the repo root when that file exists.
 
 `./bundle.sh` builds `dist/Origami.app` and `dist/Origami.dmg`, with `LICENSE.md` and `THIRD-PARTY.md` in the app's Resources. `FFMPEG_DIR=<folder>` copies `ffmpeg` and `ffprobe` from that folder into the app; they must be static builds, because under the hardened runtime a copied Homebrew ffmpeg cannot load its libraries. Without `SIGN_ID` the app is signed ad-hoc, which runs on any Apple silicon Mac once its owner allows it in Privacy & Security; `SIGN_ID="Developer ID Application: …"` with `NOTARY_PROFILE=<notarytool keychain profile>` signs with that identity, notarises and staples instead. Both use the hardened runtime and `origami.entitlements`.
 
