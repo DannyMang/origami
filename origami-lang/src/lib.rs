@@ -4,8 +4,8 @@ mod tool;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use boa_engine::{
-    Context, JsArgs, JsError, JsNativeError, JsObject, JsResult, JsString, JsValue, NativeFunction, Source, js_string,
-    object::builtins::JsArray, property::Attribute, script::Script,
+    Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue, NativeFunction, Source, js_string, object::builtins::JsArray,
+    property::Attribute, script::Script,
 };
 pub use error::Error;
 pub use grade::{Curves, Grade, Secondary, Vignette, Wheels};
@@ -335,8 +335,12 @@ fn arg(args: &[JsValue], i: usize, cx: &mut Context) -> JsResult<String> {
     Ok(args.get_or_undefined(i).to_string(cx)?.to_std_string_escaped())
 }
 
-fn host(args: &[JsValue], cx: &mut Context, find: Find, f: impl FnOnce(&str, &Path) -> Result<String>) -> JsResult<JsValue> {
-    let (path, call) = (arg(args, 0, cx)?, arg(args, 1, cx)?);
+fn host(args: &[JsValue], cx: &mut Context, name: &str, find: Find, f: impl FnOnce(&str, &Path) -> Result<String>) -> JsResult<JsValue> {
+    let path = arg(args, 0, cx)?;
+    let call = args
+        .get(1)
+        .and_then(JsValue::as_string)
+        .map_or(name.into(), |c| c.to_std_string_escaped());
     let line = args.get(2).and_then(JsValue::as_number).unwrap_or(0.) as u32;
     let out = match ST.with_borrow(|st| find(&st.0, &path)) {
         Some(file) => {
@@ -347,34 +351,41 @@ fn host(args: &[JsValue], cx: &mut Context, find: Find, f: impl FnOnce(&str, &Pa
     };
     let fail = |e: anyhow::Error| {
         let message = e.to_string();
-        FAIL.set(e.downcast().ok());
+        let message = message.strip_prefix("line 0: ").unwrap_or(&message).to_string();
+        FAIL.set(e.downcast().ok().filter(|_| line > 0));
         JsNativeError::error().with_message(message)
     };
     Ok(JsString::from(out.map_err(fail)?).into())
 }
 
 fn probe(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
-    host(args, cx, find, |rel, path| {
+    host(args, cx, "__probe", find, |rel, path| {
         ST.with_borrow_mut(|(_, old, new, relock, _)| media(path, old, new, *relock, rel))
     })
 }
 
 fn read(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
-    host(args, cx, find, |_, path| Ok(load(path)?))
+    host(args, cx, "__read", find, |_, path| Ok(load(path)?))
 }
 
 fn lut(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
-    host(args, cx, cube, |_, path| Ok(path.to_string_lossy().into()))
+    host(args, cx, "__lut", cube, |_, path| Ok(path.to_string_lossy().into()))
 }
 
 fn font(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
-    host(args, cx, face, |_, path| Ok(path.to_string_lossy().into()))
+    host(args, cx, "__font", face, |_, path| Ok(path.to_string_lossy().into()))
 }
 
 fn extent(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
     let text = arg(args, 0, cx)?;
     let num = |i: usize| args.get(i).and_then(JsValue::as_number).unwrap_or(0.);
-    let clip: Clip = serde_json::from_str(&text).map_err(|e| JsNativeError::error().with_message(e.to_string()))?;
+    let clip: Clip = serde_json::from_str(&text).map_err(|_| {
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+        JsNativeError::error().with_message(match (v["line"].as_u64(), v["label"].as_str()) {
+            (Some(n), Some(l)) => format!("line {n}: {l} has a value out of range"),
+            _ => "__measure takes a clip written by Origami".into(),
+        })
+    })?;
     let read = |f: &str| READ.with_borrow(|r| r.iter().any(|(_, p)| p.as_os_str() == f));
     if let Some(e) = stray(&clip, read) {
         return Err(JsNativeError::error().with_message(e).into());
@@ -449,10 +460,16 @@ fn tag(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
     Ok(JsString::from(out + &src[from..]).into())
 }
 
+fn list(v: &JsValue) -> Option<JsArray> {
+    v.as_object().and_then(|o| JsArray::from_object(o).ok())
+}
+
 fn pairs(keys: &JsValue, d: f64, cx: &mut Context) -> JsResult<Option<Vec<(f64, f64, bool)>>> {
-    let all = JsArray::from_object(keys.to_object(cx)?)?;
+    let Some(all) = list(keys) else {
+        return Ok(None);
+    };
     let pair = |j, cx: &mut Context| {
-        let Some(p) = all.get(j, cx)?.as_object().filter(JsObject::is_array) else {
+        let Some(p) = list(&all.get(j, cx)?) else {
             return Ok(None);
         };
         let (s, v, e) = (p.get(0, cx)?, p.get(1, cx)?, p.get(2, cx)?);
@@ -475,16 +492,15 @@ fn plain(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
 }
 
 fn dots(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
-    let list = |v: &JsValue| v.as_object().filter(JsObject::is_array).map(JsArray::from_object);
     let Some(all) = list(args.get_or_undefined(0)) else {
         return Ok(false.into());
     };
-    let (all, mut fine) = (all?, true);
+    let mut fine = true;
     for j in 0..all.length(cx)? {
         let Some(p) = list(&all.get(j, cx)?) else {
             return Ok(false.into());
         };
-        let (p, whole) = (p?, |v: JsValue| v.as_number().is_some_and(f64::is_finite));
+        let whole = |v: JsValue| v.as_number().is_some_and(f64::is_finite);
         fine &= p.length(cx)? == 2 && whole(p.get(0, cx)?) && whole(p.get(1, cx)?);
     }
     Ok(fine.into())
@@ -521,7 +537,9 @@ fn single(v: f64) -> f32 {
 }
 
 fn keep(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
-    let all = JsArray::from_object(args.get_or_undefined(0).to_object(cx)?)?;
+    let Some(all) = list(args.get_or_undefined(0)) else {
+        return Ok(JsValue::undefined());
+    };
     let mut s = vec![];
     for j in 0..all.length(cx)? {
         match all.get(j, cx)?.as_number().filter(|v| v.is_finite()) {
@@ -1310,6 +1328,110 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         }
         let fine = "text('a').scale(2).pos(0.1, null).opacity(mul(delay(keys([0, 0], [1, 1, bezier(0.3, 0, 0.6, 1)]), 0.5), 2)).sharpen(5).vignette({ amount: 10 }).wheel('midtones', { hue: 20 }).curve('luma', [[0, 0], [1, 1]])";
         assert_eq!(tl(fine).clips.len(), 1);
+    }
+
+    // A name every object inherits, such as valueOf, toString or constructor, is not a clip method:
+    // calling one fails like any unknown method instead of silently dropping or copying the clip.
+    #[test]
+    fn inherited_names_are_not_clip_methods() {
+        let dir = scratch("inherited");
+        let unknown = fails(&dir, "text('z')\ntext('a').nope()");
+        assert_eq!(unknown, "line 2: TypeError: not a callable function");
+        for name in [
+            "valueOf",
+            "toString",
+            "toLocaleString",
+            "constructor",
+            "hasOwnProperty",
+            "isPrototypeOf",
+            "__proto__",
+        ] {
+            assert_eq!(fails(&dir, &format!("text('z')\ntext('a').{name}()")), unknown, "{name}");
+        }
+    }
+
+    // A clip used where text or a number belongs is refused with a plain message on its line.
+    #[test]
+    fn clips_are_not_text_or_numbers() {
+        let dir = scratch("opaque");
+        for src in [
+            "const a = text('a')\ntext(`${a}`)",
+            "const a = text('a')\ntext(a)",
+            "const a = text('a')\ntext('b' + a)",
+            "const a = text('a')\ntext('b').for(a)",
+            "const a = stack(text('a'))\ntext('b').opacity(a * 2)",
+        ] {
+            assert_eq!(fails(&dir, src), "line 2: a clip cannot be used as text or a number", "{src}");
+        }
+    }
+
+    // A name every object inherits is not a way to split text, an ease or a setting, and a setting
+    // given as undefined keeps the value it had.
+    #[test]
+    fn inherited_names_are_not_choices() {
+        let dir = scratch("choices");
+        for (src, says) in [
+            ("text('a b').each('__proto__', () => ({}))", "each is written each(\"char\""),
+            ("text('a').each('constructor', () => ({}))", "each is written each(\"char\""),
+            (
+                "text('a').opacity(keys([0, 0], [1, 1, 'constructor']))",
+                "\"constructor\" is not an ease (linear,",
+            ),
+            ("text('a').opacity(keys([0, 0], [1, 1, 'toString']))", "\"toString\" is not an ease"),
+            (
+                "text('a').opacity(keys([0, 0], [1, 1, '__proto__']))",
+                "\"__proto__\" is not an ease",
+            ),
+        ] {
+            let e = fails(&dir, &format!("text('z')\n{src}"));
+            assert!(e.starts_with(&format!("line 2: {says}")), "{src}: {e}");
+        }
+        let t = tl(
+            "settings({ fps: 24 })\nsettings({ fps: undefined, preview: undefined, proxy: undefined, ['__proto__']: { fps: 5 }, constructor: 1 })\ntext('a')",
+        );
+        assert_eq!((t.fps, t.preview.as_str(), t.proxy), (24, "auto", true));
+    }
+
+    // Origami's own functions called straight from a script with missing, odd or huge arguments fail
+    // with a plain message on the script's line or not at all, never with a JSON position, a JavaScript
+    // type error or line 0, and a followed clip holding a value out of range names its own line.
+    #[test]
+    fn natives_fail_plainly() {
+        let dir = scratch("natives");
+        for (call, line, says) in [
+            ("__measure('x')", 2, "__measure takes a clip written by Origami"),
+            ("__measure()", 2, "__measure takes a clip written by Origami"),
+            ("__measure({}, NaN)", 2, "__measure takes a clip written by Origami"),
+            ("__probe()", 2, "__probe(\"undefined\") points to a file that does not exist"),
+            ("__read(5)", 2, "__read(\"5\") points to a file that does not exist"),
+            (
+                "__lut({}, NaN, NaN)",
+                2,
+                "__lut(\"[object Object]\") points to a file that does not exist",
+            ),
+            ("__font('x', 'font', -1)", 2, "font(\"x\") points to a file that does not exist"),
+            ("__read('x'.repeat(5e5))", 2, "__read(\"xxxxxxxx"),
+            ("const v = video\nv('x')", 3, "video(\"x\") points to a file that does not exist"),
+            (
+                "const a = text('a').speed(1e200).speed(1e200)\ntext('b').pos(a.pos)",
+                2,
+                "a has a value out of range",
+            ),
+            ("const r = rect(5e9, 10)\ntext('b').pos(r.pos)", 2, "r has a value out of range"),
+        ] {
+            let e = fails(&dir, &format!("text('z')\n{call}"));
+            assert!(e.starts_with(&format!("line {line}: {says}")), "{call}: {e}");
+        }
+        for call in [
+            "__plain()",
+            "__plain(5)",
+            "__ramp(null, 1, 1, 1)",
+            "__keep()",
+            "__keep({ length: 1e9 })",
+            "__dots('x')",
+        ] {
+            assert!(run(&dir, &format!("text('z')\n{call}\ntext('y')")).is_ok(), "{call}");
+        }
     }
 
     // Words such as cat( or text( inside a quoted piece of text should be shown exactly as written.

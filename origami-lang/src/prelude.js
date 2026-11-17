@@ -53,8 +53,9 @@
     const all = typeof a === 'number' && b[run] && ((n, d, from) => b[run](n, d, from).map(x => a * x))
     return anim(k, Object.assign((t, d, T) => num(a, t, d, T) * num(b, t, d, T), { [run]: all, [calm]: all && b[calm] }))
   }
-  const split = { char: /\S/gu, word: /\S+/gu, line: /.+/gu }
+  const split = { __proto__: null, char: /\S/gu, word: /\S+/gu, line: /.+/gu }
   const ops = {
+    __proto__: null,
     trim: (d, a, b) => {
       const top = d.total ? Math.ceil(d.total * 1e3) / 1e3 : DAY, i = Math.max(0, Math.min(span('trim', a), top - 0.04))
       return { ...d, in: i, out: Math.min(Math.max(b == null ? d.out : span('trim', b), i + 0.04), top) }
@@ -128,15 +129,15 @@
       if (n && vets[k]) vets[k](a[0], a[1])
       if (!d.kids && d.kind !== 'text' && (k === 'shown' || k === 'each')) throw new Error(`line ${at}: ${k} is for text and caption`)
       const o = d.kids && deep.includes(k) ? { ...d, kids: d.kids.map(c => c[k](a[0], a[1])) } : ops[k](d, a[0], a[1])
-      const made = Object.hasOwn(ops, k) ? o : { ...o }
-      made.line = n || d.line
-      return clip(made)
+      o.line = n || d.line
+      return clip(o)
     }
     f.of = d
     f.k = k
     return k === 'pos' ? Object.assign(f, { x: { of: d, k: 'x' }, y: { of: d, k: 'y' } }) : f
   }
-  const chained = { get: (d, k) => k === '$' ? d : k in ops ? line(n => act(d, k, n)) : d[k] }
+  const opaque = () => { throw new Error('a clip cannot be used as text or a number') }
+  const chained = { get: (d, k) => k === '$' ? d : k in ops ? line(n => act(d, k, n)) : k === Symbol.toPrimitive ? opaque : Object.hasOwn(d, k) ? d[k] : undefined }
   const clip = d => new Proxy(d, chained)
   const base = { in: 0, out: null, speed: 1, gain: 1, fade: [0, 0], scale: 1, opacity: 1, rotate: 0, shown: 1, shift: 0, loop: 1 }
   const leaf = f => line(n => (...a) => { at = n; const d = f(...a); return clip({ ...base, ...d, line: n, home: n, label: L[n] ?? d.label, id: ++N }) })
@@ -168,6 +169,7 @@
   const pile = group(false, 'stack')
   const out3 = x => 1 - (1 - x) ** 3, tame = f => Object.assign(f, { [calm]: true })
   const eases = {
+    __proto__: null,
     linear: x => x,
     step: () => 0,
     slowIn: x => x ** 3,
@@ -247,7 +249,7 @@
       if (o.size?.some(v => v % 2)) note = `${at ? `line ${at}: ` : ''}size [${o.size.join(', ')}] is rounded to [${o.size.map(even).join(', ')}], video files need even numbers`
       must([undefined, 'auto', 'full', 'half', 'quarter'].includes(o.preview), 'preview is "auto", "full", "half" or "quarter"')
       must([undefined, true, false].includes(o.proxy), 'proxy is true or false')
-      Object.assign(S, o)
+      for (const k in S) if (o[k] !== undefined) S[k] = o[k]
     }),
     video: file('video', m => ({ video: m.video, audio: m.audio, out: m.dur, total: m.dur })),
     sound: file('sound', m => ({ video: false, audio: m.audio, out: m.dur, total: m.dur })),
@@ -315,7 +317,7 @@
     }) + 1
   }
   globalThis.__late = m => {
-    const [, name, n] = m.match(/(\w+) is not defined.*?:(\d+):/) ?? [], below = Object.keys(L).find(l => L[l] === name && +l > +n)
+    const [, name, n] = m.match(/\b(\w+) is not defined.*?:(\d+):/) ?? [], below = Object.keys(L).find(l => L[l] === name && +l > +n)
     if (below) return `line ${n}: ${name} is defined below, on line ${below}; a clip can only follow one defined above it`
     const head = m.split('\n')[0].replace(/ \((unknown at |script:|native\)).*/, '').replace(/^Error: /, '')
       .replace(/^RuntimeLimitError.*/, 'script took too long: a loop, or a function that calls itself, never ends')
