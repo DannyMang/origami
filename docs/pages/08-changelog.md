@@ -15,6 +15,8 @@ What changed in each version of Origami. The launch screen shows the version you
 - If ffmpeg is missing, Origami says so and how to install it: `brew install ffmpeg`, then reopen Origami.
 - The Open Recent list moved to `~/Library/Application Support/Origami`; your old list is carried over.
 - **Safer to open other people's projects.** A project can no longer make Origami write outside its folder through a planted link, make ffmpeg open a web address, or preset a web address as the export destination. Devices, pipes and oversized scripts, caption, LUT and font files are refused instead of freezing the app. An export no longer writes through a link planted at the destination, a project can no longer show its own "recovered" code in place of the script, and export settings are kept on your Mac instead of in the project folder. Crash reports carry only the source location and standard error messages. The update notice only links to Origami's own GitHub page.
+- Colour grades preview and export faster: applying a grade to a frame takes about half the time, so grade sliders respond sooner.
+- Exports with text, motion or grades finish about a fifth sooner.
 - Undo history uses far less memory: each step keeps only the lines that changed.
 - Typing in very long scripts is up to three times faster.
 - Fixed a rare freeze where the preview, thumbnails or an export could wait forever on an ffmpeg that had already finished.

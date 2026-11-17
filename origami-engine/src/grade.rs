@@ -283,4 +283,30 @@ mod tests {
         let (full, [r, g, b]) = (pipe(&look(100.))(c), lut.sample(c));
         assert!((full[0] - r).abs() < 1e-6 && (full[1] - g).abs() < 1e-6 && (full[2] - b).abs() < 1e-6);
     }
+
+    // Applying a colour table to a whole picture should give exactly the bytes that sampling the
+    // table at each pixel gives, for any table and any pixel, and keep each pixel's alpha.
+    #[test]
+    fn applying_matches_sampling() {
+        let mut seed = 7u64;
+        let mut next = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as u32
+        };
+        for n in [2, 5, 33] {
+            let mut lut = Lut::bake(n, |c| c);
+            lut.t
+                .iter_mut()
+                .flatten()
+                .for_each(|v| *v = next() as f32 / (1u32 << 31) as f32 * 2. - 0.5);
+            let px: Vec<u8> = (0..4 * 50_000).map(|_| next() as u8).collect();
+            let want = px.chunks_exact(4).flat_map(|s| {
+                let [r, g, b] = lut
+                    .sample([s[2], s[1], s[0]].map(|v| v as f64 / 255.))
+                    .map(|v| (v as f32 * 255.) as u8);
+                [b, g, r, s[3]]
+            });
+            assert!(lut.apply(&px).into_iter().eq(want), "{n}");
+        }
+    }
 }

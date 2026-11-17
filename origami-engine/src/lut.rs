@@ -20,7 +20,7 @@ pub struct Lut {
     pub t: Vec<[f32; 3]>,
 }
 
-fn mix(a: [f32; 3], b: [f32; 3], f: f32) -> [f32; 3] {
+fn mix<const N: usize>(a: [f32; N], b: [f32; N], f: f32) -> [f32; N] {
     array::from_fn(|i| a[i] + (b[i] - a[i]) * f)
 }
 
@@ -107,12 +107,18 @@ impl Lut {
     }
 
     pub fn apply(&self, px: &[u8]) -> Vec<u8> {
-        let cells: [(usize, f32); 256] = array::from_fn(|v| self.cell(v as f64 / 255.));
+        let (n, t) = (self.n, self.t.iter().map(|&[r, g, b]| [b, g, r, 1.]).collect::<Vec<_>>());
+        let [b, g, r] =
+            [n * n, n, 1].map(|step| -> [(usize, f32); 256] { array::from_fn(|v| self.cell(v as f64 / 255.)).map(|(i, f)| (i * step, f)) });
         let mut out = vec![0; px.len()];
         spread(&mut out, 4, |from, part| {
             for (p, s) in part.chunks_exact_mut(4).zip(px[from..].chunks_exact(4)) {
-                let [r, g, b] = self.blend([cells[s[2] as usize], cells[s[1] as usize], cells[s[0] as usize]]);
-                p.copy_from_slice(&[(b * 255.) as u8, (g * 255.) as u8, (r * 255.) as u8, s[3]]);
+                let [(i, fb), (j, fg), (k, fr)] = [b[s[0] as usize], g[s[1] as usize], r[s[2] as usize]];
+                let c = &t[i + j + k..][..n * n + n + 2];
+                let row = |i: usize| mix(c[i], c[i + 1], fr);
+                let face = |i: usize| mix(row(i), row(i + n), fg);
+                let (c, scale) = (mix(face(0), face(n * n), fb), [255., 255., 255., s[3] as f32]);
+                p.copy_from_slice(&array::from_fn::<_, 4, _>(|k| (c[k] * scale[k]) as u8));
             }
         });
         out

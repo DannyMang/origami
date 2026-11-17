@@ -456,13 +456,16 @@ pub fn render(tl: &Timeline, out: &str, o: &Opts, mut progress: impl FnMut(f64))
                 let _ = (t.kill(), t.wait());
             }
         });
-        s.spawn(move || {
-            let (mut pv, mut pipe) = (Preview::default(), pipe?);
-            pv.room = 1 << 26;
-            let fps = tl.fps as f64;
-            ((from * fps).round() as u32..(to * fps).round() as u32)
-                .try_for_each(|k| pipe.write_all(&pv.frame(tl, k as f64 / fps, size)).ok())
-        });
+        if let Some(mut pipe) = pipe {
+            let (send, take) = mpsc::sync_channel::<Vec<u8>>(1);
+            s.spawn(move || take.iter().try_for_each(|px| pipe.write_all(&px).ok()));
+            s.spawn(move || {
+                let (mut pv, fps) = (Preview::default(), tl.fps as f64);
+                pv.room = 1 << 26;
+                ((from * fps).round() as u32..(to * fps).round() as u32)
+                    .try_for_each(|k| send.send(pv.frame(tl, k as f64 / fps, size)).ok())
+            });
+        }
         for line in BufReader::new(child.stdout.take().unwrap()).lines().map_while(Result::ok) {
             let _ = beat.send(());
             if let Some(us) = line.strip_prefix("out_time_us=").and_then(|v| v.parse::<f64>().ok()) {
