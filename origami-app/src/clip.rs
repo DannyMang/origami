@@ -1,7 +1,7 @@
 use crate::{
     Origami,
     edit::links,
-    keys::{link, rewrite, secs},
+    keys::{link, rewrite, secs, stamp},
     knob::close,
     view::{BORDER, DIM, RED},
     voice::placed,
@@ -187,6 +187,10 @@ impl Origami {
             return self.note = "put the playhead inside a video or sound clip to split it".into();
         };
         self.echo(&c, rows, cut.2, Some(cut), "split");
+        let at = c.start + cut.2;
+        if self.note.is_empty() && ((at - self.t) * self.tl.fps as f64).abs() >= 1. {
+            self.note = format!("split at {}, the nearest cut that keeps every frame", stamp(at));
+        }
     }
 
     pub fn twin(&mut self) {
@@ -313,7 +317,8 @@ mod tests {
 
     // Timeline commands (split, duplicate, copy, cut, paste, delete) should rewrite the script the way
     // you would by hand and leave the clips at the right times; a split cuts where the frame on screen
-    // starts, with times to the millisecond unless a frame needs more decimals, so no frame is lost.
+    // starts, with times to the millisecond unless a frame needs more decimals, so no frame is lost,
+    // and says where it cut when that is not the playhead.
     // When a clip cannot be changed safely, the script is left alone and a note says why.
     #[gpui::test]
     fn shapes(cx: &mut TestAppContext) {
@@ -417,6 +422,13 @@ mod tests {
         let want = "  v.trim(0.000, 1.266),\n  v.trim(1.266, 3.000),\n  v.trim(5, 6),";
         assert!(got.0.contains(want), "{}", got.0);
         assert_eq!(got.1, [(0., 1.266), (1.266, 3.), (3., 4.)]);
+        let got = run(
+            cx,
+            "cat(\n  v.trim(0, 2).speed(0.5),\n  v.trim(5, 6),\n)",
+            &[("split", 0, 31. / 30.)],
+        );
+        assert_eq!(got.1, [(0., 1.), (1., 4.), (4., 5.)]);
+        assert_eq!(got.3, "split at 0:01.00, the nearest cut that keeps every frame");
         let bare = "cat(\n  v.trim(0, 2),\n  v\n)";
         let got = run(cx, bare, &[("split", 1, 6.)]);
         assert_eq!(

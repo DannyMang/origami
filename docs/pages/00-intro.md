@@ -30,7 +30,7 @@ Origami works on your Mac and keeps your scripts, footage and exports there.
 - **Usage and crash reports are off until you say yes.** The launch screen asks once: "Help improve Origami? Send anonymous usage and crash reports." Nothing is sent before you click Yes, and nothing is sent after you click No thanks. A copy of Origami built from source without a PostHog key never asks and never sends.
 - **What is sent after a yes.** Reports go to PostHog (`us.i.posthog.com`), one small request each, for these events only:
   - `app opened`: each time Origami opens.
-  - `exported`: when an export from the app ends, with the codec (`h264` or `hevc`), the frame width and height, the length rounded to seconds, and whether it succeeded.
+  - `exported`: when an export from the app ends, with the codec (`h264`, `hevc` or `prores`), the frame width and height, the length rounded to seconds, and whether it succeeded.
   - `type tool used`: when the T tool places a text.
   - `text edited on picture`: when you retype an existing text on the preview and save it.
   - `font picked`: when you choose from the font list. The font's name is not sent.

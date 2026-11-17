@@ -3,9 +3,27 @@
   const S = { fps: 30, size: null, preview: 'auto', proxy: true }
   let L = {}, at = 0, N = 0, P = [], D = 0, W = [1, 1], note
   const M = new Map(), reads = ['x', 'y', 'scale', 'rotate', 'opacity'], even = n => Math.round(n / 2) * 2
-  const digits = /^\d+$/, share = /^[\d.]+%$/, written = 'keys are written keys([0, 0], ["50%", 1], [-0.5, 0])', named = /(?:const|let|var)\s+(\w+)\s*=/, made = 'video sound image text captions caption color', bare = 'keys rect line add mul cat stack settings'
+  const digits = /^\d+$/, share = /^[\d.]+%$/, written = 'keys are written keys([0, 0], ["50%", 1], [-0.5, 0])', named = /(?:const|let|var)\s+(\w+)\s*=/, made = 'video sound image text captions caption color', bare = 'keys rect line add mul cat stack settings delay bezier'
   const DAY = 86400, run = Symbol(), calm = Symbol()
-  const must = (ok, say) => { if (!ok) throw new Error(`line ${at}: ${say}`) }
+  const must = (ok, say) => { if (!ok) throw new Error(at ? `line ${at}: ${say}` : say) }
+  const fin = (k, v) => {
+    if (!Number.isFinite(v)) throw new Error(`line ${at}: ${k} takes a number`)
+    return v
+  }
+  const opts = (k, o, names) => names.forEach(n => fin(`${k} ${n}`, o[n] ?? 0))
+  const dotted = (k, p) => must(__dots(p), `${k} takes points of two numbers, like [[0, 0], [0.5, 0.6], [1, 1]]`)
+  const vets = {
+    look: (p, k = 100) => fin('look', k),
+    curve: (n, p) => dotted('curve', p),
+    wheel: (n, o) => opts('wheel', o, ['hue', 'amount', 'luma']),
+    vignette: o => opts('vignette', o, ['amount', 'midpoint', 'roundness', 'feather']),
+    hslSecondary: ({ key, correction = {} }) => {
+      opts('hslSecondary', key, ['range', 'soft'])
+      opts('hslSecondary', correction, ['exposure', 'temperature', 'tint', 'contrast', 'saturation'])
+    },
+  }
+  for (const k of ['hueVsSat', 'hueVsHue', 'hueVsLuma', 'lumaVsSat', 'satVsSat']) vets[k] = p => dotted(k, p)
+  for (const k of ['shadowTint', 'highlightTint']) vets[k] = o => opts(k, o, ['hue', 'amount'])
   const paint = c => {
     must(/^#?([\da-f]{3,4}|[\da-f]{6}|[\da-f]{8})$/i.test(c), `${JSON.stringify(c)} is not a colour: write hex, like "#ffffff" or "#ffffff80", and click it for the colour wheel`)
     return c
@@ -25,13 +43,13 @@
       const led = T => (f ??= read(of, p))(T)
       v = Object.assign((t, d, T) => led(T), { [run]: (n, d, from) => Array.from({ length: n }, (_, i) => led(from + i / S.fps)) })
     }
-    if (typeof v !== 'number' && typeof v !== 'function') throw new Error(`line ${at}: ${k} takes a number or a function of time`)
+    if (typeof v !== 'function' && !(typeof v === 'number' && v - v === 0)) throw new Error(`line ${at}: ${k} takes a number or a function of time`)
     return typeof v === 'number' ? v : Object.assign((t, d, T) => v(t, d, T), { line: at, [run]: v[run], [calm]: v[calm] })
   }
   const num = (v, t, d, T) => typeof v === 'number' ? v : v(t, d, T)
   const times = (k, a, x) => {
     const b = anim(k, x)
-    if (typeof a === 'number' && typeof b === 'number') return a * b
+    if (typeof a === 'number' && typeof b === 'number') return a * b - a * b === 0 ? a * b : anim(k, NaN)
     const all = typeof a === 'number' && b[run] && ((n, d, from) => b[run](n, d, from).map(x => a * x))
     return anim(k, Object.assign((t, d, T) => num(a, t, d, T) * num(b, t, d, T), { [run]: all, [calm]: all && b[calm] }))
   }
@@ -101,12 +119,13 @@
   for (const k of ['shadowTint', 'highlightTint']) tone[k] = (d, o) => grade(d, { [k]: [o.hue ?? 0, o.amount ?? 0] })
   Object.assign(ops, tone)
   const deep = ['speed', 'volume', 'mute', 'fade', 'scale', 'pos', 'opacity', 'rotate', 'shown', 'each', ...Object.keys(tone)]
-  const nums = new Set(['speed', 'volume', 'loop', 'temperature', 'tint', 'saturation', 'exposure', 'contrast', 'highlights', 'shadows', 'whites', 'blacks', 'fadedFilm', 'vibrance', 'tintBalance'])
+  const nums = new Set(['speed', 'volume', 'loop', 'sharpen', 'temperature', 'tint', 'saturation', 'exposure', 'contrast', 'highlights', 'shadows', 'whites', 'blacks', 'fadedFilm', 'vibrance', 'tintBalance'])
   const called = Object.keys(ops).join(' ')
   const act = (d, k, n) => {
     const f = (...a) => {
       at = n || at
       if (nums.has(k) && !Number.isFinite(a[0])) throw new Error(`line ${at}: ${k} takes a number`)
+      if (n && vets[k]) vets[k](a[0], a[1])
       if (!d.kids && d.kind !== 'text' && (k === 'shown' || k === 'each')) throw new Error(`line ${at}: ${k} is for text and caption`)
       const o = d.kids && deep.includes(k) ? { ...d, kids: d.kids.map(c => c[k](a[0], a[1])) } : ops[k](d, a[0], a[1])
       const made = Object.hasOwn(ops, k) ? o : { ...o }
@@ -164,7 +183,7 @@
   Object.values(eases).forEach(tame)
   const wire = (k, f) => line(n => (v, x) => {
     at = n
-    if (typeof x !== 'number') throw new Error(`line ${at}: ${k} is written ${k}(title.pos.y, 0.5)`)
+    if (!Number.isFinite(x)) throw new Error(`line ${at}: ${k} is written ${k}(title.pos.y, 0.5)`)
     const g = anim(k, v)
     const all = g[run] && ((n, d, from) => g[run](n, d, from).map(y => f(y, x)))
     return typeof g === 'number' ? f(g, x) : Object.assign((t, d, T) => f(g(t, d, T), x), { [run]: all, [calm]: g[calm] })
@@ -178,7 +197,7 @@
       let odd, D, T
       for (let i = __plain(k) ? k.length : 0; i < k.length; i++) {
         const p = k[i]
-        if (!Array.isArray(p) || typeof p[0] !== 'number' && !share.test(p[0]) || typeof p[1] !== 'number') throw new Error(`line ${at}: ${written}`)
+        if (!Array.isArray(p) || !Number.isFinite(p[0]) && !share.test(p[0]) || !Number.isFinite(p[1])) throw new Error(`line ${at}: ${written}`)
         const f = p[2] === undefined ? 'linear' : p[2]
         if (typeof f !== 'function' && !eases[f]) odd ??= [f]
         e.push(eases[f] ?? f)
@@ -206,18 +225,26 @@
       const all = (n, d) => linear && __ramp(k, d, n, S.fps) || slow(n, d)
       return Object.assign(one, { [run]: all, [calm]: e.every(f => f[calm]) })
     }),
-    bezier: (x1, y1, x2, y2) => tame(x => {
-      const B = (p, q, s) => 3 * p * s * (1 - s) ** 2 + 3 * q * s * s * (1 - s) + s ** 3
-      let lo = 0, hi = 1
-      for (let i = 0; i < 24; i++) B(x1, x2, (lo + hi) / 2) < x ? lo = (lo + hi) / 2 : hi = (lo + hi) / 2
-      return B(y1, y2, (lo + hi) / 2)
-    }),
-    delay: (v, s) => (t, d, T) => v(t - s, d, T - s),
-    settings: line(n => (o = {}) => {
+    bezier: line(n => (x1, y1, x2, y2) => {
       at = n || at
+      must([x1, y1, x2, y2].every(Number.isFinite), 'bezier is written bezier(0.3, 0, 0.6, 1)')
+      return tame(x => {
+        const B = (p, q, s) => 3 * p * s * (1 - s) ** 2 + 3 * q * s * s * (1 - s) + s ** 3
+        let lo = 0, hi = 1
+        for (let i = 0; i < 24; i++) B(x1, x2, (lo + hi) / 2) < x ? lo = (lo + hi) / 2 : hi = (lo + hi) / 2
+        return B(y1, y2, (lo + hi) / 2)
+      })
+    }),
+    delay: line(n => (v, s) => {
+      at = n || at
+      fin('delay', s)
+      return (t, d, T) => v(t - s, d, T - s)
+    }),
+    settings: line(n => (o = {}) => {
+      at = n
       must(o.fps === undefined || Number.isInteger(o.fps) && o.fps > 0 && o.fps <= 240, 'fps takes a whole number from 1 to 240')
       must(o.size == null || Array.isArray(o.size) && o.size.length === 2 && o.size.every(v => v >= 1 && v <= 16384), 'size is written [1920, 1080], two numbers from 1 to 16384')
-      if (o.size?.some(v => v % 2)) note = `line ${at}: size [${o.size.join(', ')}] is rounded to [${o.size.map(even).join(', ')}], video files need even numbers`
+      if (o.size?.some(v => v % 2)) note = `${at ? `line ${at}: ` : ''}size [${o.size.join(', ')}] is rounded to [${o.size.map(even).join(', ')}], video files need even numbers`
       must([undefined, 'auto', 'full', 'half', 'quarter'].includes(o.preview), 'preview is "auto", "full", "half" or "quarter"')
       must([undefined, true, false].includes(o.proxy), 'proxy is true or false')
       Object.assign(S, o)
@@ -240,8 +267,8 @@
       must(typeof c === 'string', 'color is written color("#203040")')
       return { kind: 'color', src: paint(c), video: true, audio: false, label: c }
     }),
-    rect: shape('rect', 2, 'rect(400, 120, { color: "#0008", radius: 12 })', ([w, h], o) => ({ w: Math.max(1, Math.round(w)), h: Math.max(1, Math.round(h)), radius: o.radius ?? 0 })),
-    line: shape('line', 4, 'line(0.1, 0.5, 0.9, 0.5, { color: "#ffffff", width: 4 })', (a, o) => ({ ends: a.slice(0, 4), size: o.width ?? 4 })),
+    rect: shape('rect', 2, 'rect(400, 120, { color: "#0008", radius: 12 })', ([w, h], o) => ({ w: Math.max(1, Math.round(w)), h: Math.max(1, Math.round(h)), radius: fin('radius', o.radius ?? 0) })),
+    line: shape('line', 4, 'line(0.1, 0.5, 0.9, 0.5, { color: "#ffffff", width: 4 })', (a, o) => ({ ends: a.slice(0, 4), size: fin('width', o.width ?? 4) })),
     cat: group(true, 'cat'),
     stack: pile,
   })
@@ -292,7 +319,7 @@
     if (below) return `line ${n}: ${name} is defined below, on line ${below}; a clip can only follow one defined above it`
     const head = m.split('\n')[0].replace(/ \((unknown at |script:|native\)).*/, '').replace(/^Error: /, '')
       .replace(/^RuntimeLimitError.*/, 'script took too long: a loop, or a function that calls itself, never ends')
-    const row = /\bline \d/.test(head) ? 0 : /unterminated string/.test(head) ? loose() : /abrupt end/.test(head) ? tail() : m.match(/script:(\d+):/)?.[1]
+    const row = /\bline \d/.test(head) ? 0 : /unterminated string/.test(head) ? loose() : /abrupt end/.test(head) ? tail() : (m.match(/\n.*script:(\d+):/) ?? m.match(/script:(\d+):/))?.[1]
     return row ? `line ${row}: ${head}` : head
   }
   const frames = d => Math.max(1, Math.ceil(d * S.fps - 1e-6))

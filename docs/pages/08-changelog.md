@@ -42,17 +42,22 @@ What changed in each version of Origami. The launch screen shows the version you
   - Jumping to a frame just before a keyframe in footage with B-frames shows that frame instead of a neighbour.
   - Variable-frame-rate footage (phone recordings) shows the same frame in the preview as in the export.
   - MPEG-TS footage (`.ts`, `.MTS`, `.M2TS`, `.vob`) shows the same frame in the preview as in the export, played or scrubbed.
+  - A trimmed MPEG-TS or MPEG-PS clip (`.ts`, `.MTS`, `.vob`, `.mpg`) starts on the frame at the trim point, in the preview and in the export, instead of on the next keyframe. Its sound stays in step and it plays to the last frame of the file.
+  - A clip that starts exactly half-way between two timeline frames no longer moves by a frame when an edit before it shifts its start by a rounding error.
 - Fixed memory that kept growing while dragging colours, shapes or text, and during long exports with captions.
 - **Fixed crashes and hangs:** clicking a clip right after deleting lines, a script that never finishes, very deep nesting, two exports at once, and clips placed off the frame or with a negative size.
 - **Fixed script damage:** recording a take or pasting after a line ending in a comment or `;`, and dragging the edge of a clip whose `.trim(` spans several lines (now refused with a note).
 - **Fixed wrong output:** very slow or very fast clips with sound, fades longer than the clip, empty text, rotated phone video, and accented letters in the default font.
 - **Clearer errors:** most errors now point at the right line, corrupt or non-media files are reported instead of accepted, and export failures say what failed.
+- `settings` called as `globalThis.settings(...)` or under another name reports its real line instead of "line 0".
+- NaN, Infinity or text where a number belongs (`scale(NaN)`, `pos(Infinity, NaN)`, `wheel("shadows", { hue: "3" })`, curve points, a `rect` radius, a `line` width, `keys`, `delay`, `bezier`) is refused with a message that names the line and what takes the number.
 - **Fixed from the second round of testing:**
   - Changing preview quality from the ⋯ menu no longer crashes or breaks scripts. It edits your `settings(...)` call in place, keeping its layout.
   - A drag let go outside the window ends there.
   - The last frame of a clip holds instead of flashing black, and preview and export show the same frame at every time.
   - Splitting keeps the frame at the playhead and leaves every other frame as it was, including DJI footage at 29.97 fps on a 30 fps timeline, and is instant again.
   - Splits write times to the millisecond, with more decimals only when a frame needs them, and keep every frame in preview and export at any frame rate, including 24 fps.
+  - Splitting a clip in `cat( )` no longer moves the clip after it by a frame, and splitting 24 fps footage on a 25 or 30 fps timeline no longer changes a frame beside the cut in the export. When the frame at the playhead cannot be cut exactly, the split lands on the nearest frame that can and a note says where.
   - A take or paste after a muted group no longer goes inside it.
   - Replacing a media file under the same name shows the new footage.
   - Autocomplete always fits in the window.

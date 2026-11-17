@@ -427,8 +427,9 @@ fn pairs(keys: &JsValue, d: f64, cx: &mut Context) -> JsResult<Option<Vec<(f64, 
             let lead = body.match_indices('.').nth(1).map_or(body, |(i, _)| &body[..i]);
             Some(lead.parse().unwrap_or(f64::NAN) / 100. * d)
         });
-        let t = s.as_number().map(|s| if s < 0. { d + s } else { s }).or(share);
-        Ok(t.zip(v.as_number()).map(|(t, v)| (t, v, !e.is_undefined())))
+        let whole = |v: &JsValue| v.as_number().filter(|v| v.is_finite());
+        let t = whole(&s).map(|s| if s < 0. { d + s } else { s }).or(share);
+        Ok(t.zip(whole(&v)).map(|(t, v)| (t, v, !e.is_undefined())))
     };
     (0..all.length(cx)?).map(|j| pair(j, cx)).collect()
 }
@@ -436,6 +437,22 @@ fn pairs(keys: &JsValue, d: f64, cx: &mut Context) -> JsResult<Option<Vec<(f64, 
 fn plain(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
     let keys = pairs(args.get_or_undefined(0), 0., cx)?;
     Ok(keys.is_some_and(|k| k.iter().all(|k| !k.2)).into())
+}
+
+fn dots(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
+    let list = |v: &JsValue| v.as_object().filter(JsObject::is_array).map(JsArray::from_object);
+    let Some(all) = list(args.get_or_undefined(0)) else {
+        return Ok(false.into());
+    };
+    let (all, mut fine) = (all?, true);
+    for j in 0..all.length(cx)? {
+        let Some(p) = list(&all.get(j, cx)?) else {
+            return Ok(false.into());
+        };
+        let (p, whole) = (p?, |v: JsValue| v.as_number().is_some_and(f64::is_finite));
+        fine &= p.length(cx)? == 2 && whole(p.get(0, cx)?) && whole(p.get(1, cx)?);
+    }
+    Ok(fine.into())
 }
 
 fn ramp(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
@@ -549,6 +566,7 @@ fn boot() -> Context {
         (js_string!("__assigns"), assigns),
         (js_string!("__tag"), tag),
         (js_string!("__plain"), plain),
+        (js_string!("__dots"), dots),
         (js_string!("__ramp"), ramp),
         (js_string!("__keep"), keep),
     ] {
@@ -1017,7 +1035,8 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
     }
 
     // Preview quality and sidecar scrubbing are set in settings and reach the timeline; a value that
-    // is not one of the choices, null included, names the line it is on.
+    // is not one of the choices, null included, names the line it is on, also when settings is called
+    // as globalThis.settings or under another name.
     #[test]
     fn settings_check_their_values() {
         let t = tl("settings({ fps: 24 })\ntext('a')");
@@ -1041,6 +1060,15 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
             (
                 "\nsettings ({ preview: 'big' })\ntext('a')",
                 "line 2: preview is \"auto\", \"full\", \"half\" or \"quarter\"",
+            ),
+            (
+                "globalThis.settings({ fps: 0 })\ntext('a')",
+                "line 1: fps takes a whole number from 1 to 240",
+            ),
+            ("text('a')\n\nglobalThis.settings({ proxy: 1 })", "line 3: proxy is true or false"),
+            (
+                "text('a')\nconst s = settings\nconst f = () =>\n  s({ fps: 0.5 })\nf()",
+                "line 4: fps takes a whole number from 1 to 240",
             ),
         ] {
             let dir = std::env::temp_dir().join(format!("origami-settings-{}", src.len()));
@@ -1123,6 +1151,56 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         }
         let fine = format!("{}text('a'){}", "stack(".repeat(99), ")".repeat(99));
         assert_eq!(tl(&fine).clips.len(), 1);
+    }
+
+    // A number that is NaN, Infinity or not a number at all should be refused wherever a method, an
+    // option or a key takes one, with a message that names the line and what takes the number.
+    #[test]
+    fn numbers_must_be_finite() {
+        let dir = std::env::temp_dir().join("origami-finite");
+        for (call, says) in [
+            ("text('a').scale(NaN)", "scale takes a number"),
+            ("text('a').scale(1e200).scale(1e200)", "scale takes a number"),
+            ("text('a').rotate(Infinity)", "rotate takes a number"),
+            ("text('a').opacity(NaN)", "opacity takes a number"),
+            ("text('a').shown(-Infinity)", "shown takes a number"),
+            ("text('a').pos(Infinity, NaN)", "pos takes a number"),
+            ("text('a').pos(0.5, NaN)", "pos takes a number"),
+            ("stack(text('a'), text('b')).scale(NaN)", "scale takes a number"),
+            ("text('a').each('char', () => ({ x: Infinity }))", "each x takes a number"),
+            ("text('a').volume(NaN)", "volume takes a number"),
+            ("text('a').speed(Infinity)", "speed takes a number"),
+            ("text('a').sharpen(NaN)", "sharpen takes a number"),
+            ("text('a').exposure(NaN)", "exposure takes a number"),
+            ("text('a').curve('red', [[0, NaN]])", "curve takes points of two numbers"),
+            ("text('a').hueVsSat([[0, 0], 1])", "hueVsSat takes points of two numbers"),
+            ("text('a').wheel('shadows', { hue: NaN })", "wheel hue takes a number"),
+            ("text('a').shadowTint({ amount: '3' })", "shadowTint amount takes a number"),
+            ("text('a').vignette({ feather: Infinity })", "vignette feather takes a number"),
+            (
+                "text('a').hslSecondary({ key: { color: '#f00', range: NaN } })",
+                "hslSecondary range takes a number",
+            ),
+            (
+                "text('a').hslSecondary({ key: { color: '#f00' }, correction: { tint: NaN } })",
+                "hslSecondary tint takes a number",
+            ),
+            ("rect(10, 10, { radius: NaN })", "radius takes a number"),
+            ("line(0, 0, 1, 1, { width: Infinity })", "width takes a number"),
+            ("rect(NaN, 10)", "rect is written rect(400, 120"),
+            ("text('a').opacity(keys([0, NaN], [1, 1]))", "keys are written keys("),
+            ("text('a').opacity(keys([0, 0], [Infinity, 1]))", "keys are written keys("),
+            ("text('a').opacity(mul(2, Infinity))", "mul is written mul("),
+            ("text('a').opacity(add(NaN, 1))", "add takes a number"),
+            ("text('a').opacity(\n  delay(t => t, NaN))", "delay takes a number"),
+            ("const e =\n  bezier(NaN, 0, 1, 1)", "bezier is written bezier(0.3, 0, 0.6, 1)"),
+        ] {
+            let line = 2 + call.matches('\n').count();
+            let e = fails(&dir, &format!("text('z')\n{call}\ntext('y')"));
+            assert!(e.starts_with(&format!("line {line}: {says}")), "{call}: {e}");
+        }
+        let fine = "text('a').scale(2).pos(0.1, null).opacity(mul(delay(keys([0, 0], [1, 1, bezier(0.3, 0, 0.6, 1)]), 0.5), 2)).sharpen(5).vignette({ amount: 10 }).wheel('midtones', { hue: 20 }).curve('luma', [[0, 0], [1, 1]])";
+        assert_eq!(tl(fine).clips.len(), 1);
     }
 
     // Words such as cat( or text( inside a quoted piece of text should be shown exactly as written.
@@ -1264,7 +1342,8 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         }
     }
 
-    // An odd frame size should be rounded to even numbers, with a note naming its line.
+    // An odd frame size should be rounded to even numbers, with a note naming its line when the line
+    // is known.
     #[test]
     fn rounds_odd_sizes() {
         let dir = std::env::temp_dir().join("origami-odd-size");
@@ -1275,6 +1354,11 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         assert_eq!(
             tl.note,
             "line 1: size [641, 360] is rounded to [642, 360], video files need even numbers"
+        );
+        fs::write(dir.join("edit.js"), "globalThis.settings({ size: [641, 360] })\ntext('a')").unwrap();
+        assert_eq!(
+            eval(&dir.join("edit.js"), true, size).unwrap().note,
+            "size [641, 360] is rounded to [642, 360], video files need even numbers"
         );
     }
 

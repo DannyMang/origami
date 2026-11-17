@@ -1,4 +1,4 @@
-use crate::preview::Preview;
+use crate::preview::{Preview, lead};
 use crate::{grade, lut::Lut, shape, text};
 use anyhow::{Result, bail};
 use origami_lang::{Clip, Kind, Timeline, Val, ffmpeg, start, status};
@@ -181,7 +181,7 @@ fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path, (k, (w, h)): (f64, (
         let (tw, th, x, y) = place(c, size, k);
         let own = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let solid = c.kind == Kind::Color && text::rgba(&c.src)[3] == 255;
-        let video = video && tw >= 1. && th >= 1.;
+        let (video, mut cut) = (video && tw >= 1. && th >= 1., String::new());
         match c.kind {
             Kind::Image if video => ins.extend(own(&["-loop", "1", "-t", &len.to_string(), "-i", &c.src])),
             Kind::Text | Kind::Rect | Kind::Line | Kind::Color if video && !solid => {
@@ -204,14 +204,21 @@ fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path, (k, (w, h)): (f64, (
                         .chain(own(&["-i", &file])),
                 );
             }
-            Kind::Video | Kind::Sound => ins.extend(own(&[
-                "-ss",
-                &(c.src_in + skip * c.speed).to_string(),
-                "-t",
-                &(len * c.speed).to_string(),
-                "-i",
-                &c.src,
-            ])),
+            Kind::Video | Kind::Sound => {
+                let (at, slack) = (c.src_in + skip * c.speed, lead(&c.src));
+                let lead = slack.min(at);
+                if slack > 0. {
+                    cut = format!("trim=start={}:duration={},", lead - 2e-5, len * c.speed);
+                }
+                ins.extend(own(&[
+                    "-ss",
+                    &(at - lead).to_string(),
+                    "-t",
+                    &(len * c.speed + lead + slack).to_string(),
+                    "-i",
+                    &c.src,
+                ]))
+            }
             _ => {}
         }
         if video && c.video {
@@ -246,7 +253,7 @@ fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path, (k, (w, h)): (f64, (
                 }
                 false => {
                     let pad = if c.kind == Kind::Video { "tpad=stop=2:stop_mode=clone," } else { "" };
-                    let mut s = format!("[{n}:v]{pad}setpts=(PTS-STARTPTS)/{}+{}/TB,scale={tw}:{th}", c.speed, c.start);
+                    let mut s = format!("[{n}:v]{cut}{pad}setpts=(PTS-STARTPTS)/{}+{}/TB+1e-6,scale={tw}:{th}", c.speed, c.start);
                     if lut.is_some() || mask.is_some() {
                         s += ",format=bgra";
                     }
@@ -272,7 +279,8 @@ fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path, (k, (w, h)): (f64, (
         }
         if c.audio && c.gain > 0. {
             let mut s = format!(
-                "[{n}:a]asetpts=PTS-STARTPTS,{},volume={},aresample=48000,aformat=channel_layouts=stereo",
+                "[{n}:a]{}asetpts=PTS-STARTPTS,{},volume={},aresample=48000,aformat=channel_layouts=stereo",
+                cut.replace("trim", "atrim"),
                 tempo(c.speed),
                 c.gain
             );
