@@ -57,6 +57,7 @@ The later crates depend on the earlier ones by relative path.
 | `knob.rs` | Sliders, colour wheel and curve editor for numbers in the script |
 | `lint.rs` | Inline warnings and hover tips |
 | `fold.rs`, `search.rs` | Code folding and find |
+| `saves.rs` | History: a version of the script on every save, kept off the main thread in `~/Library/Application Support/Origami/history` under a name made from the script's path, the list, the diff against the code on screen and restore |
 | `pulse.rs` | Opt-in anonymous usage and crash reports: the question, the stored answer and install id, the events, the crash scrubber |
 | `crash.rs` | Panic hook: saves unsaved code to `~/Library/Application Support/Origami/recovered`, under a name made from the script's path, and logs to `~/Library/Logs/Origami/origami.log`; a quit that could not ask saves it there too |
 

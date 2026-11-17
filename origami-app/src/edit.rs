@@ -23,19 +23,24 @@ pub fn links(chain: &str) -> Vec<String> {
     out
 }
 
+pub fn same<T: PartialEq>(old: &[T], new: &[T]) -> (usize, usize) {
+    let head = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+    let tail = old[head..]
+        .iter()
+        .rev()
+        .zip(new[head..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    (head, tail)
+}
+
 #[derive(Default)]
 pub struct History(Vec<(usize, usize, Vec<String>)>);
 
 impl History {
     pub fn push(&mut self, lines: Vec<String>) {
         if let Some((head, tail, old)) = self.0.last_mut() {
-            *head = old.iter().zip(&lines).take_while(|(a, b)| a == b).count();
-            *tail = old[*head..]
-                .iter()
-                .rev()
-                .zip(lines[*head..].iter().rev())
-                .take_while(|(a, b)| a == b)
-                .count();
+            (*head, *tail) = same(old, &lines);
             *old = old.drain(*head..old.len() - *tail).collect();
         }
         self.0.push((0, 0, lines));
@@ -96,7 +101,9 @@ impl Origami {
     pub fn store(&mut self) {
         self.dirty = self.clash;
         if !self.clash {
-            let _ = fs::write(&self.script, self.text());
+            let text = self.text();
+            let _ = fs::write(&self.script, &text);
+            self.shelve(text);
         }
     }
 
@@ -184,7 +191,7 @@ impl Origami {
     }
 
     pub fn head(&self) -> f32 {
-        76. + if self.finding.is_some() { 30. } else { 0. } + if self.clash { 30. } else { 0. }
+        76. + if self.finding.is_some() { 30. } else { 0. } + if self.clash { 30. } else { 0. } + self.ledge()
     }
 
     pub fn spot(&self, at: Point<Pixels>, window: &Window) -> (usize, usize) {

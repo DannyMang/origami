@@ -91,7 +91,7 @@ impl Origami {
             self.search(if again { "enter" } else { &k }, key.modifiers.shift);
             return cx.notify();
         }
-        if self.choose(&k, plain) {
+        if self.choose(&k, plain) || self.cursor.is_none() && self.leaf(&k, plain) {
             return cx.notify();
         }
         if self.knobbed.take().is_some() && k == "escape" {
@@ -307,6 +307,7 @@ impl Origami {
             "e" => self.switch(dir.join(arg), window, cx),
             "set" => self.looping = arg == "loop",
             "help" => self.help = !self.help,
+            "history" => self.saves = self.versions(Some(0)),
             "ir" => {
                 let room = dir.join(".origami");
                 let _ = fs::create_dir_all(&room);

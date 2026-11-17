@@ -43,6 +43,9 @@ impl Origami {
         if self.dirty {
             stash(&self.script, &self.text());
         }
+        if let Some(s) = &self.shelf {
+            s.drain();
+        }
         ready(())
     }
 }

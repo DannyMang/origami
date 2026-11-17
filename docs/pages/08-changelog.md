@@ -6,6 +6,7 @@ What changed in each version of Origami. The launch screen shows the version you
 
 ### Nov 15
 
+- **History.** Every save keeps a version of the script on your Mac. The ↺ button in the code pane, cmd+y, File › History… or `:history` lists them by day with what changed; click one to compare it with the code on screen and restore it as a new save, which cmd+z undoes. Versions stay in `~/Library/Application Support/Origami/history`, never in the project folder: everything from the last week, then one an hour for a month and one a day for a year, up to about 50 MB per script.
 - **Export dialog.** ⇧⌘E opens a dialog to pick where to save, the resolution (timeline, 4K, 1080p, 720p), the format (H.264, HEVC or ProRes 422), the quality, the range (whole timeline or the selected clip) and whether to include audio. It shows the file size it expects, asks before writing over an existing file (Replace or Keep Both), and remembers your choices for each project. 4K keeps text and name tags sharp.
 - **Usage and crash reports, only if you say yes.** The launch screen asks once whether to send anonymous usage and crash reports. Nothing is sent before a yes, and Origami › Share Usage and Crash Reports or `ORIGAMI_NO_TELEMETRY=1` turns it off. The Privacy section of the introduction lists exactly what is sent.
 - **Type tool.** Click T beside the speed (or press `t`), then click the preview to add text at that spot and at the playhead.

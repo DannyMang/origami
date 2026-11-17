@@ -102,8 +102,22 @@ Click a gutter arrow to hide a block or a run of definitions. cmd+opt+[ folds at
 
 Drag the edge between panes to resize. cmd+= and cmd+- change the code size. cmd+0 resets.
 
+## History
+
+Every save keeps a version of the script on your Mac, so you can see what changed and bring an earlier version back.
+
+Open the list with the ↺ button at the right end of the code pane's header, cmd+y, File › History… or `:history`. It drops down above the code, newest first, grouped by day: Today, Yesterday, then the date. Each row shows when (just now, 12 min ago, then the time), what changed, and how many lines were added (green) and removed (red). The newest is marked current. A change to the numbers in one call on a named clip reads like `dome · temperature -4 → -10` or `camp · trim 12, 18 → 12, 20`; any other change shows its first changed line, and a restore reads `↺ restored 11:31`.
+
+Click a version, or move with j and k (or the arrow keys) and press enter, to compare it with the code on screen, saved or not. Red lines are only in that version, green lines came after it with their line number, the rest is dimmed, and long unchanged stretches fold to `⋯ 12 unchanged lines`. `]c` and `[c` (or ↑ and ↓ in the bar) jump between changes, `← back` or esc returns to the list, and esc again closes it.
+
+**Restore this version** (or r) puts that version back into the script and saves it as a new version on top; the list stays open. Nothing is lost: the code that was on screen is kept as a version first, even if it was not saved, and cmd+z undoes the restore. While the file has changed on disk, pick keep mine or use disk first.
+
+- **When.** A version is kept on every save: cmd+s, Save when Origami asks about unsaved changes, and every edit that saves by itself, such as a slider, a timeline drag or the type tool. A save that changes nothing keeps nothing. Saves less than a minute apart that change the same lines become one version, so a whole slider drag is one entry showing where it started and where it ended. Choosing use disk after the file changed on disk keeps the code on screen as a version first.
+- **Where.** In `~/Library/Application Support/Origami/history`, in a folder named from the script's path, readable only by your account. Never in the project folder, so versions do not travel with a shared project.
+- **How long.** Everything from the last 7 days; then the last version of each hour up to 30 days; then the last version of each day up to a year. Older versions are removed, and each script keeps at most about 50 MB, dropping the oldest first. The thinning happens the first time a script is saved after Origami opens.
+
 ## Menus
 
-Every command is also in the menu bar, with its shortcut. File has New (cmd+n), Open… (cmd+o), Open Recent, Save (cmd+s), Export… (cmd+shift+e) and Close Window (cmd+w). Help › What's New opens the changelog.
+Every command is also in the menu bar, with its shortcut. File has New (cmd+n), Open… (cmd+o), Open Recent, Save (cmd+s), History… (cmd+y), Export… (cmd+shift+e) and Close Window (cmd+w). Help › What's New opens the changelog.
 
 Export… (also ⋯ › export) opens the export dialog. It picks where to save, the resolution (the timeline's size, 4K, 1080p or 720p), the format (H.264, HEVC, or ProRes 422 saved as .mov), the quality (High, Standard or Small), the range (the whole timeline or the selected clip) and whether to include audio. Enter exports, Esc cancels, and the choices are remembered for the script in `~/Library/Application Support/Origami/export`, so they never travel with a shared project. If the file already exists, Origami asks first: Replace writes over it, Keep Both saves the new export next to it as `name 2.mp4`, and Cancel goes back to the dialog. 4K draws text and shapes at full size, so names and captions stay sharp; video is scaled up from the clips. `:export name.mp4` still exports straight away at the timeline's size.

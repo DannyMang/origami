@@ -3,6 +3,7 @@ use crate::{
     clip::set,
     crash,
     menu::menus,
+    saves::Shelf,
     scene::{FOOT, LEAD, sink},
     view::{HEAD, RULER},
 };
@@ -11,6 +12,7 @@ use origami_lang::{Clip, Kind};
 use std::{
     env, fs, mem,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 pub fn recent() -> PathBuf {
@@ -86,7 +88,17 @@ impl Origami {
         cx.set_menus(menus(&self.recent));
         (self.script, self.mtime, self.t, self.dirty, self.clash) = (path, None, 0., false, false);
         (self.past, self.future, self.cursor, self.top, self.left) = (Default::default(), Default::default(), None, 0., 0.);
-        (self.folded, self.fresh) = (vec![], true);
+        (self.folded, self.fresh, self.saves) = (vec![], true, None);
+        if self.shelf.as_ref().is_none_or(|s| !s.holds(&self.script)) {
+            let old = self.shelf.replace(Arc::new(Shelf::new(&self.script)));
+            cx.background_executor()
+                .spawn(async move {
+                    if let Some(s) = old {
+                        s.drain()
+                    }
+                })
+                .detach();
+        }
         let stamp = |p: &Path| fs::metadata(p).and_then(|m| m.modified()).ok();
         let spare = crash::spare(&self.script);
         if fs::symlink_metadata(&spare).is_ok_and(|m| m.is_file())

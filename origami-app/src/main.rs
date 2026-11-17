@@ -15,6 +15,7 @@ mod peek;
 mod pen;
 mod pulse;
 mod release;
+mod saves;
 mod scene;
 mod search;
 mod ship;
@@ -158,6 +159,9 @@ struct Origami {
     loading: usize,
     export: Option<Arc<Mutex<(String, bool)>>>,
     ship: Option<ship::Ship>,
+    shelf: Option<Arc<saves::Shelf>>,
+    saves: Option<saves::Saves>,
+    shelving: bool,
     take: Option<voice::Take>,
     pen: bool,
     words: Option<words::Words>,
@@ -381,6 +385,7 @@ impl Origami {
             self.switch(path, window, cx);
         }
         self.watch(cx);
+        self.stow(cx);
         *crash::UNSAVED.lock().unwrap() = self.dirty.then(|| (self.script.clone(), self.text()));
         if self.dwell() {
             cx.notify();
@@ -545,6 +550,9 @@ fn fresh(focus: FocusHandle, recent: Vec<PathBuf>) -> Origami {
         loading: 0,
         export: None,
         ship: None,
+        shelf: None,
+        saves: None,
+        shelving: false,
         take: None,
         pen: false,
         words: None,

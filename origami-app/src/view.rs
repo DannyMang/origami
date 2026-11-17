@@ -40,8 +40,8 @@ pub const PURPLE: u32 = 0xb477cf;
 pub const ORANGE: u32 = 0xbf956a;
 pub const RED: u32 = 0xd07277;
 const CODE: u32 = 0xacb2be;
-const COMMENT: u32 = 0x5d636f;
-const GUTTER: u32 = 0x4e5a5f;
+pub const COMMENT: u32 = 0x5d636f;
+pub const GUTTER: u32 = 0x4e5a5f;
 pub const INK: u32 = 0x1b1f25;
 pub const DOCS: &str = "https://example.com/origami/docs";
 pub const HEAD: f32 = 48.;
@@ -60,7 +60,7 @@ fold code with the gutter arrows, cmd+opt+[ and cmd+opt+], or za zM zR in vim ke
 h l  frame        H L  second       w b  clip boundary    0 $ gg G  start, end
 j k  layer        < >  shift clip   x  delete clip    space  play, pause    m' + letter  marks
 v    select       y    yank code    gd  open in editor    / n N  search    .  repeat
-:1:05  :goto 1:05  :f 1800  :export out.mp4 [--dry-run]  :e file.js  :set loop  :ir  :q";
+:1:05  :goto 1:05  :f 1800  :export out.mp4 [--dry-run]  :e file.js  :set loop  :ir  :history  :q";
 
 fn tab(label: impl IntoElement) -> Div {
     div()
@@ -75,7 +75,7 @@ fn tab(label: impl IntoElement) -> Div {
         .child(label)
 }
 
-fn tokens(s: &str) -> Vec<(Range<usize>, HighlightStyle)> {
+pub fn tokens(s: &str) -> Vec<(Range<usize>, HighlightStyle)> {
     let (mut out, mut i) = (vec![], 0);
     while i < s.len() {
         let rest = &s[i..];
@@ -587,6 +587,7 @@ impl Origami {
     }
 
     fn script(&self, focus: Option<&Clip>, rows: usize, cx: &mut Context<Self>) -> Div {
+        let (dial, ledger) = (self.dial(cx), self.ledger(rows, cx));
         let active = focus.map_or(0, |c| c.line as usize);
         let caret = self.cursor;
         let span = self.chosen();
@@ -753,6 +754,7 @@ impl Origami {
             .child(
                 tab(name)
                     .gap_2()
+                    .pr(px(6.))
                     .children(self.dirty.then(|| div().size(px(7.)).rounded_full().bg(rgb(TEXT))))
                     .child(div().flex_1())
                     .child(
@@ -760,7 +762,8 @@ impl Origami {
                             .text_size(px(11.))
                             .text_color(rgb(if self.dirty { ORANGE } else { DIM }))
                             .child(state),
-                    ),
+                    )
+                    .child(dial),
             )
             .children(self.clash.then(|| {
                 let pick = |label: &'static str, mine: bool| {
@@ -777,7 +780,10 @@ impl Origami {
                                 (this.clash, this.dirty) = (false, mine);
                                 match mine {
                                     true => this.store(),
-                                    false => this.load(cx),
+                                    false => {
+                                        this.shelve(this.text());
+                                        this.load(cx)
+                                    }
                                 }
                                 cx.stop_propagation();
                                 cx.notify();
@@ -867,11 +873,13 @@ impl Origami {
                     .child(step("\u{2039}", false))
                     .child(step("\u{203a}", true))
             }))
+            .children(ledger)
             .child(
                 div()
                     .flex_1()
                     .min_h_0()
                     .overflow_hidden()
+                    .when(self.comparing(), |d| d.hidden())
                     .pt_2()
                     .text_size(px(self.font))
                     .when(self.mouse, |d| d.cursor_text())
@@ -897,8 +905,10 @@ impl Origami {
     }
 
     fn status(&self, focus: Option<&Clip>, cx: &mut Context<Self>) -> Div {
+        let (tag, hint) = self.lens();
         let mode = match &self.mode {
             _ if self.take.is_some() => "-- REC --".into(),
+            _ if !tag.is_empty() => tag,
             Mode::Command(s) => format!(":{s}"),
             Mode::Search(s) => format!("/{s}"),
             Mode::Visual(_) => "-- VISUAL --".into(),
@@ -909,6 +919,7 @@ impl Origami {
         };
         let (color, info) = match (&self.take, focus) {
             (Some(take), _) => (RED, take.about()),
+            _ if !hint.is_empty() && self.note.is_empty() => (TEXT, hint.into()),
             _ if !self.err.is_empty() => (RED, self.err.clone()),
             _ if !self.note.is_empty() => (TEXT, self.note.clone()),
             _ if !self.tl.note.is_empty() => (TEXT, self.tl.note.clone()),

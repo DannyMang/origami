@@ -18,7 +18,7 @@ use std::{
 actions!(
     origami,
     [
-        About, Updates, Hide, HideOthers, Quit, New, Open, Export, Close, Minimize, Zoom, FullScreen, Docs, WhatsNew, Share
+        About, Updates, Hide, HideOthers, Quit, New, Open, Export, History, Close, Minimize, Zoom, FullScreen, Docs, WhatsNew, Share
     ]
 );
 
@@ -116,6 +116,7 @@ pub fn menus(recent: &[PathBuf]) -> Vec<Menu> {
                 MenuItem::submenu(menu("Open Recent", opened.collect())),
                 MenuItem::separator(),
                 key("Save", "cmd-s"),
+                MenuItem::action("History\u{2026}", History),
                 MenuItem::action("Export\u{2026}", Export),
                 MenuItem::separator(),
                 MenuItem::action("Close Window", Close),
@@ -168,6 +169,7 @@ pub fn install(cx: &mut App, recent: &[PathBuf]) {
         KeyBinding::new("cmd-n", New, None),
         KeyBinding::new("cmd-o", Open, None),
         KeyBinding::new("shift-cmd-e", Export, None),
+        KeyBinding::new("cmd-y", History, None),
         KeyBinding::new("cmd-w", Close, None),
         KeyBinding::new("cmd-m", Minimize, None),
         KeyBinding::new("f", FullScreen, Some("menu")),
@@ -223,6 +225,10 @@ impl Origami {
                     }))
                     .on_action(cx.listener(|this, _: &Export, _, cx| {
                         this.ask();
+                        cx.notify();
+                    }))
+                    .on_action(cx.listener(|this, _: &History, _, cx| {
+                        this.history(Some(0));
                         cx.notify();
                     }))
             })
