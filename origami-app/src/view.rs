@@ -323,7 +323,7 @@ impl Origami {
             self.tool("bigger code", cx, |t, _, _| t.scale(1.)),
             self.tool("smaller code", cx, |t, _, _| t.scale(-1.)),
             self.tool("reset layout", cx, |t, _, _| t.reset()),
-            self.tool("export", cx, |t, window, cx| t.run("export out.mp4", window, cx)),
+            self.tool("export", cx, |t, _, _| t.ask()),
             self.quality(cx),
         ];
         let side = || div().flex_1().flex().items_center().text_size(px(20.));
@@ -1264,6 +1264,7 @@ impl Render for Origami {
         }))
         .children(self.peep(window, cx))
         .children(self.help.then_some(help))
+        .children(self.dialog(cx))
     }
 }
 

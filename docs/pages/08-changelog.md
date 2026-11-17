@@ -6,6 +6,7 @@ What changed in each version of Origami. The launch screen shows the version you
 
 ### Nov 15
 
+- **Export dialog.** ⇧⌘E opens a dialog to pick where to save, the resolution (timeline, 4K, 1080p, 720p), the format (H.264, HEVC or ProRes 422), the quality, the range (whole timeline or the selected clip) and whether to include audio. It shows the file size it expects, asks before writing over an existing file (Replace or Keep Both), and remembers your choices for each project. 4K keeps text and name tags sharp.
 - **Type tool.** Click T beside the speed (or press `t`), then click the preview to add text at that spot and at the playhead.
 - **Edit text on the picture.** Double-click a text in the preview to retype it there: Enter saves, Esc cancels, Shift+Enter starts a new line. The T tool now types straight onto the picture.
 - **Font picker.** A font row in the click controls and the Motion tab opens a searchable list of the project's fonts and every font on this Mac. It works when the script names the font with a variable.

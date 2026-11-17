@@ -1120,7 +1120,7 @@ mod tests {
         .unwrap();
         let tl = origami_lang::eval(&dir.join("edit.js"), false, crate::footprint).unwrap();
         let out = dir.join("out.mp4").to_string_lossy().to_string();
-        crate::render(&tl, &out, |_| {}).unwrap();
+        crate::render(&tl, &out, &Default::default(), |_| {}).unwrap();
         let args = ["-v", "error", "-i", &out, "-f", "rawvideo", "-pix_fmt", "gray", "-"];
         let px = output(ffmpeg().args(args)).unwrap().stdout;
         let mut played = Preview::default();

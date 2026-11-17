@@ -206,8 +206,8 @@ impl Origami {
                         this.fullscreen();
                         cx.notify();
                     }))
-                    .on_action(cx.listener(|this, _: &Export, window, cx| {
-                        this.run("export", window, cx);
+                    .on_action(cx.listener(|this, _: &Export, _, cx| {
+                        this.ask();
                         cx.notify();
                     }))
             })

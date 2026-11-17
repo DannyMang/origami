@@ -104,4 +104,6 @@ Drag the edge between panes to resize. cmd+= and cmd+- change the code size. cmd
 
 ## Menus
 
-Every command is also in the menu bar, with its shortcut. File has New (cmd+n), Open… (cmd+o), Open Recent, Save (cmd+s), Export… (cmd+shift+e, the same as `:export`) and Close Window (cmd+w). Help › What's New opens the changelog.
+Every command is also in the menu bar, with its shortcut. File has New (cmd+n), Open… (cmd+o), Open Recent, Save (cmd+s), Export… (cmd+shift+e) and Close Window (cmd+w). Help › What's New opens the changelog.
+
+Export… (also ⋯ › export) opens the export dialog. It picks where to save, the resolution (the timeline's size, 4K, 1080p or 720p), the format (H.264, HEVC, or ProRes 422 saved as .mov), the quality (High, Standard or Small), the range (the whole timeline or the selected clip) and whether to include audio. Enter exports, Esc cancels, and the choices are remembered for the project in `.origami/export.json`. If the file already exists, Origami asks first: Replace writes over it, Keep Both saves the new export next to it as `name 2.mp4`, and Cancel goes back to the dialog. 4K draws text and shapes at full size, so names and captions stay sharp; video is scaled up from the clips. `:export name.mp4` still exports straight away at the timeline's size.

@@ -17,14 +17,14 @@ fn main() -> Result<()> {
                 let quote = |a: String| format!("'{}'", a.replace('\'', "'\\''"));
                 println!(
                     "ffmpeg {}",
-                    origami_engine::command(&tl, out)
+                    origami_engine::command(&tl, out, &Default::default())
                         .into_iter()
                         .map(quote)
                         .collect::<Vec<_>>()
                         .join(" ")
                 );
             } else {
-                origami_engine::render(&tl, out, |p| eprint!("\r{:3.0}%", p * 100.))?;
+                origami_engine::render(&tl, out, &Default::default(), |p| eprint!("\r{:3.0}%", p * 100.))?;
                 eprintln!();
             }
         }

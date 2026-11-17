@@ -1,12 +1,8 @@
 use crate::{Mode, Origami, clip::set, knob::close};
 use gpui::{ClipboardItem, Context, KeyDownEvent, Window};
-use origami_engine::{command, render};
+use origami_engine::{Opts, command};
 use origami_lang::Clip;
-use std::{
-    env, fs, mem,
-    process::Command,
-    sync::{Arc, Mutex},
-};
+use std::{env, fs, mem, process::Command};
 
 pub fn stamp(t: f64) -> String {
     let c = (t * 100.).round() as u64;
@@ -50,6 +46,14 @@ impl Origami {
         let save = key.modifiers.control && matches!(key.key.as_str(), "s" | "0" | "f");
         if key.modifiers.control && !save || self.script.as_os_str().is_empty() {
             return cx.propagate();
+        }
+        if self.ship.is_some() {
+            match key.key.as_str() {
+                "escape" => self.ship = None,
+                "enter" => self.go(window, cx),
+                _ => {}
+            }
+            return cx.notify();
         }
         if self.words.is_some() {
             self.strike(key, cx);
@@ -316,27 +320,15 @@ impl Origami {
                 let out = dir.join(name).to_string_lossy().to_string();
                 if arg.contains("--dry-run") {
                     let quote = |a: String| format!("'{}'", a.replace('\'', "'\\''"));
-                    let line = command(&self.tl, &out).into_iter().map(quote).collect::<Vec<_>>().join(" ");
+                    let line = command(&self.tl, &out, &Opts::default())
+                        .into_iter()
+                        .map(quote)
+                        .collect::<Vec<_>>()
+                        .join(" ");
                     let _ = fs::write(dir.join("export.sh"), format!("ffmpeg {line}\n"));
                     return self.note = "wrote export.sh".into();
                 }
-                if self.export.is_some() {
-                    return self.note = "an export is already running: wait for it to finish".into();
-                }
-                let (tl, job) = (self.tl.clone(), Arc::new(Mutex::new(("exporting 0%".to_string(), false))));
-                self.export = Some(job.clone());
-                let work = async move {
-                    let mut last = String::new();
-                    let done = render(&tl, &out, |p| {
-                        let note = format!("exporting {:.0}%", p * 100.);
-                        if note != last {
-                            job.lock().unwrap().0 = note.clone();
-                            last = note;
-                        }
-                    });
-                    *job.lock().unwrap() = (done.map_or_else(|e| e.to_string(), |_| format!("exported {out}")), true);
-                };
-                cx.background_executor().spawn(work).detach();
+                self.send(out, Opts::default(), cx);
             }
             t => match secs(t) {
                 Some(t) => self.seek(t),
@@ -351,6 +343,7 @@ mod tests {
     use super::*;
     use gpui::{Modifiers, MouseButton, point, px};
     use std::{
+        sync::{Arc, Mutex},
         thread,
         time::{Duration, Instant},
     };
@@ -370,6 +363,7 @@ mod tests {
     // (as on quit or a crash) should stop a running export's ffmpeg at once.
     #[gpui::test]
     fn one_export_at_a_time(cx: &mut gpui::TestAppContext) {
+        let _one = crate::ship::tests::ONE.lock();
         let dir = env::temp_dir().join("origami-twice-test");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
@@ -402,7 +396,7 @@ mod tests {
         );
         tl.clips[0].src = dir.join("never.mp4").to_string_lossy().to_string();
         let from = Instant::now();
-        let stuck = thread::spawn(move || render(&tl, &dir.join("out.mp4").to_string_lossy(), |_| {}));
+        let stuck = thread::spawn(move || origami_engine::render(&tl, &dir.join("out.mp4").to_string_lossy(), &Opts::default(), |_| {}));
         thread::sleep(Duration::from_millis(500));
         origami_engine::halt();
         assert!(stuck.join().unwrap().is_err() && from.elapsed() < Duration::from_secs(10));

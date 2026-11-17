@@ -16,6 +16,7 @@ mod pen;
 mod release;
 mod scene;
 mod search;
+mod ship;
 mod stage;
 mod tune;
 mod view;
@@ -154,6 +155,7 @@ struct Origami {
     jobs: Vec<(String, String, Option<f64>)>,
     loading: usize,
     export: Option<Arc<Mutex<(String, bool)>>>,
+    ship: Option<ship::Ship>,
     take: Option<voice::Take>,
     pen: bool,
     words: Option<words::Words>,
@@ -539,6 +541,7 @@ fn fresh(focus: FocusHandle, recent: Vec<PathBuf>) -> Origami {
         jobs: vec![],
         loading: 0,
         export: None,
+        ship: None,
         take: None,
         pen: false,
         words: None,
