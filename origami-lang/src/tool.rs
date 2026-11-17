@@ -1,7 +1,8 @@
 use std::{
     env,
     ffi::OsStr,
-    fs, io,
+    fs,
+    io::{self, ErrorKind::NotFound},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Output, Stdio},
@@ -34,9 +35,28 @@ pub fn ffprobe() -> Command {
     Command::new(&TOOLS[1])
 }
 
+fn absent(tool: &OsStr) -> Option<String> {
+    let name = Path::new(tool)
+        .file_name()?
+        .to_str()
+        .filter(|n| ["ffmpeg", "ffprobe"].contains(n))?;
+    Some(format!(
+        "{name} was not found: install it with \"brew install ffmpeg\", then reopen Origami"
+    ))
+}
+
+pub fn missing() -> Option<String> {
+    TOOLS.iter().filter(|t| !t.is_absolute()).find_map(|t| absent(t.as_os_str()))
+}
+
 pub fn start(cmd: &mut Command) -> io::Result<Child> {
     let _one = SPAWN.lock().unwrap_or_else(PoisonError::into_inner);
-    cmd.spawn()
+    let made = cmd.spawn();
+    made.map_err(|e| {
+        absent(cmd.get_program())
+            .filter(|_| e.kind() == NotFound)
+            .map_or(e, |m| io::Error::new(NotFound, m))
+    })
 }
 
 pub fn status(cmd: &mut Command) -> io::Result<ExitStatus> {
@@ -85,6 +105,18 @@ mod tests {
             })
         };
         assert!((0..12).all(round));
+    }
+
+    // A missing ffmpeg or ffprobe should say in plain words how to install it, and any other missing
+    // program should keep the system's own error.
+    #[test]
+    fn missing_tool_says_how_to_install() {
+        let said = |p: &str| start(&mut Command::new(p)).unwrap_err().to_string();
+        let fix = "was not found: install it with \"brew install ffmpeg\", then reopen Origami";
+        assert_eq!(said("/nowhere/ffmpeg"), format!("ffmpeg {fix}"));
+        assert_eq!(said("/nowhere/ffprobe"), format!("ffprobe {fix}"));
+        assert!(!said("/nowhere/sleep").contains("was not found"));
+        assert_eq!(absent(OsStr::new("ffprobe")), Some(format!("ffprobe {fix}")));
     }
 
     // A copy next to the program should win over PATH, PATH should be searched in order skipping

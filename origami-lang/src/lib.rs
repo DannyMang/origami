@@ -27,7 +27,7 @@ use std::{
     thread,
     time::{Duration, Instant, UNIX_EPOCH},
 };
-pub use tool::{ffmpeg, ffprobe, output, start, status};
+pub use tool::{ffmpeg, ffprobe, missing, output, start, status};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -264,8 +264,7 @@ fn scan(path: &Path, prev: Option<&Media>, relock: bool, rel: &str) -> Result<Me
             .args(["-v", "error", "-of", "json", "-show_entries"])
             .arg("format=duration:stream=codec_type,width,height:stream_side_data=rotation")
             .arg(path),
-    )
-    .context("ffprobe not found")?;
+    )?;
     let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
     let streams = v["streams"].as_array().cloned().unwrap_or_default();
     let has = |t| streams.iter().any(|s| s["codec_type"] == t);

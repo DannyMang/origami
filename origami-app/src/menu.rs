@@ -329,6 +329,7 @@ impl Origami {
 
     pub fn quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.export.is_none() {
+            self.dirty = false;
             return cx.quit();
         }
         let answer = window.prompt(
@@ -338,9 +339,12 @@ impl Origami {
             &["Quit", "Cancel"],
             cx,
         );
-        cx.spawn(async move |_, cx| {
+        cx.spawn(async move |this, cx| {
             if answer.await == Ok(0) {
-                let _ = cx.update(|cx| cx.quit());
+                let _ = this.update(cx, |this, cx| {
+                    this.dirty = false;
+                    cx.quit();
+                });
             }
         })
         .detach();
@@ -503,6 +507,27 @@ mod tests {
         cx.run_until_parked();
         assert!(fs::read_to_string(&path).unwrap().ends_with("// mine\n"));
         assert!(view.update(cx, |o, _| o.export.is_some() && !o.dirty));
+    }
+
+    // Being told to quit without a prompt, as from the Dock or at logout, should keep unsaved code next to
+    // the script for the next open, while a quit that chose to discard the changes should keep nothing.
+    #[gpui::test]
+    fn forced_quit_keeps_unsaved(cx: &mut TestAppContext) {
+        let (view, cx, path) = project(cx, "forced-quit");
+        let spare = crate::crash::spare(&path);
+        let edit = |o: &mut Origami, _: &mut Context<Origami>| {
+            o.lines.push("// mine".into());
+            o.dirty = true;
+        };
+        view.update(cx, |_, cx| cx.on_app_quit(Origami::keep).detach());
+        view.update(cx, edit);
+        view.update_in(cx, |o, window, cx| o.run("q!", window, cx));
+        let _ = view.update(cx, |o, cx| o.keep(cx));
+        assert!(!spare.exists());
+        view.update(cx, edit);
+        cx.cx.update(|cx| cx.shutdown());
+        assert!(fs::read_to_string(spare).unwrap().ends_with("// mine\n"));
+        assert!(!fs::read_to_string(path).unwrap().contains("// mine"));
     }
 
     // Opening another script from Open Recent, the Open dialog or Finder with unsaved changes should ask first:

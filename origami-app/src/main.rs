@@ -257,6 +257,9 @@ impl Origami {
                         this.menu = if this.menu == "clip" { "" } else { this.menu };
                         this.err.clear();
                         this.bad = 0;
+                        if let Some(gone) = origami_lang::missing() {
+                            this.note = gone;
+                        }
                         let sel = this.sel;
                         this.seek(this.t);
                         this.sel = sel;
@@ -583,6 +586,7 @@ fn main() {
             cx.new(|cx: &mut Context<Origami>| {
                 let focus = cx.focus_handle();
                 window.focus(&focus);
+                cx.on_app_quit(Origami::keep).detach();
                 let weak = cx.weak_entity();
                 window.on_window_should_close(cx, move |window, cx| {
                     let ask = |this: &mut Origami, cx: &mut Context<Origami>| {

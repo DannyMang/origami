@@ -21,3 +21,12 @@ That might be super naive, considering I have not even spent a full month learni
   2. If I do not know how to do something, it seems to be much easier and faster to do new things/effects I have never done before => if I want to try some ambitious effects, it seems it can be done much easier.
 
 Anyways, like all my projects I hope this benefits somebody out there. Would love feedback on the platform as well! My X is https://x.com/DanielUng19
+
+## Privacy
+
+Origami works on your Mac and keeps your scripts, footage and exports there.
+
+- **Update check.** Each time it opens, and when you pick Check for Updates…, Origami downloads one small file from GitHub to see if a newer version is out. It sends nothing about you or your project, but GitHub sees your IP address, as any website does. Start Origami with `ORIGAMI_NO_UPDATE_CHECK=1` set to turn the check off.
+- **Nothing else leaves your Mac.** No account, no analytics, no crash reports: a crash is logged to `~/Library/Logs/Origami` on your Mac only. Links to the docs and downloads open in your browser when you click them.
+- **Microphone.** Used only while you record a voiceover.
+- **Scripts.** A script can read the footage, sound, images, captions, fonts and LUTs it names. It cannot use the network, write files or run other programs.

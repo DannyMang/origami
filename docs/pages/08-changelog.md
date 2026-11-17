@@ -9,6 +9,9 @@ What changed in each version of Origami. The launch screen shows the version you
 - **Type tool.** Click T beside the speed (or press `t`), then click the preview to add text at that spot and at the playhead.
 - **Edit text on the picture.** Double-click a text in the preview to retype it there: Enter saves, Esc cancels, Shift+Enter starts a new line. The T tool now types straight onto the picture.
 - **Font picker.** A font row in the click controls and the Motion tab opens a searchable list of the project's fonts and every font on this Mac. It works when the script names the font with a variable.
+- Quitting from the Dock or logging out with unsaved changes saves them next to your script and offers them back the next time you open it.
+- If ffmpeg is missing, Origami says so and how to install it: `brew install ffmpeg`, then reopen Origami.
+- The Open Recent list moved to `~/Library/Application Support/Origami`; your old list is carried over.
 - Fixed a rare freeze where the preview, thumbnails or an export could wait forever on an ffmpeg that had already finished.
 - **Menu bar.** Origami, File, Edit, View, Window and Help menus, with every existing shortcut on its item. New: ⌘N new file, ⌘O open, ⇧⌘E export, ⌘W close, ⌘M minimize, ⌘H hide.
 - **Open….** A button on the launch screen and ⌘O open any script, and double-clicking a `.js` file in Finder (or Open With › Origami) opens it. Opening another script or quitting asks before losing unsaved changes, and quitting asks before stopping a running export.

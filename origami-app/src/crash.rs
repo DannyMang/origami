@@ -1,7 +1,10 @@
+use crate::Origami;
+use gpui::Context;
 use std::{
     backtrace::Backtrace,
     env,
     fs::{self, OpenOptions},
+    future::{Ready, ready},
     io::Write,
     panic,
     path::{Path, PathBuf},
@@ -16,6 +19,15 @@ pub fn spare(script: &Path) -> PathBuf {
     let mut name = script.as_os_str().to_owned();
     name.push(".recovered");
     name.into()
+}
+
+impl Origami {
+    pub fn keep(&mut self, _: &mut Context<Self>) -> Ready<()> {
+        if self.dirty {
+            let _ = fs::write(spare(&self.script), self.text());
+        }
+        ready(())
+    }
 }
 
 fn rescue(what: &str, log: &Path) {

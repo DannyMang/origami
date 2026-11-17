@@ -14,7 +14,19 @@ use std::{
 };
 
 pub fn recent() -> PathBuf {
-    PathBuf::from(env::var("HOME").unwrap_or_default()).join(".origami/recent")
+    carried(Path::new(&env::var("HOME").unwrap_or_default()))
+}
+
+fn carried(home: &Path) -> PathBuf {
+    let (list, old) = (
+        home.join("Library/Application Support/Origami/recent"),
+        home.join(".origami/recent"),
+    );
+    if !list.exists() && old.exists() {
+        let _ = fs::create_dir_all(list.parent().unwrap());
+        let _ = fs::copy(old, &list);
+    }
+    list
 }
 
 fn deep(zoom: f64, duration: f64, fps: f64) -> f64 {
@@ -83,7 +95,7 @@ impl Origami {
             let _ = fs::remove_file(&spare);
             if fs::read_to_string(&self.script).unwrap_or_default().lines().ne(text.lines()) {
                 (self.lines, self.dirty) = (text.lines().map(String::from).collect(), true);
-                self.note = "recovered unsaved changes from a crash: keep mine saves them, use disk drops them".into();
+                self.note = "recovered unsaved changes from last time: keep mine saves them, use disk drops them".into();
             }
         }
     }
@@ -266,6 +278,26 @@ impl Origami {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The recent list should live in Application Support, start from the old ~/.origami list the first
+    // time, leave that old file alone, and never replace a new list with the old one.
+    #[test]
+    fn recent_list_moves() {
+        let home = env::temp_dir().join("origami-recent-test");
+        let _ = fs::remove_dir_all(&home);
+        let (list, old) = (
+            home.join("Library/Application Support/Origami/recent"),
+            home.join(".origami/recent"),
+        );
+        assert_eq!(carried(&home), list);
+        assert!(!list.exists());
+        fs::create_dir_all(old.parent().unwrap()).unwrap();
+        fs::write(&old, "/a.js\n/b.js").unwrap();
+        assert_eq!(fs::read_to_string(carried(&home)).unwrap(), "/a.js\n/b.js");
+        fs::write(&list, "/c.js").unwrap();
+        assert_eq!(fs::read_to_string(carried(&home)).unwrap(), "/c.js");
+        assert_eq!(fs::read_to_string(old).unwrap(), "/a.js\n/b.js");
+    }
 
     // Timeline zoom, scroll position and panel sizes should stay inside sensible limits.
     #[test]

@@ -1,6 +1,6 @@
 use crate::preview::Preview;
 use crate::{grade, lut::Lut, shape, text};
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use origami_lang::{Clip, Kind, Timeline, Val, ffmpeg, start, status};
 use std::{
     env, fs,
@@ -360,8 +360,7 @@ pub fn render(tl: &Timeline, out: &str, mut progress: impl FnMut(f64)) -> Result
             .stdin(if piped(tl) { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped()),
-    )
-    .context("ffmpeg not found")?;
+    )?;
     let (pipe, size, pid, stuck) = (
         child.stdin.take(),
         (tl.size.0 as usize, tl.size.1 as usize),

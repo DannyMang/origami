@@ -40,8 +40,7 @@ impl Player {
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null()),
-        )
-        .context("ffmpeg not found")?;
+        )?;
         let mut out = child.stdout.take().unwrap();
         let buf = Arc::new(Mutex::new(VecDeque::<f32>::new()));
         let (played, fed, eof) = (

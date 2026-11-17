@@ -57,7 +57,7 @@ The later crates depend on the earlier ones by relative path.
 | `knob.rs` | Sliders, colour wheel and curve editor for numbers in the script |
 | `lint.rs` | Inline warnings and hover tips |
 | `fold.rs`, `search.rs` | Code folding and find |
-| `crash.rs` | Panic hook: saves unsaved code to `<script>.recovered` and logs to `~/Library/Logs/Origami/origami.log` |
+| `crash.rs` | Panic hook: saves unsaved code to `<script>.recovered` and logs to `~/Library/Logs/Origami/origami.log`; a quit that could not ask saves it there too |
 
 ## Build, run, test
 
