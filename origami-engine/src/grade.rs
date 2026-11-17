@@ -272,7 +272,7 @@ mod tests {
         let line = Lut::parse("TITLE \"t\"\nLUT_1D_SIZE 2\n0 0 0\n1 0.5 0.25\n").unwrap();
         assert_eq!(line.sample([0.5; 3]), [0.5, 0.25, 0.125]);
         assert_eq!(Lut::parse("LUT_3D_SIZE 4194304\n"), None);
-        let file = std::env::temp_dir().join("origami-test.cube");
+        let file = crate::tests::scratch("cube").join("look.cube");
         std::fs::write(&file, lut.text()).unwrap();
         let look = |k: f64| Grade {
             look: Some((file.to_string_lossy().into(), k)),

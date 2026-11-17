@@ -393,7 +393,7 @@ pub struct Preview {
     stamps: HashMap<String, Option<(u64, SystemTime)>>,
     at: f64,
     primed: (Vec<u32>, (usize, usize)),
-    pub room: usize,
+    pub(crate) room: usize,
     most: usize,
     pub fast: bool,
     pub rough: bool,
@@ -759,13 +759,11 @@ impl Preview {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shape::tests::clip;
+    use crate::tests::{TIDY, clip, film, scratch};
 
-    // Each timeline frame should show one fixed source frame, the one a plain export shows. Footage
-    // at 29.97 frames a second on a 30 fps timeline repeats one frame in every 1001; faster, slower
-    // and trimmed clips step evenly from the first frame at or after the trim point; the last frame
-    // of a clip, or of its file, is held to the clip's end. A frame landing half-way between two
-    // timeline frames goes where the export puts it, which depends on the file's time base.
+    // Each timeline frame shows the source frame a plain export shows, for 29.97 fps footage on a 30 fps
+    // timeline, faster, slower and trimmed clips, last frames held to the clip's end, and frames landing
+    // half-way between two timeline frames whatever the file's time base.
     #[test]
     fn frames_match_export() {
         let held = |(start, end, src_in, speed): (f64, f64, f64, f64), fps: f64, rate: (f64, f64, f64), dur: f64, frames: &[i64]| {
@@ -815,12 +813,9 @@ mod tests {
         assert_eq!(see((0.05, 3.05, 0., 1.), 60., (24., 1., 0.), &[5, 60]), [0, 22]);
     }
 
-    // Splitting a clip in a cat( ) or a stack( ) should keep the playhead frame and leave every other
-    // timeline frame, of both pieces and of the clip after them, showing the source frame it showed
-    // before, at common source rates and time bases on 24, 25, 30 and 60 fps timelines and any speed
-    // and trim, with times to the millisecond unless a frame needs more decimals, and never more than
-    // six. The first piece should also still read the last frame it shows, so the export matches. Only
-    // a few cuts too near the clip's ends are refused.
+    // Splitting a clip in a cat or a stack leaves every timeline frame showing the source frame it showed
+    // before, at common rates, time bases, speeds and trims, with times of at most six decimals, a first
+    // piece that still reads its last frame, and only a few cuts near the clip's ends refused.
     #[test]
     fn seams_keep_every_frame() {
         let rates = [
@@ -921,21 +916,12 @@ mod tests {
     // give way to the full file instead of leaving the clip out of the picture.
     #[test]
     fn broken_sidecars_fall_back() {
-        let dir = std::env::temp_dir().join("origami-sidecar-test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let make = |file: &str, src: &str| {
-            let made = origami_lang::status(
-                ffmpeg()
-                    .args(["-v", "error", "-y", "-f", "lavfi", "-i", src, "-f", "mp4"])
-                    .arg(dir.join(file)),
-            );
-            assert!(made.unwrap().success());
-        };
+        let dir = scratch("sidecar");
         for name in ["text", "short"] {
-            make(&format!("{name}.mp4"), "color=red:s=64x36:r=30:d=4");
+            film(&dir.join(format!("{name}.mp4")), "color=red:s=64x36:r=30:d=4", &[]);
         }
-        std::fs::write(dir.join("text.LRF"), "not a video").unwrap();
-        make("short.LRF", "color=blue:s=64x36:r=30:d=1");
+        fs::write(dir.join("text.LRF"), "not a video").unwrap();
+        film(&dir.join("short.LRF"), "color=blue:s=64x36:r=30:d=1", &["-f", "mp4"]);
         let seen = |name: &str, t: f64| {
             let c = Clip {
                 src: dir.join(format!("{name}.mp4")).to_string_lossy().into(),
@@ -968,13 +954,8 @@ mod tests {
     // so the clip on screen keeps its decoder instead of losing it to clips further ahead.
     #[test]
     fn montages_keep_the_decoder_on_screen() {
-        let file = std::env::temp_dir().join("origami-montage-test.mp4");
-        let made = origami_lang::status(
-            ffmpeg()
-                .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=red:s=64x36:r=30:d=1", "-f", "mp4"])
-                .arg(&file),
-        );
-        assert!(made.unwrap().success());
+        let file = scratch("montage").join("a.mp4");
+        film(&file, "color=red:s=64x36:r=30:d=1", &[]);
         let clips = (0..8).map(|i| Clip {
             src: file.to_string_lossy().into(),
             w: 64,
@@ -1000,17 +981,10 @@ mod tests {
     // that already showed the old ones.
     #[test]
     fn replaced_files_show_again() {
-        let dir = std::env::temp_dir().join("origami-swap-test");
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = scratch("swap");
         let (file, take) = (dir.join("swap.mp4"), dir.join("take.mp4"));
         for (ink, path) in [("red", &file), ("blue", &take)] {
-            let src = format!("color={ink}:s=64x36:r=30:d=2");
-            let made = origami_lang::status(
-                ffmpeg()
-                    .args(["-v", "error", "-y", "-f", "lavfi", "-i", &src, "-f", "mp4"])
-                    .arg(path),
-            );
-            assert!(made.unwrap().success());
+            film(path, &format!("color={ink}:s=64x36:r=30:d=2"), &[]);
         }
         let c = Clip {
             src: file.to_string_lossy().into(),
@@ -1029,8 +1003,8 @@ mod tests {
         let mut pv = Preview::default();
         let blue = |pv: &mut Preview| pv.frame(&tl, 1., (64, 36))[(18 * 64 + 32) * 4] > 128;
         assert!(!blue(&mut pv));
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        std::fs::copy(&take, &file).unwrap();
+        thread::sleep(std::time::Duration::from_millis(20));
+        fs::copy(&take, &file).unwrap();
         assert!(blue(&mut pv));
     }
 
@@ -1038,15 +1012,19 @@ mod tests {
     // pictures before it: a jump straight to it should still show it, as playing up to it does.
     #[test]
     fn jumps_before_keyframes_show_the_frame() {
-        let file = std::env::temp_dir().join("origami-bframes-test.mp4");
+        let file = scratch("bframes").join("a.mp4");
         let src = "color=black:s=64x36:r=30:d=2,format=yuv444p,geq=lum='16+8*(N-25*floor(N/25))':cb=128:cr=128";
-        let made = origami_lang::status(
-            ffmpeg()
-                .args(["-v", "error", "-y", "-f", "lavfi", "-i", src, "-c:v", "libx264", "-g", "24"])
-                .args(["-x264-params", "bframes=3:open-gop=1:scenecut=0", "-pix_fmt", "yuv420p"])
-                .arg(&file),
-        );
-        assert!(made.unwrap().success());
+        let x264 = [
+            "-c:v",
+            "libx264",
+            "-g",
+            "24",
+            "-x264-params",
+            "bframes=3:open-gop=1:scenecut=0",
+            "-pix_fmt",
+            "yuv420p",
+        ];
+        film(&file, src, &x264);
         let tl = Timeline {
             fps: 30,
             size: (64, 36),
@@ -1105,22 +1083,19 @@ mod tests {
     // frame at or after the trim point, not on a later keyframe, and runs to the last frame of the file.
     #[test]
     fn transport_streams_match_export() {
-        let dir = std::env::temp_dir().join("origami-streams-test");
-        std::fs::create_dir_all(&dir).unwrap();
+        let _tidy = TIDY.read();
+        let dir = scratch("streams");
         let lum = "if(between(Y,60,119),16+8*(N-25*floor(N/25)),255*random(1))";
         let src = format!("color=black:s=320x180:r=30:d=4,format=yuv444p,geq=lum='{lum}':cb=128:cr=128");
         for (file, codec) in [
             ("a.ts", &["-c:v", "libx264", "-g", "24", "-c:a", "aac"][..]),
             ("a.mpg", &["-c:v", "mpeg1video", "-q:v", "3", "-g", "12", "-bf", "2", "-c:a", "ac3"]),
         ] {
-            let made = origami_lang::status(
-                ffmpeg()
-                    .args(["-v", "error", "-y", "-f", "lavfi", "-i", &src, "-f", "lavfi", "-i", "sine=d=4"])
-                    .args(["-shortest", "-pix_fmt", "yuv420p"])
-                    .args(codec)
-                    .arg(dir.join(file)),
+            film(
+                &dir.join(file),
+                &src,
+                &[&["-f", "lavfi", "-i", "sine=d=4", "-shortest", "-pix_fmt", "yuv420p"], codec].concat(),
             );
-            assert!(made.unwrap().success());
         }
         for (file, fps, trim, frames) in [
             ("a.ts", 30, "trim(0.72, 2.2)", 44),
@@ -1128,7 +1103,7 @@ mod tests {
             ("a.mpg", 24, "trim(0.72, 2.2)", 36),
         ] {
             let script = format!("settings({{ fps: {fps}, size: [64, 36] }})\nvideo('{file}').{trim}");
-            std::fs::write(dir.join("edit.js"), script).unwrap();
+            fs::write(dir.join("edit.js"), script).unwrap();
             let tl = origami_lang::eval(&dir.join("edit.js"), true, crate::footprint).unwrap();
             let out = dir.join("out.mp4").to_string_lossy().to_string();
             crate::render(&tl, &out, &Default::default(), |_| {}).unwrap();
@@ -1163,10 +1138,9 @@ mod tests {
         assert_eq!([at(&tiny, 0, 0), at(&tiny, 3, 2)], [30, 220]);
     }
 
-    // Auto quality should render the picture at the size it has on screen, in steps of an eighth of
-    // the timeline and never larger than the timeline, with at most 1920 across while playing or
-    // scrubbing. A quality written in the script wins over the screen size. A tiny timeline still
-    // gets a picture at least one pixel across, and an empty picture draws nothing.
+    // Auto quality renders at the on-screen size in eighths of the timeline and at most 1920 across while
+    // playing, a quality written in the script wins, a tiny timeline still gets a pixel and an empty
+    // picture draws nothing.
     #[test]
     fn sizes_follow_the_screen() {
         let size = |w, h, preview: &str, wide, still| {

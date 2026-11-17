@@ -331,9 +331,12 @@ fn media(path: &Path, old: &Lock, new: &mut Lock, relock: bool, rel: &str) -> Re
 
 type Find = fn(&Path, &str) -> Option<PathBuf>;
 
+fn arg(args: &[JsValue], i: usize, cx: &mut Context) -> JsResult<String> {
+    Ok(args.get_or_undefined(i).to_string(cx)?.to_std_string_escaped())
+}
+
 fn host(args: &[JsValue], cx: &mut Context, find: Find, f: impl FnOnce(&str, &Path) -> Result<String>) -> JsResult<JsValue> {
-    let mut text = |i: usize| -> JsResult<String> { Ok(args.get(i).cloned().unwrap_or_default().to_string(cx)?.to_std_string_escaped()) };
-    let (path, call) = (text(0)?, text(1)?);
+    let (path, call) = (arg(args, 0, cx)?, arg(args, 1, cx)?);
     let line = args.get(2).and_then(JsValue::as_number).unwrap_or(0.) as u32;
     let out = match ST.with_borrow(|st| find(&st.0, &path)) {
         Some(file) => {
@@ -369,7 +372,7 @@ fn font(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
 }
 
 fn extent(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
-    let text = args.first().cloned().unwrap_or_default().to_string(cx)?.to_std_string_escaped();
+    let text = arg(args, 0, cx)?;
     let num = |i: usize| args.get(i).and_then(JsValue::as_number).unwrap_or(0.);
     let clip: Clip = serde_json::from_str(&text).map_err(|e| JsNativeError::error().with_message(e.to_string()))?;
     let read = |f: &str| READ.with_borrow(|r| r.iter().any(|(_, p)| p.as_os_str() == f));
@@ -410,7 +413,7 @@ pub fn load(path: &Path) -> io::Result<String> {
 }
 
 fn assigns(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
-    let src = args.get_or_undefined(0).to_string(cx)?.to_std_string_escaped();
+    let src = arg(args, 0, cx)?;
     let rows: Vec<JsValue> = src
         .split('\n')
         .enumerate()
@@ -421,7 +424,7 @@ fn assigns(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue>
 }
 
 fn tag(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
-    let mut text = |i: usize| -> JsResult<String> { Ok(args.get(i).cloned().unwrap_or_default().to_string(cx)?.to_std_string_escaped()) };
+    let mut text = |i| arg(args, i, cx);
     let (src, made, bare, called) = (text(0)?, text(1)?, text(2)?, text(3)?);
     let (mut out, mut line, mut from, mut quote) = (String::new(), 1, 0, None);
     for (i, c) in src.match_indices(['(', '\n', '"', '\'', '`']) {
@@ -761,16 +764,29 @@ mod tests {
         (c.size * c.scale.max(), c.size * c.scale.max() / 2.)
     }
 
-    fn tl(src: &str) -> Timeline {
-        let dir = std::env::temp_dir().join(format!("origami-{}", src.len()));
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("origami-lang-{name}"));
+        let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("edit.js"), src).unwrap();
-        eval(&dir.join("edit.js"), true, size).unwrap()
+        dir
     }
 
-    // Clips placed one after another (cat) or on top of each other (stack) should start and end at the
-    // right times. A time written as '0:02' means two seconds, and each clip remembers its name and
-    // the script line it came from.
+    fn run(dir: &Path, src: &str) -> Result<Timeline> {
+        fs::write(dir.join("edit.js"), src).unwrap();
+        eval(&dir.join("edit.js"), false, size)
+    }
+
+    fn fails(dir: &Path, src: &str) -> String {
+        run(dir, src).unwrap_err().to_string()
+    }
+
+    fn tl(src: &str) -> Timeline {
+        static RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        run(&scratch(&RUNS.fetch_add(1, Relaxed).to_string()), src).unwrap()
+    }
+
+    // Clips placed with cat and stack start and end at the right times, a time written as '0:02' means
+    // two seconds, and each clip keeps its name and the script line it came from.
     #[test]
     fn times_and_nesting() {
         let t = tl("const a = text('a').for('0:02')\ncat(a, stack(color('#000').for(3), text('b').at('0:01')), text('c'))");
@@ -779,9 +795,8 @@ mod tests {
         assert_eq!((t.duration, t.clips[0].label.as_str(), t.clips[3].line), (10., "a", 2));
     }
 
-    // A colour setting applied to a whole group should reach every clip inside it, and setting the
-    // same thing twice keeps the last value. A look file that does not exist should point at the line
-    // that asked for it.
+    // A colour setting on a group reaches every clip inside it with the last value winning, and a look
+    // file that does not exist points at the line that asked for it.
     #[test]
     fn grade_reaches_leaves() {
         let t = tl(
@@ -794,10 +809,7 @@ mod tests {
         );
         assert_eq!((t.clips[0].grade.as_ref().unwrap().exposure, t.clips[1].line), (1., 2));
         assert_eq!(tl("color('#f00').sharpen(5)").clips[0].grade, None);
-        let dir = std::env::temp_dir().join("origami-look");
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("edit.js"), "color('#f00')\n  .look('none')").unwrap();
-        let e = eval(&dir.join("edit.js"), true, size).unwrap_err();
+        let e = run(&scratch("look"), "color('#f00')\n  .look('none')").unwrap_err();
         assert_eq!(e.downcast_ref::<Error>().map(Error::line), Some(2));
     }
 
@@ -829,10 +841,9 @@ stack(
         assert!(matches!(t.clips[0].opacity, Val::Frames(2, ref s) if s.len() == 10));
     }
 
-    // Keys given straight to a clip are worked out for the whole clip at once. They should give exactly
-    // the values the same keys give when asked one frame at a time: keys out of order, two keys at one
-    // time, times counted from the end or written as a percentage in any accepted form, eases, and a
-    // second opacity multiplied in.
+    // Keys given straight to a clip, worked out for the whole clip at once, give exactly the values the
+    // same keys give one frame at a time, whatever their order, times, percentages, eases or a second
+    // opacity multiplied in.
     #[test]
     fn keys_at_once_match_frame_by_frame() {
         let t = tl("settings({ fps: 24 })
@@ -891,8 +902,8 @@ stack(...all.flatMap((k, i) => [k, slow(k)].map(v => {
         assert!(matches!(&tags[2].pos.0, Some(Val::Frames(_, s)) if s.len() == 96 && s[0] == 1. && s[95] != s[40]));
     }
 
-    // Animated text (per-word motion, typewriter reveal, scale, rotation) should survive being saved
-    // to the timeline file and loaded back unchanged. A clip with no animation stays as plain numbers.
+    // Animated text survives being saved to the timeline file and loaded back unchanged, while a clip
+    // with no animation stays as plain numbers.
     #[test]
     fn motion_round_trip() {
         let t = tl("text('ab cd\\nef').for(1).pos(null, t => t)
@@ -928,10 +939,7 @@ stack(...all.flatMap((k, i) => [k, slow(k)].map(v => {
             ("text('a', {\n  align: 'middle' })", 1),
             ("rect(10, 10)\n  .shown(1)", 2),
         ] {
-            let dir = std::env::temp_dir().join(format!("origami-motion-{line}-{}", src.len()));
-            fs::create_dir_all(&dir).unwrap();
-            fs::write(dir.join("edit.js"), src).unwrap();
-            let e = eval(&dir.join("edit.js"), true, size).unwrap_err().to_string();
+            let e = fails(&scratch("motion"), src);
             assert!(e.contains(&format!("line {line}: ")), "{e}");
         }
     }
@@ -966,9 +974,8 @@ stack(title.at(1), tag, both.at(1.5), far.at(2), title.at(9))");
         assert!(matches!((&c[1].pos.1, &c[3].opacity), (Some(Val::Frames(3, _)), Val::Frames(5, _))));
     }
 
-    // Following a property the other clip never set should use where that clip sits by default
-    // (centred in the frame). Following a clip that was never placed on the timeline should still
-    // work.
+    // Following a property the other clip never set uses where that clip sits by default, and following
+    // a clip never placed on the timeline still works.
     #[test]
     fn follows_defaults_and_unplaced_clips() {
         let t = tl("settings({ fps: 10 })
@@ -1042,16 +1049,13 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
                 "a is defined below, on line 4",
             ),
         ] {
-            let dir = std::env::temp_dir().join(format!("origami-follow-{line}-{}", src.len()));
-            fs::create_dir_all(&dir).unwrap();
-            fs::write(dir.join("edit.js"), src).unwrap();
-            let e = eval(&dir.join("edit.js"), true, size).unwrap_err().to_string();
+            let e = fails(&scratch("follow"), src);
             assert!(e.contains(&format!("line {line}: {says}")), "{e}");
         }
     }
 
-    // Rectangles, lines, and text with a background plate or alignment should carry their settings
-    // into the timeline. Timeline files saved before these existed should still load.
+    // Rectangles, lines, and text with a background plate or alignment carry their settings into the
+    // timeline, and timeline files saved before these existed still load.
     #[test]
     fn shapes_and_plates() {
         let t = tl("stack(
@@ -1122,10 +1126,7 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
                 "line 4: fps takes a whole number from 1 to 240",
             ),
         ] {
-            let dir = std::env::temp_dir().join(format!("origami-settings-{}", src.len()));
-            fs::create_dir_all(&dir).unwrap();
-            fs::write(dir.join("edit.js"), src).unwrap();
-            let e = eval(&dir.join("edit.js"), true, size).unwrap_err().to_string();
+            let e = fails(&scratch("settings"), src);
             assert!(e.contains(says), "{e}");
         }
     }
@@ -1137,12 +1138,6 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         let t = tl("stack(text('x').for(2).loop(2).shift(1), color('#f00'))");
         let span: Vec<_> = t.clips.iter().map(|c| (c.start, c.end)).collect();
         assert_eq!(span, [(1., 3.), (3., 5.), (0., 5.)]);
-    }
-
-    fn fails(dir: &Path, src: &str) -> String {
-        fs::create_dir_all(dir).unwrap();
-        fs::write(dir.join("edit.js"), src).unwrap();
-        eval(&dir.join("edit.js"), false, size).unwrap_err().to_string()
     }
 
     // Values that make no sense (a negative length, zero speed, a frame rate of 0, a loop without end,
@@ -1197,21 +1192,19 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
             ),
             (deep.as_str(), 102, "brackets are nested more than 100 deep"),
         ] {
-            let e = fails(&std::env::temp_dir().join(format!("origami-slip-{line}-{}", src.len())), src);
+            let e = fails(&scratch("slip"), src);
             assert!(e.starts_with(&format!("line {line}: {says}")), "{e}");
         }
         let fine = format!("{}text('a'){}", "stack(".repeat(99), ")".repeat(99));
         assert_eq!(tl(&fine).clips.len(), 1);
     }
 
-    // A script that reaches past the clip functions to name a web address or a file it never opened,
-    // to read a device, a pipe or a huge file (the script itself included), to hand over values that would hang or crash the app, or
-    // to replace a function Origami calls after the script, is refused with a message instead.
+    // A script that reaches past the clip functions to name a web address or a file it never opened, to
+    // read a device, a pipe or a huge file (the script itself included), to hand over values that would
+    // hang or crash the app, or to replace a function Origami calls after the script, is refused.
     #[test]
     fn reaching_past_the_functions_is_refused() {
-        let dir = std::env::temp_dir().join("origami-reach");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = scratch("reach");
         status(std::process::Command::new("mkfifo").arg(dir.join("pipe.srt"))).unwrap();
         fs::File::create(dir.join("big.srt")).unwrap().set_len((1 << 24) + 1).unwrap();
         let away = "Object.assign(v.$, { kind: 'video', src: 'http://127.0.0.1:9/a.mp4' })";
@@ -1273,7 +1266,7 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
     // option or a key takes one, with a message that names the line and what takes the number.
     #[test]
     fn numbers_must_be_finite() {
-        let dir = std::env::temp_dir().join("origami-finite");
+        let dir = scratch("finite");
         for (call, says) in [
             ("text('a').scale(NaN)", "scale takes a number"),
             ("text('a').scale(1e200).scale(1e200)", "scale takes a number"),
@@ -1335,7 +1328,7 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
     // evaluating should be reported, and the next script should evaluate normally either way.
     #[test]
     fn runaway_scripts_stop() {
-        let dir = std::env::temp_dir().join("origami-runaway");
+        let dir = scratch("runaway");
         let spin = "const spin = () => { for (let i = 0; i < 1e6; i++); }\nfor (let i = 0; i < 1e6; i++) spin()";
         assert_eq!(fails(&dir, spin), "script took too long: stopped after 2 seconds");
         assert_eq!(tl("text('a').for(3)").duration, 3.);
@@ -1346,9 +1339,7 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
     }
 
     fn media(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("origami-{name}"));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = scratch(name);
         let make = |args: &[&str]| {
             let made = status(ffmpeg().args(["-v", "error", "-y"]).args(args).current_dir(&dir));
             assert!(made.unwrap().success());
@@ -1362,10 +1353,9 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         dir
     }
 
-    // Opening a project for the first time should read every media file, give the same timeline as
-    // the next open and remember what it read, even when the folder cannot be written to. Footage
-    // turned on its side keeps its turned size, a trim past the end of a file stops at the end, and a
-    // file that changed since it was remembered is refused until asked to read it again.
+    // A first open reads every media file and gives the same timeline as the next open even in a folder
+    // it cannot write to, keeping turned footage's turned size, stopping a trim at the file's end, and
+    // refusing a file that changed since it was remembered.
     #[test]
     fn media_is_read_and_remembered() {
         use std::os::unix::fs::PermissionsExt;
@@ -1426,14 +1416,9 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
     // error on its line, while every colour form the engine draws is accepted.
     #[test]
     fn refuses_unusable_values() {
-        let dir = std::env::temp_dir().join("origami-refuse");
-        fs::create_dir_all(&dir).unwrap();
-        let run = |src: &str| {
-            fs::write(dir.join("edit.js"), src).unwrap();
-            eval(&dir.join("edit.js"), true, size).map_err(|e| e.to_string())
-        };
+        let dir = scratch("refuse");
         let ok = "stack(color('#ffffff').for(1), color('#abc'), color('#abcd'), color('ABCDEF'), color('#aabbcc80'), text('a', { color: '#000000', background: '#0008' }), rect(9, 9, { color: '#fff' }), line(0, 0, 1, 1, { color: '#000' }), text('b').hslSecondary({ key: { color: '#f00' } }))";
-        assert!(run(ok).is_ok());
+        assert!(run(&dir, ok).is_ok());
         for (src, want) in [
             ("text('a')\nrect(9, 9, { color: 'bleu' })", "line 2: \"bleu\" is not a colour"),
             ("text('a', { color: '#ff000' })", "line 1: \"#ff000\" is not a colour"),
@@ -1453,7 +1438,7 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
                 "line 2: b would be drawn 72000000x36000000 pixels",
             ),
         ] {
-            let e = run(src).unwrap_err();
+            let e = fails(&dir, src);
             assert!(e.starts_with(want), "{src}: {e}");
         }
     }
@@ -1462,24 +1447,20 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
     // is known.
     #[test]
     fn rounds_odd_sizes() {
-        let dir = std::env::temp_dir().join("origami-odd-size");
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("edit.js"), "settings({ size: [641, 360] })\ntext('a')").unwrap();
-        let tl = eval(&dir.join("edit.js"), true, size).unwrap();
-        assert_eq!(tl.size, (642, 360));
+        let t = tl("settings({ size: [641, 360] })\ntext('a')");
+        assert_eq!(t.size, (642, 360));
         assert_eq!(
-            tl.note,
+            t.note,
             "line 1: size [641, 360] is rounded to [642, 360], video files need even numbers"
         );
-        fs::write(dir.join("edit.js"), "globalThis.settings({ size: [641, 360] })\ntext('a')").unwrap();
         assert_eq!(
-            eval(&dir.join("edit.js"), true, size).unwrap().note,
+            tl("globalThis.settings({ size: [641, 360] })\ntext('a')").note,
             "size [641, 360] is rounded to [642, 360], video files need even numbers"
         );
     }
 
-    // Every installed font the app lists by name should be one a script can ask for by that name, and
-    // the list holds each name once.
+    // Every installed font the app lists is one a script can ask for by that name, and each name is
+    // listed once.
     #[test]
     fn listed_fonts_resolve() {
         let all = fonts();

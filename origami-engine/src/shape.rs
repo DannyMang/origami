@@ -39,14 +39,9 @@ pub fn image(c: &Clip, size: (f64, f64), k: f64) -> (Vec<u8>, usize, usize) {
 }
 
 #[cfg(test)]
-pub mod tests {
+mod tests {
     use super::*;
-
-    pub fn clip(kind: &str, more: &str) -> Clip {
-        let base = r##""src":"","w":40,"h":20,"start":0,"end":1,"src_in":0,"speed":1,"z":0,"scale":1,"pos":[null,null],
-            "gain":1,"fade":[0,0],"label":"","line":1,"video":true,"audio":false,"size":6,"color":"#ff000080","opacity":1,"rotate":0,"shown":1"##;
-        serde_json::from_str(&format!("{{\"kind\":\"{kind}\",{base}{more}}}")).unwrap()
-    }
+    use crate::tests::clip;
 
     // A rectangle should fill its whole box, with the corners cut away when a radius is set, and
     // should shrink correctly when drawn for the smaller preview.

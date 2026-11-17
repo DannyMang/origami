@@ -73,7 +73,7 @@ impl Mic {
                         let _ = t.file.write_all(&((s.clamp(-1., 1.) * 32767.) as i16).to_le_bytes());
                     }
                     t.frames += 1;
-                    if t.frames % (rate / 20) == 0 {
+                    if t.frames.is_multiple_of(rate / 20) {
                         let top = mem::take(&mut t.top);
                         t.peaks.push(top);
                     }

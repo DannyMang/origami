@@ -144,9 +144,8 @@ pub fn raster(c: &Clip, k: f64) -> (Vec<u8>, usize, usize) {
 mod tests {
     use super::*;
 
-    // Colours written as hex codes, with or without transparency, should be read correctly,
-    // and anything unrecognised rejected. Drawing a see-through colour over another should mix the two
-    // properly.
+    // Hex colours with or without transparency are read correctly and anything else rejected, and a
+    // see-through colour drawn over another mixes the two properly.
     #[test]
     fn colours_carry_alpha() {
         let all = [
@@ -180,11 +179,11 @@ mod tests {
     // should be drawn from a second font, with every glyph still pointing at its own character.
     #[test]
     fn accents_and_fallback() {
-        let c: Clip = serde_json::from_str(
-            r##"{"kind":"text","src":"eé日b","w":0,"h":0,"start":0,"end":1,"src_in":0,"speed":1,"z":0,"scale":1,"pos":[null,null],
-            "gain":1,"fade":[0,0],"label":"","line":1,"video":true,"audio":false,"size":50,"color":"#ffffff","opacity":1,"rotate":0,"shown":1}"##,
-        )
-        .unwrap();
+        let c = Clip {
+            src: "eé日b".into(),
+            size: 50.,
+            ..crate::tests::clip("text", "")
+        };
         let (g, ..) = glyphs(&c, 1., true);
         let wide = face(SPARE).metrics('日', 50.);
         assert_eq!(g.iter().map(|g| g.i).collect::<Vec<_>>(), [0, 1, 2, 3]);

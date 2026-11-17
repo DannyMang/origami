@@ -152,8 +152,8 @@ pub fn plain(c: &Clip) -> bool {
     c.parts.is_empty() && c.rotate == Val::Fixed(0.) && c.shown == Val::Fixed(1.) && c.vals().all(fixed)
 }
 
-fn piped(tl: &Timeline) -> bool {
-    !tl.clips.iter().all(|c| plain(c) && c.opacity == Val::Fixed(1.))
+fn piped(tl: &Timeline, o: &Opts) -> bool {
+    span(tl, o) != (0., tl.duration) || !tl.clips.iter().all(|c| plain(c) && c.opacity == Val::Fixed(1.))
 }
 
 pub fn live(c: &Clip, t: f64) -> bool {
@@ -163,6 +163,18 @@ pub fn live(c: &Clip, t: f64) -> bool {
 pub fn alpha(c: &Clip, t: f64) -> f64 {
     let side = |d: f64, f: f64| if f > 0. { d / f } else { 1. };
     side(t - c.start, c.fade.0).min(side(c.end - t, c.fade.1)).clamp(0., 1.)
+}
+
+fn own(a: &[&str]) -> Vec<String> {
+    a.iter().map(|s| s.to_string()).collect()
+}
+
+fn raw(size: &str, more: &[&str]) -> Vec<String> {
+    own(&[&["-f", "rawvideo", "-pixel_format", "bgra", "-video_size", size], more].concat())
+}
+
+fn inputs(a: &[String]) -> usize {
+    a.iter().filter(|a| *a == "-i").count()
 }
 
 fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path, (k, (w, h)): (f64, (usize, usize))) -> (Vec<String>, String) {
@@ -177,9 +189,8 @@ fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path, (k, (w, h)): (f64, (
             c.end - c.start - skip,
             format!("enable='gte(t+1e-6,{})*lt(t+1e-6,{})'", c.start, c.end),
         );
-        let n = ins.iter().filter(|a| *a == "-i").count();
+        let n = inputs(&ins);
         let (tw, th, x, y) = place(c, size, k);
-        let own = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let solid = c.kind == Kind::Color && text::rgba(&c.src)[3] == 255;
         let (video, mut cut) = (video && tw >= 1. && th >= 1., String::new());
         match c.kind {
@@ -196,22 +207,8 @@ fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path, (k, (w, h)): (f64, (
             Kind::Text | Kind::Rect | Kind::Line | Kind::Color if video && !solid => {
                 let file = dir.join(format!("text-{i}.bgra")).to_string_lossy().to_string();
                 let _ = fs::write(&file, shape::image(c, size, k).0);
-                let raw = [
-                    "-f",
-                    "rawvideo",
-                    "-pixel_format",
-                    "bgra",
-                    "-video_size",
-                    &format!("{tw}x{th}"),
-                    "-framerate",
-                    &tl.fps.to_string(),
-                ];
-                ins.extend(
-                    own(&["-stream_loop", "-1", "-t", &len.to_string()])
-                        .into_iter()
-                        .chain(own(&raw))
-                        .chain(own(&["-i", &file])),
-                );
+                ins.extend(own(&["-stream_loop", "-1", "-t", &len.to_string()]));
+                ins.extend(raw(&format!("{tw}x{th}"), &["-framerate", &tl.fps.to_string(), "-i", &file]));
             }
             Kind::Video | Kind::Sound => {
                 let (at, slack) = (c.src_in + skip * c.speed, lead(&c.src));
@@ -240,18 +237,9 @@ fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path, (k, (w, h)): (f64, (
             };
             let lut = c.grade.as_ref().and_then(grade::lut);
             let mask = c.grade.as_ref().and_then(|g| g.vignette.as_ref()).map(|v| {
-                let m = ins.iter().filter(|a| *a == "-i").count();
+                let m = inputs(&ins);
                 let file = temp("vignette.bgra", &grade::mask(v, tw as usize, th as usize));
-                ins.extend(own(&[
-                    "-f",
-                    "rawvideo",
-                    "-pixel_format",
-                    "bgra",
-                    "-video_size",
-                    &format!("{tw}x{th}"),
-                    "-i",
-                    &file,
-                ]));
+                ins.extend(raw(&format!("{tw}x{th}"), &["-i", &file]));
                 m
             });
             f.push(match solid {
@@ -323,13 +311,8 @@ pub fn command(tl: &Timeline, out: &str, o: &Opts) -> Vec<String> {
     args(tl, out, o, &room())
 }
 
-fn whole(tl: &Timeline, o: &Opts) -> bool {
-    span(tl, o) == (0., tl.duration)
-}
-
 fn args(tl: &Timeline, out: &str, o: &Opts, dir: &Path) -> Vec<String> {
-    let ((k, (w, h)), (from, to)) = (sized(tl, o), span(tl, o));
-    let pipe = piped(tl) || !whole(tl, o);
+    let ((k, (w, h)), (from, to), pipe) = (sized(tl, o), span(tl, o), piped(tl, o));
     let (codec, tag, fmt) = match o.codec {
         Codec::ProRes => ("prores_videotoolbox", "apcn", "p210le"),
         Codec::H264 if w <= 4096 && h <= 4096 => ("h264_videotoolbox", "avc1", "yuv420p"),
@@ -337,23 +320,11 @@ fn args(tl: &Timeline, out: &str, o: &Opts, dir: &Path) -> Vec<String> {
     };
     let (mut a, mut f) = graph(tl, !pipe, from, dir, (k, (w, h)));
     if pipe {
-        let n = a.iter().filter(|a| *a == "-i").count();
-        f += &format!(";[{n}:v]scale=out_color_matrix=bt709:out_range=tv,format={fmt}[v]");
-        let raw = [
-            "-f",
-            "rawvideo",
-            "-pixel_format",
-            "bgra",
-            "-video_size",
+        f += &format!(";[{}:v]scale=out_color_matrix=bt709:out_range=tv,format={fmt}[v]", inputs(&a));
+        a.extend(raw(
             &format!("{w}x{h}"),
-            "-framerate",
-            &tl.fps.to_string(),
-            "-i",
-            "-",
-            "-colorspace",
-            "bt709",
-        ];
-        a.extend(raw.map(String::from));
+            &["-framerate", &tl.fps.to_string(), "-i", "-", "-colorspace", "bt709"],
+        ));
     }
     if !o.audio {
         f += ";[a]anullsink";
@@ -413,7 +384,7 @@ pub fn render(tl: &Timeline, out: &str, o: &Opts, mut progress: impl FnMut(f64))
     if tl.duration <= 0. {
         bail!("nothing to export: the timeline is empty");
     }
-    let ((from, to), pipe) = (span(tl, o), piped(tl) || !whole(tl, o));
+    let ((from, to), pipe) = (span(tl, o), piped(tl, o));
     if to - from < 1. / tl.fps as f64 {
         bail!("nothing to export: the range is empty");
     }
@@ -497,33 +468,24 @@ pub fn render(tl: &Timeline, out: &str, o: &Opts, mut progress: impl FnMut(f64))
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::footprint;
+    use crate::{
+        footprint,
+        tests::{TIDY, film, scratch},
+    };
 
-    static ONE: Mutex<()> = Mutex::new(());
-
-    // Slow and very fast motion with sound, a fade longer than its clip, and layers too small to see
-    // should export and play. Two exports at once should not disturb each other or leave files behind, and a
-    // failing export should say what failed and, when a clip caused it, on which line.
+    // Slow and very fast motion with sound, a fade longer than its clip and layers too small to see export
+    // and play, two exports at once neither disturb each other nor leave files behind, and a failing export
+    // says what failed and, when a clip caused it, on which line.
     #[test]
     fn exports_odd_timelines() {
-        let _one = ONE.lock();
-        let dir = env::temp_dir().join("origami-export-test");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        let args = [
-            "-f",
-            "lavfi",
-            "-i",
-            "color=black:s=64x36:r=30:d=10",
-            "-f",
-            "lavfi",
-            "-i",
-            "sine=d=10",
-            "-shortest",
-        ];
+        let _tidy = TIDY.write();
+        let dir = scratch("odd");
         for file in ["a.mp4", "b.mp4"] {
-            let made = status(ffmpeg().args(["-v", "error", "-y"]).args(args).arg(dir.join(file)));
-            assert!(made.unwrap().success());
+            film(
+                &dir.join(file),
+                "color=black:s=64x36:r=30:d=10",
+                &["-f", "lavfi", "-i", "sine=d=10", "-shortest"],
+            );
         }
         let tl = |src: &str| {
             fs::write(dir.join("edit.js"), src).unwrap();
@@ -577,16 +539,9 @@ mod tests {
     // length, a size scales the whole frame, audio can be left out, and each format writes its codec.
     #[test]
     fn exports_with_options() {
-        let _one = ONE.lock();
-        let dir = env::temp_dir().join("origami-opts-test");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        let made = status(
-            ffmpeg()
-                .args(["-v", "error", "-y", "-f", "lavfi", "-i", "sine=d=3"])
-                .arg(dir.join("s.wav")),
-        );
-        assert!(made.unwrap().success());
+        let _tidy = TIDY.read();
+        let dir = scratch("opts");
+        film(&dir.join("s.wav"), "sine=d=3", &[]);
         let src = "settings({ fps: 30, size: [64, 36] })\nstack(cat(color('#ff0000').for(1), color('#00ff00').for(1)), sound('s.wav').trim(0, 2))";
         fs::write(dir.join("edit.js"), src).unwrap();
         let tl = origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap();
@@ -637,14 +592,9 @@ mod tests {
     // more than 0.3 in floating point, should show from that frame in the preview and the export.
     #[test]
     fn clips_meet_on_the_frame() {
-        let dir = env::temp_dir().join("origami-meet-test");
-        fs::create_dir_all(&dir).unwrap();
-        let made = status(
-            ffmpeg()
-                .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=white:s=64x36:r=30:d=2"])
-                .arg(dir.join("w.mp4")),
-        );
-        assert!(made.unwrap().success());
+        let _tidy = TIDY.read();
+        let dir = scratch("meet");
+        film(&dir.join("w.mp4"), "color=white:s=64x36:r=30:d=2", &[]);
         let src =
             "settings({ fps: 30, size: [64, 36] })\ncat(color('#ff0000').for(0.1), color('#00ff00').for(0.2), video('w.mp4').trim(0, 1))";
         fs::write(dir.join("edit.js"), src).unwrap();
@@ -663,12 +613,10 @@ mod tests {
     // clip, in the preview and in the export, instead of flashing black.
     #[test]
     fn ends_hold_the_last_frame() {
-        let dir = env::temp_dir().join("origami-ends-test");
-        fs::create_dir_all(&dir).unwrap();
+        let _tidy = TIDY.read();
+        let dir = scratch("ends");
         for (file, rate) in [("w30.mp4", 30), ("w15.mp4", 15)] {
-            let src = format!("color=white:s=64x36:r={rate}:d=6");
-            let made = status(ffmpeg().args(["-v", "error", "-y", "-f", "lavfi", "-i", &src]).arg(dir.join(file)));
-            assert!(made.unwrap().success());
+            film(&dir.join(file), &format!("color=white:s=64x36:r={rate}:d=6"), &[]);
         }
         let src = "settings({ fps: 30 })\ncat(video('w30.mp4').trim(4.01), video('w30.mp4').trim(0, 1).speed(0.5), video('w15.mp4').trim(0, 1), video('w30.mp4').trim(5.51))";
         fs::write(dir.join("edit.js"), src).unwrap();
@@ -687,19 +635,15 @@ mod tests {
         assert!(shown.iter().chain(&made).all(|v| *v > 200), "{shown:?} {made:?}");
     }
 
-    // An export onto a file the script reads, spelled another way (different case, a detour through
-    // .., a symlink), should be refused and leave the file whole, and a link planted at the destination is replaced, not written through.
+    // An export onto a file the script reads, spelled another way (different case, a detour through ..,
+    // a symlink), is refused and leaves the file whole, and a link planted at the destination is
+    // replaced, not written through.
     #[test]
     fn keeps_sources_safe() {
-        let dir = env::temp_dir().join("origami-self-test");
-        let _ = fs::remove_dir_all(&dir);
+        let _tidy = TIDY.read();
+        let dir = scratch("self");
         fs::create_dir_all(dir.join("sub")).unwrap();
-        let made = status(
-            ffmpeg()
-                .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=white:s=64x36:r=30:d=1"])
-                .arg(dir.join("a.mp4")),
-        );
-        assert!(made.unwrap().success());
+        film(&dir.join("a.mp4"), "color=white:s=64x36:r=30:d=1", &[]);
         fs::write(dir.join("subs.srt"), "1\n00:00:00,000 --> 00:00:01,000\nhi\n").unwrap();
         std::os::unix::fs::symlink(dir.join("a.mp4"), dir.join("link.mp4")).unwrap();
         fs::write(
@@ -728,8 +672,7 @@ mod tests {
     // stop the script with an error on their line instead of taking all memory.
     #[test]
     fn refuses_huge_layers() {
-        let dir = env::temp_dir().join("origami-huge-test");
-        fs::create_dir_all(&dir).unwrap();
+        let dir = scratch("huge");
         for src in [
             "rect(1e9, 1e9).for(1)",
             "rect(100, 100).scale(1e8).for(1)",
@@ -747,16 +690,9 @@ mod tests {
     // An export whose ffmpeg makes no progress should be stopped and reported instead of running forever.
     #[test]
     fn stops_a_stalled_export() {
-        let _one = ONE.lock();
-        let dir = env::temp_dir().join("origami-stall-test");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        let made = status(
-            ffmpeg()
-                .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=white:s=64x36:r=30:d=1"])
-                .arg(dir.join("a.mp4")),
-        );
-        assert!(made.unwrap().success());
+        let _tidy = TIDY.read();
+        let dir = scratch("stall");
+        film(&dir.join("a.mp4"), "color=white:s=64x36:r=30:d=1", &[]);
         fs::write(dir.join("edit.js"), "video('a.mp4').trim(0, 1)").unwrap();
         let mut tl = origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap();
         assert!(status(Command::new("mkfifo").arg(dir.join("never.mp4"))).unwrap().success());

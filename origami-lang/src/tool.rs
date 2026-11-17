@@ -123,12 +123,12 @@ mod tests {
         assert_eq!(absent(OsStr::new("ffprobe")), Some(format!("ffprobe {fix}")));
     }
 
-    // A copy next to the program should win over PATH, PATH should be searched in order skipping
-    // relative entries and files that cannot be run, the usual install folders should be tried when
-    // PATH is bare (as when opened from Finder), and a tool found nowhere should point at the Homebrew folder, never at a bare name.
+    // A copy next to the program wins over PATH, PATH is searched in order skipping relative entries and
+    // files that cannot be run, the usual install folders are tried when PATH is bare, and a tool found
+    // nowhere points at the Homebrew folder, never at a bare name.
     #[test]
     fn finds_tools_in_order() {
-        let dir = env::temp_dir().join("origami-tools");
+        let dir = env::temp_dir().join("origami-lang-tools");
         let _ = fs::remove_dir_all(&dir);
         let [app, one, two] = ["app", "one", "two"].map(|d| dir.join(d));
         for d in [&app, &one, &two] {
