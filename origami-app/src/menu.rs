@@ -1,5 +1,5 @@
 use crate::{
-    Origami,
+    Origami, pulse,
     release::{VERSION, latest},
     view::DOCS,
 };
@@ -18,7 +18,7 @@ use std::{
 actions!(
     origami,
     [
-        About, Updates, Hide, HideOthers, Quit, New, Open, Export, Close, Minimize, Zoom, FullScreen, Docs, WhatsNew
+        About, Updates, Hide, HideOthers, Quit, New, Open, Export, Close, Minimize, Zoom, FullScreen, Docs, WhatsNew, Share
     ]
 );
 
@@ -81,18 +81,32 @@ pub fn menus(recent: &[PathBuf]) -> Vec<Menu> {
         let (name, dir) = place(p);
         MenuItem::action(format!("{name} \u{2014} {dir}"), Reopen(p.clone()))
     });
+    let share = pulse::shared().map(|on| {
+        let name = if on {
+            "\u{2713} Share Usage and Crash Reports"
+        } else {
+            "Share Usage and Crash Reports"
+        };
+        MenuItem::action(name, Share)
+    });
+    let rest = [
+        MenuItem::separator(),
+        MenuItem::action("Hide Origami", Hide),
+        MenuItem::action("Hide Others", HideOthers),
+        MenuItem::separator(),
+        MenuItem::action("Quit Origami", Quit),
+    ];
     vec![
         menu(
             "Origami",
-            vec![
+            [
                 MenuItem::action("About Origami", About),
                 MenuItem::action("Check for Updates\u{2026}", Updates),
-                MenuItem::separator(),
-                MenuItem::action("Hide Origami", Hide),
-                MenuItem::action("Hide Others", HideOthers),
-                MenuItem::separator(),
-                MenuItem::action("Quit Origami", Quit),
-            ],
+            ]
+            .into_iter()
+            .chain(share)
+            .chain(rest)
+            .collect(),
         ),
         menu(
             "File",
@@ -168,6 +182,7 @@ pub fn install(cx: &mut App, recent: &[PathBuf]) {
         drop(window.prompt(PromptLevel::Info, "Origami", Some(&version), &[PromptButton::ok("OK")], cx));
     });
     route(cx, |this, _: &Updates, window, cx| this.check(window, cx));
+    route(cx, |this, _: &Share, _, cx| this.share(pulse::shared() != Some(true), cx));
     route(cx, |this, _: &Quit, window, cx| this.leave(window, cx));
     route(cx, |this, _: &New, window, cx| this.create(window, cx));
     route(cx, |this, _: &Open, window, cx| this.browse(window, cx));

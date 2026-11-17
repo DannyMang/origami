@@ -27,6 +27,19 @@ Anyways, like all my projects I hope this benefits somebody out there. Would lov
 Origami works on your Mac and keeps your scripts, footage and exports there.
 
 - **Update check.** Each time it opens, and when you pick Check for Updates…, Origami downloads one small file from GitHub to see if a newer version is out. It sends nothing about you or your project, but GitHub sees your IP address, as any website does. Start Origami with `ORIGAMI_NO_UPDATE_CHECK=1` set to turn the check off.
-- **Nothing else leaves your Mac.** No account, no analytics, no crash reports: a crash is logged to `~/Library/Logs/Origami` on your Mac only. Links to the docs and downloads open in your browser when you click them.
+- **Usage and crash reports are off until you say yes.** The launch screen asks once: "Help improve Origami? Send anonymous usage and crash reports." Nothing is sent before you click Yes, and nothing is sent after you click No thanks. A copy of Origami built from source without a PostHog key never asks and never sends.
+- **What is sent after a yes.** Reports go to PostHog (`us.i.posthog.com`), one small request each, for these events only:
+  - `app opened`: each time Origami opens.
+  - `exported`: when an export from the app ends, with the codec (`h264` or `hevc`), the frame width and height, the length rounded to seconds, and whether it succeeded.
+  - `type tool used`: when the T tool places a text.
+  - `text edited on picture`: when you retype an existing text on the preview and save it.
+  - `font picked`: when you choose from the font list. The font's name is not sent.
+  - `voiceover recorded`: when a recorded take is added to the script.
+  - `crash`: the next time Origami opens after a crash, with the first line of the error cut at its first colon, quoted text removed and everything from a path or file name onwards dropped, and the file and line of Origami's source code where it happened.
+
+  Every event also carries a random install id, Origami's version, the macOS version and the chip type (`aarch64` or `x86_64`). The id is 16 random bytes made when you first say yes; it is not derived from your Mac, your name or your files. Events are marked so PostHog keeps no person profile for them and does not look up a location, but PostHog sees your IP address, as any website does.
+- **What is never sent.** Script contents, the names of files, folders, media and fonts, paths, your user name, and anything from the `origami` command-line tool. A crash that happens while reports are off is not sent later.
+- **Turning it off.** Pick Origami › Share Usage and Crash Reports in the menu bar to switch it off or back on; a tick marks it when it is on. Starting Origami with `ORIGAMI_NO_TELEMETRY=1` set sends nothing and hides both the question and the menu item. Your answer and the id are kept in `~/Library/Application Support/Origami/pulse`.
+- **Nothing else leaves your Mac.** No account. A crash is always logged to `~/Library/Logs/Origami` on your Mac. Links to the docs and downloads open in your browser when you click them.
 - **Microphone.** Used only while you record a voiceover.
 - **Scripts.** A script can read the footage, sound, images, captions, fonts and LUTs it names. It cannot use the network, write files or run other programs.

@@ -1050,6 +1050,7 @@ impl Origami {
                     .child(div().px_3().pb_1().text_size(px(11.)).text_color(rgb(DIM)).child("Recent"))
                     .children(recent)
             }))
+            .children(self.consent(cx))
             .child(
                 div()
                     .absolute()

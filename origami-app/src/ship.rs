@@ -1,6 +1,7 @@
 use crate::{
     Origami,
     keys::stamp,
+    pulse,
     view::{BAR, BG, BLUE, BORDER, DIM, INK, MUTED, PANEL, TEXT},
 };
 use gpui::{App, Context, Div, MouseButton, MouseDownEvent, PromptLevel, Window, div, prelude::*, px, rgb, rgba};
@@ -223,6 +224,7 @@ impl Origami {
                     last = note;
                 }
             });
+            pulse::exported(&tl, &opts, done.is_ok());
             *job.lock().unwrap() = (done.map_or_else(|e| e.to_string(), |_| format!("exported {out}")), true);
         };
         cx.background_executor().spawn(work).detach();

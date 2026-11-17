@@ -3,6 +3,7 @@ use crate::{
     edit::links,
     fold::depth,
     knob::close,
+    pulse,
     tune::blank,
     view::{BG, BORDER, DIM, GREEN, RED, TEXT, wave},
 };
@@ -177,6 +178,7 @@ impl Origami {
         self.change(|this| row = voiced(&mut this.lines, take.n, take.start.unwrap_or(take.from)));
         self.sel = Some(self.tl.clips.len() as u32);
         self.reveal(row);
+        pulse::beat("voiceover recorded");
         self.note = format!("added voice_{0} \u{b7} voice/take-{0}.wav \u{b7} cmd+Z removes it", take.n);
     }
 

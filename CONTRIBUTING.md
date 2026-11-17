@@ -57,6 +57,7 @@ The later crates depend on the earlier ones by relative path.
 | `knob.rs` | Sliders, colour wheel and curve editor for numbers in the script |
 | `lint.rs` | Inline warnings and hover tips |
 | `fold.rs`, `search.rs` | Code folding and find |
+| `pulse.rs` | Opt-in anonymous usage and crash reports: the question, the stored answer and install id, the events, the crash scrubber |
 | `crash.rs` | Panic hook: saves unsaved code to `<script>.recovered` and logs to `~/Library/Logs/Origami/origami.log`; a quit that could not ask saves it there too |
 
 ## Build, run, test
@@ -71,6 +72,7 @@ cargo test --manifest-path origami-lang/Cargo.toml
 
 Running the app with no argument opens the launch screen. Run `cargo test` and `cargo fmt` in each crate you touch; a build must produce zero warnings.
 Set `ORIGAMI_NO_UPDATE_CHECK` (any value) to stop the app checking for a newer version at startup.
+A build from source sends no usage or crash reports and never asks to, unless `POSTHOG_KEY` is set when it is compiled; `./bundle.sh` reads it from a gitignored `.env` at the repo root when that file exists.
 
 `./bundle.sh` builds `dist/Origami.app` and `dist/Origami.dmg`. `FFMPEG_DIR=<folder>` copies `ffmpeg` and `ffprobe` from that folder into the app; `SIGN_ID="Developer ID Application: …"` with `NOTARY_PROFILE=<notarytool keychain profile>` also signs, notarises and staples.
 

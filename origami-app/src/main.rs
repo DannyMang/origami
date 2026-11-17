@@ -13,6 +13,7 @@ mod motion;
 mod mouse;
 mod peek;
 mod pen;
+mod pulse;
 mod release;
 mod scene;
 mod search;
@@ -612,7 +613,11 @@ fn main() {
                 })
                 .detach();
                 cx.spawn(async move |this, cx| {
-                    let latest = cx.background_executor().spawn(async { release::latest() }).await;
+                    let latest = cx.background_executor().spawn(async {
+                        pulse::launch();
+                        release::latest()
+                    });
+                    let latest = latest.await;
                     this.update(cx, |this, cx| {
                         this.latest = latest;
                         cx.notify();

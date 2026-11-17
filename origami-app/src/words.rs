@@ -1,5 +1,5 @@
 use crate::{
-    Origami,
+    Origami, pulse,
     view::{BLUE, INK, TEXT},
 };
 use gpui::{Bounds, Context, Keystroke, PathBuilder, Pixels, Point, Window, point, px, rgb, rgba};
@@ -219,6 +219,9 @@ impl Origami {
         self.change(|this| this.lines[row] = line);
         if w.new && self.past.len() > steps {
             self.past.pop();
+        }
+        if !w.new {
+            pulse::beat("text edited on picture");
         }
         self.note.clear();
     }

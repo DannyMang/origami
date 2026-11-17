@@ -1,6 +1,7 @@
 use crate::{
     Origami,
     knob::close,
+    pulse,
     scene::stem,
     stage::{drag, rest},
 };
@@ -784,6 +785,7 @@ impl Origami {
         };
         if let Some(new) = new {
             self.change(|this| this.put(&new));
+            pulse::beat("font picked");
         }
     }
 

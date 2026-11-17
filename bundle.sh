@@ -4,6 +4,11 @@ set -euo pipefail
 BUNDLE_ID=com.origami.app
 
 cd "$(dirname "$0")"
+if [ -f .env ]; then
+  set -a
+  . ./.env
+  set +a
+fi
 [ -z "${SIGN_ID:-}" ] || : "${NOTARY_PROFILE:?set NOTARY_PROFILE to a notarytool keychain profile}"
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' origami-app/Cargo.toml | head -1)
 app=dist/Origami.app

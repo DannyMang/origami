@@ -1,5 +1,5 @@
 use crate::{
-    Origami,
+    Origami, pulse,
     stage::{rest, share},
     view::{BLUE, TEXT},
     voice::placed,
@@ -31,6 +31,7 @@ impl Origami {
         let (mut row, mut from) = (0, 0);
         self.change(|this| (row, from) = typed(&mut this.lines, this.t, share(sheet, at)));
         self.pen = false;
+        pulse::beat("type tool used");
         self.reveal(row);
         self.spell(self.tl.clips.len() as u32, (row, from), WORD, true);
         self.sketch(cx);
