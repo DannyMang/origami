@@ -14,7 +14,10 @@ const SPARE: &str = "/System/Library/Fonts/Supplemental/Arial Unicode.ttf";
 static FONTS: LazyLock<Mutex<HashMap<String, Arc<Font>>>> = LazyLock::new(Mutex::default);
 
 fn face(path: &str) -> Arc<Font> {
-    let load = |p: &str| Font::from_bytes(fs::read(p).ok()?, FontSettings::default()).ok().map(Arc::new);
+    let load = |p: &str| {
+        fs::metadata(p).ok().filter(|m| m.is_file() && m.len() < 1 << 27)?;
+        Font::from_bytes(fs::read(p).ok()?, FontSettings::default()).ok().map(Arc::new)
+    };
     let plain = "/System/Library/Fonts/HelveticaNeue.ttc";
     let mut fonts = FONTS.lock().unwrap();
     let font = fonts
@@ -88,7 +91,8 @@ pub fn glyphs(c: &Clip, k: f64, ink: bool) -> (Vec<Glyph>, usize, usize) {
         let row = layout.glyphs().get(r.0..=r.1).into_iter().flatten();
         row.map(|g| g.x as usize + g.width).max().unwrap_or(0)
     };
-    let (w, [r, g, b, a]) = (rows.iter().map(wide).max().unwrap_or(0), rgba(&c.color));
+    let widths: Vec<usize> = rows.iter().map(wide).collect();
+    let (w, [r, g, b, a]) = (widths.iter().copied().max().unwrap_or(0), rgba(&c.color));
     let (lean, pad) = (
         ["left", "", "right"].iter().position(|a| *a == c.align).unwrap_or(1),
         if c.background.is_empty() {
@@ -97,9 +101,10 @@ pub fn glyphs(c: &Clip, k: f64, ink: bool) -> (Vec<Glyph>, usize, usize) {
             ((size * 0.3) as usize, (size * 0.12) as usize)
         },
     );
+    let starts: Vec<usize> = c.src.char_indices().map(|(i, _)| i).collect();
     let glyph = |(n, p): (usize, &GlyphPosition<usize>)| Glyph {
-        i: c.src[..p.user_data + p.byte_offset].chars().count(),
-        x: p.x as usize + pad.0 + rows.iter().find(|r| n <= r.1).map_or(0, |r| (w - wide(r)) * lean / 2),
+        i: starts.partition_point(|i| *i < p.user_data + p.byte_offset),
+        x: p.x as usize + pad.0 + widths.get(rows.partition_point(|r| r.1 < n)).map_or(0, |rw| (w - rw) * lean / 2),
         y: p.y as usize + pad.1,
         w: p.width,
         h: p.height,

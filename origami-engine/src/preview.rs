@@ -635,7 +635,7 @@ impl Preview {
             })?,
             None => px,
         };
-        Some((px, (tw, th), (x as i64, y as i64)))
+        (px.len() >= tw * th * 4).then_some((px, (tw, th), (x as i64, y as i64)))
     }
 
     fn moved(&mut self, out: &mut [u8], c: &Clip, t: f64, fps: u32, (pw, ph): (usize, usize), k: f64, i: usize, a: f64) {

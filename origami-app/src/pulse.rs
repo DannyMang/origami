@@ -30,7 +30,7 @@ type Said = (String, String, usize);
 static SAID: LazyLock<Mutex<Said>> = LazyLock::new(|| Mutex::new(read(&file())));
 
 static MAC: LazyLock<String> = LazyLock::new(|| {
-    let out = origami_lang::output(Command::new("sw_vers").arg("-productVersion"));
+    let out = origami_lang::output(Command::new("/usr/bin/sw_vers").arg("-productVersion"));
     out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default()
 });
@@ -102,7 +102,7 @@ fn post(event: &'static str, properties: Value) {
     let _ = thread::Builder::new().spawn(move || {
         let (body, to) = (payload(KEY, &id, event, properties).to_string(), format!("{HOST}/i/v0/e/"));
         let json = "Content-Type: application/json";
-        origami_lang::output(Command::new("curl").args(["-fs", "--max-time", "5", "-H", json, "-d", &body, &to]))
+        origami_lang::output(Command::new("/usr/bin/curl").args(["-fs", "--max-time", "5", "-H", json, "-d", &body, &to]))
     });
 }
 
@@ -119,15 +119,25 @@ pub fn exported(tl: &Timeline, o: &Opts, succeeded: bool) {
     );
 }
 
+const SHAPES: &str = concat!(
+    r"^(index out of bounds: the len is \d+ but the index is \d+$",
+    r"|called `Option::unwrap\(\)` on a `None` value$",
+    r"|called `Result::unwrap\(\)` on an `Err` value",
+    r"|attempt to (add|subtract|multiply|negate|shift left|shift right) with overflow$",
+    r"|attempt to (divide|calculate the remainder) (by|with a divisor of) zero$",
+    r"|byte index \d+ is (not a char boundary|out of bounds)",
+    r"|range (start|end) index \d+ out of range for slice of length \d+$",
+    r"|slice index starts at \d+ but ends at \d+$",
+    r"|capacity overflow$)"
+);
+
 fn crash(log: &str) -> Option<(String, String)> {
     let (at, what) = log.rsplit_once(" panicked at ")?.1.split_once(":\n")?;
     let from = at.rfind("/src/").and_then(|i| at[..i].rfind('/'));
     let from = from.or(at.rfind('/').filter(|_| at.starts_with('/'))).map_or(0, |i| i + 1);
-    let what = what.lines().next().unwrap_or_default();
-    let what = Regex::new(r#""[^"]*"?|'[^']*'?|`[^`]*`?"#).ok()?.replace_all(what, "<text>");
-    let what = Regex::new(r"[:\\]|\S*[/~]|\S+\.\w").ok()?.split(&what).next()?.trim();
-    let short = |s: &str| s.chars().take(200).collect();
-    Some((short(what), short(&at[from..])))
+    let fixed = |shape: &str, s: &str, or: &str| Some(Regex::new(shape).ok()?.find(s).map_or(or, |m| m.as_str()).to_string());
+    let what = fixed(SHAPES, what.lines().next().unwrap_or_default(), "panic")?;
+    Some((what, fixed(r"^[a-z0-9_./-]+\.rs:\d+:\d+$", &at[from..], "unknown")?))
 }
 
 pub fn launch() {
@@ -224,8 +234,9 @@ mod tests {
         );
     }
 
-    // A crash report is the newest panic's first line up to its first colon, with quoted text and
-    // anything from a path or file name onwards dropped, and its source file without the folders above the crate.
+    // A crash report is the newest panic's first line only when it is one of the standard library's
+    // fixed messages (with any text after the fixed part dropped), otherwise just "panic", and its source
+    // file without the folders above the crate, or "unknown" when that does not look like a source file.
     #[test]
     fn scrubs_a_crash() {
         let log = |at: &str, what: &str| {
@@ -235,30 +246,49 @@ mod tests {
         let app = "/Users/me/code/origami-app/src/view.rs:10:5";
         assert_eq!(
             report(app, "called `Result::unwrap()` on an `Err` value: missing /Users/me/trip/clip.mp4"),
-            ("called <text> on an <text> value".into(), "origami-app/src/view.rs:10:5".into())
+            (
+                "called `Result::unwrap()` on an `Err` value".into(),
+                "origami-app/src/view.rs:10:5".into()
+            )
         );
+        for kept in [
+            "called `Option::unwrap()` on a `None` value",
+            "index out of bounds: the len is 3 but the index is 7",
+            "attempt to subtract with overflow",
+            "attempt to divide by zero",
+            "range end index 9 out of range for slice of length 4",
+            "capacity overflow",
+        ] {
+            assert_eq!(report("src/main.rs:3:9", kept).0, kept);
+        }
         assert_eq!(
-            report("src/main.rs:3:9", "no file at /Users/me/My Films/a.mov today").0,
-            "no file at"
+            report(
+                "src/main.rs:3:9",
+                "byte index 2 is not a char boundary; it is inside 'é' of `text(\"héllo\")`"
+            )
+            .0,
+            "byte index 2 is not a char boundary"
         );
-        assert_eq!(report("src/main.rs:3:9", "cannot read ~/trip/edit.js").0, "cannot read");
-        assert_eq!(report("src/main.rs:3:9", "lost clip.mp4 again").0, "lost");
-        assert_eq!(
-            report("src/main.rs:3:9", "byte index 2 is inside 'é' of `text(\"héllo\")`").0,
-            "byte index 2 is inside <text> of <text>"
-        );
-        assert_eq!(report("src/main.rs:3:9", "bad \"title card").0, "bad <text>");
-        assert_eq!(
-            report("src/main.rs:3:9", "index out of bounds: the len is 3").0,
-            "index out of bounds"
-        );
-        assert_eq!(report("src/main.rs:3:9", &"x".repeat(900)).0.len(), 200);
+        for dropped in [
+            "clip Acme merger teaser for Bob Smith has no frames",
+            "no file at /Users/me/My Films/a.mov today",
+            "\u{201c}smart quoted secret\u{201d}",
+            "Token ghp_abcdefghijklmnop leaked",
+            "index out of bounds: the len is 3 but the index is 7 for Bob",
+            &"x".repeat(900),
+        ] {
+            assert_eq!(report("src/main.rs:3:9", dropped).0, "panic");
+        }
         assert_eq!(
             report("/Users/me/.cargo/registry/src/index/gpui-0.2.2/src/app.rs:7:1", "x").1,
             "gpui-0.2.2/src/app.rs:7:1"
         );
         assert_eq!(report("/Users/me/odd.rs:7:1", "x").1, "odd.rs:7:1");
         assert_eq!(report("src/main.rs:3:9", "x").1, "src/main.rs:3:9");
+        assert_eq!(
+            report("src/main.rs:3:9", "x panicked at Bob Smith.rs:1:1:\nleak"),
+            ("panic".into(), "unknown".into())
+        );
         assert_eq!(crash("Mon saved unsaved code\n"), None);
     }
 

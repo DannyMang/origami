@@ -65,7 +65,7 @@ static LIVE: Mutex<Vec<u32>> = Mutex::new(vec![]);
 const STALL: Duration = Duration::from_secs(if cfg!(test) { 5 } else { 30 });
 
 fn kill(pid: u32) {
-    let _ = status(Command::new("kill").args(["-9", &pid.to_string()]));
+    let _ = status(Command::new("/bin/kill").args(["-9", &pid.to_string()]));
 }
 
 pub fn halt() {
@@ -75,7 +75,7 @@ pub fn halt() {
 
 fn tether(pid: u32) -> Option<Child> {
     start(
-        Command::new("sh")
+        Command::new("/bin/sh")
             .args(["-c", &format!("read x; kill -9 {pid}")])
             .stdin(Stdio::piped())
             .stderr(Stdio::null()),
@@ -183,7 +183,16 @@ fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path, (k, (w, h)): (f64, (
         let solid = c.kind == Kind::Color && text::rgba(&c.src)[3] == 255;
         let (video, mut cut) = (video && tw >= 1. && th >= 1., String::new());
         match c.kind {
-            Kind::Image if video => ins.extend(own(&["-loop", "1", "-t", &len.to_string(), "-i", &c.src])),
+            Kind::Image if video => ins.extend(own(&[
+                "-loop",
+                "1",
+                "-t",
+                &len.to_string(),
+                "-protocol_whitelist",
+                "file",
+                "-i",
+                &c.src,
+            ])),
             Kind::Text | Kind::Rect | Kind::Line | Kind::Color if video && !solid => {
                 let file = dir.join(format!("text-{i}.bgra")).to_string_lossy().to_string();
                 let _ = fs::write(&file, shape::image(c, size, k).0);
@@ -215,6 +224,8 @@ fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path, (k, (w, h)): (f64, (
                     &(at - lead).to_string(),
                     "-t",
                     &(len * c.speed + lead + slack).to_string(),
+                    "-protocol_whitelist",
+                    "file",
                     "-i",
                     &c.src,
                 ]))
@@ -418,6 +429,9 @@ pub fn render(tl: &Timeline, out: &str, o: &Opts, mut progress: impl FnMut(f64))
             "export to {out} would overwrite {}, which line {line} reads: pick another name",
             file.display()
         );
+    }
+    if fs::symlink_metadata(out).is_ok_and(|m| m.is_symlink()) {
+        fs::remove_file(out)?;
     }
     let dir = room();
     let mut child = start(
@@ -671,7 +685,7 @@ mod tests {
     }
 
     // An export onto a file the script reads, spelled another way (different case, a detour through
-    // .., a symlink), should be refused and leave the file whole.
+    // .., a symlink), should be refused and leave the file whole, and a link planted at the destination is replaced, not written through.
     #[test]
     fn keeps_sources_safe() {
         let dir = env::temp_dir().join("origami-self-test");
@@ -701,6 +715,10 @@ mod tests {
             );
         }
         assert_eq!(fs::read(dir.join("a.mp4")).unwrap(), before);
+        fs::write(dir.join("precious"), "keep").unwrap();
+        std::os::unix::fs::symlink(dir.join("precious"), dir.join("planted.mp4")).unwrap();
+        render(&tl, &dir.join("planted.mp4").to_string_lossy(), &Opts::default(), |_| {}).unwrap();
+        assert!(fs::read_to_string(dir.join("precious")).unwrap() == "keep" && !dir.join("planted.mp4").is_symlink());
     }
 
     // Shapes, lines and text too large to draw, directly or through a scale or keyed scale, should

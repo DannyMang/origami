@@ -11,10 +11,10 @@ What changed in each version of Origami. The launch screen shows the version you
 - **Type tool.** Click T beside the speed (or press `t`), then click the preview to add text at that spot and at the playhead.
 - **Edit text on the picture.** Double-click a text in the preview to retype it there: Enter saves, Esc cancels, Shift+Enter starts a new line. The T tool now types straight onto the picture.
 - **Font picker.** A font row in the click controls and the Motion tab opens a searchable list of the project's fonts and every font on this Mac. It works when the script names the font with a variable.
-- Quitting from the Dock or logging out with unsaved changes saves them next to your script and offers them back the next time you open it.
+- Quitting from the Dock or logging out with unsaved changes saves them in `~/Library/Application Support/Origami/recovered` and offers them back the next time you open the script.
 - If ffmpeg is missing, Origami says so and how to install it: `brew install ffmpeg`, then reopen Origami.
 - The Open Recent list moved to `~/Library/Application Support/Origami`; your old list is carried over.
-- **Safer to open other people's projects.** A project can no longer make Origami write outside its folder through a planted link, make ffmpeg open a web address, or preset a web address as the export destination. Devices, pipes and oversized caption files are refused instead of freezing the app. The update notice only links to Origami's own GitHub page.
+- **Safer to open other people's projects.** A project can no longer make Origami write outside its folder through a planted link, make ffmpeg open a web address, or preset a web address as the export destination. Devices, pipes and oversized scripts, caption, LUT and font files are refused instead of freezing the app. An export no longer writes through a link planted at the destination, a project can no longer show its own "recovered" code in place of the script, and export settings are kept on your Mac instead of in the project folder. Crash reports carry only the source location and standard error messages. The update notice only links to Origami's own GitHub page.
 - Undo history uses far less memory: each step keeps only the lines that changed.
 - Typing in very long scripts is up to three times faster.
 - Fixed a rare freeze where the preview, thumbnails or an export could wait forever on an ffmpeg that had already finished.
@@ -22,7 +22,7 @@ What changed in each version of Origami. The launch screen shows the version you
 - **Open….** A button on the launch screen and ⌘O open any script, and double-clicking a `.js` file in Finder (or Open With › Origami) opens it. Opening another script or quitting asks before losing unsaved changes, and quitting asks before stopping a running export.
 - The launch screen shows the app's version and tells you when a newer one is available.
 - Opening a project for the first time is about three times faster: media files are read in parallel.
-- If the app crashes with unsaved changes, they are saved next to your script and offered back the next time you open it.
+- If the app crashes with unsaved changes, they are saved in `~/Library/Application Support/Origami/recovered` and offered back the next time you open the script.
 - Works when opened from Finder or the Dock: ffmpeg is found in Homebrew's folders too.
 - After jumping to a new spot, the full-quality picture arrives about 100 ms sooner.
 - The app shows its first frame about three times sooner and uses about 400 MB less memory when a project has text.

@@ -1,5 +1,6 @@
 use crate::{
     Origami, pulse,
+    tune::blank,
     view::{BLUE, INK, TEXT},
 };
 use gpui::{Bounds, Context, Keystroke, PathBuilder, Pixels, Point, Window, point, px, rgb, rgba};
@@ -22,9 +23,10 @@ pub struct Words {
 }
 
 fn quoted(line: &str, from: usize, said: &str) -> Option<(Range<usize>, char)> {
-    let named = |i: usize| line[..i].ends_with(|c: char| c.is_alphanumeric() || "_$.".contains(c));
+    let code = blank(line);
+    let skip = |i: usize| code.as_bytes().get(i) == Some(&b' ') || line[..i].ends_with(|c: char| c.is_alphanumeric() || "_$.".contains(c));
     let calls = line.match_indices("text(").chain(line.match_indices("caption("));
-    calls.filter(|(i, _)| *i >= from && !named(*i)).find_map(|(i, call)| {
+    calls.filter(|(i, _)| *i >= from && !skip(*i)).find_map(|(i, call)| {
         let rest = &line[i + call.len()..];
         let open = line.len() - rest.trim_start().len();
         let quote = line[open..].chars().next().filter(|c| "\"'`".contains(*c))?;
@@ -300,6 +302,10 @@ mod tests {
             ("captions(\"a.srt\")", "a.srt"),
             ("text(\"a\",", "b"),
             ("text(\"a", "a"),
+            ("text(a) // text(\"a\")", "a"),
+            ("text(a) /* text('a') */", "a"),
+            ("f(\"text('a')\")", "a"),
+            ("f(`${b}text('a')`)", "a"),
         ] {
             assert_eq!(at(line, said), None, "{line}");
         }

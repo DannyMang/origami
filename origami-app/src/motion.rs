@@ -409,7 +409,9 @@ fn slot(s: &str, calls: &[Call], name: &str) -> Option<Slot> {
         },
         (None, _) => {
             let line = s[..last.0].rfind('\n').map_or(0, |i| i + 1);
-            let pad = Some(&s[line..last.0.saturating_sub(1)]).filter(|p| calls.len() > 1 && p.trim().is_empty());
+            let pad = s
+                .get(line..last.0.saturating_sub(1))
+                .filter(|p| calls.len() > 1 && p.trim().is_empty());
             let (call, post) = match (name, word(&maker)) {
                 ("y", _) => ("pos(null, ".into(), ")"),
                 ("x", "caption") => ("pos(".into(), ", 0.84)"),
@@ -781,6 +783,7 @@ impl Origami {
         let (text, from) = self.site(row);
         let new = match name {
             "" => omit(&text, from, Kind::Text, "font"),
+            _ if name.contains(['"', '\\', '\n', '\r']) => None,
             _ => amend(&text, from, Kind::Text, "font", |_| format!("\"{name}\"")),
         };
         if let Some(new) = new {
@@ -1030,6 +1033,7 @@ stack(shot, title.shift(1), tag, note, text(\"inline\").for(2))";
             "  background: \"#0008\", font: \"Menlo\""
         );
         assert_eq!(row(&set(wide, 0, "y", "0.5"), 5), "  .pos(0.1, 0.5)");
+        assert_eq!(set("\u{feff}text(\"a\")", 0, "x", "0.5"), "\u{feff}text(\"a\").pos(0.5)");
     }
 
     // Picking the default font should take the font out of a text's options and leave the rest as

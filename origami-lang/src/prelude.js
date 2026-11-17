@@ -256,10 +256,10 @@
     caption: words(44, [null, 0.84]),
     captions: line(n => p => {
       const src = __read(p, 'captions', n).replace(/\r/g, '')
-      return pile(src.split(/\n\n+/).map(b => {
-        const [cue, a, z, s] = b.match(/(\S+) --> (\S+)\n([\s\S]+)/) ?? [], t = x => T(x.replace(',', '.'))
+      return pile(src.split('\n\n').map(b => {
+        const [cue, a, z, s] = b.match(/^(\S+) --> (\S+)\n([\s\S]+)/m) ?? [], t = x => T(x.replace(',', '.'))
         at = n
-        must(!a || t(z) > t(a), `captions("${p}") line ${src.slice(0, src.indexOf(cue)).split('\n').length}: ${a} --> ${z} is not a time range like 00:00:01,000 --> 00:00:04,000`)
+        if (a && !(t(z) > t(a))) must(false, `captions("${p}") line ${src.slice(0, src.indexOf(cue)).split('\n').length}: ${a} --> ${z} is not a time range like 00:00:01,000 --> 00:00:04,000`)
         return a && caption[n](s.trim().replace(/\n/g, ' ')).at[n](t(a)).for[n](t(z) - t(a))
       }).filter(Boolean))
     }),
@@ -372,4 +372,5 @@
     D = Math.max(0, ...P.map(c => c.end))
     return JSON.stringify({ fps: S.fps, size: W, duration: D, preview: S.preview, proxy: S.proxy, note, clips: P.map(ir) })
   }
+  for (const k of ['__prep', '__late', '__out', '__probe', '__read', '__lut', '__font', '__measure', '__assigns', '__tag', '__plain', '__dots', '__ramp', '__keep']) Object.defineProperty(globalThis, k, { writable: false, configurable: false })
 })()

@@ -968,6 +968,8 @@ let look = { size: 20 }
 let c = caption(\"c\", look).for(1)
 stack(a, b, c)";
         std::fs::write(dir.join("edit.js"), src).unwrap();
+        let evil = "Zed\", size: (() => { throw 1 })(), x: \"";
+        std::fs::write(dir.join(format!("{evil}.ttf")), "").unwrap();
         let tl = origami_lang::eval(&dir.join("edit.js"), false, origami_engine::footprint).unwrap();
         let lines: Vec<String> = src.lines().map(String::from).collect();
         let (view, cx) = cx.add_window_view(|window, cx| {
@@ -1021,6 +1023,8 @@ stack(a, b, c)";
             ("Menlo".into(), "Menlo".into())
         );
         cx.simulate_keystrokes("escape");
+        assert_eq!(state(cx, 1), (lines[1].clone(), 1, ""));
+        view.update(cx, |o, _| o.face(1, evil));
         assert_eq!(state(cx, 1), (lines[1].clone(), 1, ""));
         open(cx, 1);
         cx.simulate_keystrokes("c o u r i e r");

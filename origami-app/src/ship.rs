@@ -1,5 +1,5 @@
 use crate::{
-    Origami,
+    Origami, crash,
     keys::stamp,
     pulse,
     view::{BAR, BG, BLUE, BORDER, DIM, INK, MUTED, PANEL, TEXT},
@@ -138,7 +138,7 @@ fn button(label: &str, main: bool) -> Div {
 
 impl Origami {
     fn kept(&self) -> PathBuf {
-        self.script.with_file_name(".origami").join("export.json")
+        crash::kept(&self.script, "export")
     }
 
     pub fn ask(&mut self) {
@@ -147,7 +147,7 @@ impl Origami {
         }
         let dir = self.script.parent().unwrap_or(Path::new(".")).to_path_buf();
         let name = dir.file_name().map_or("out".into(), |n| n.to_string_lossy().to_string());
-        let kept = fs::read_to_string(self.kept()).ok();
+        let kept = origami_lang::load(&self.kept()).ok();
         let kept: Option<(PathBuf, u32, usize, u8, bool)> = kept.and_then(|s| serde_json::from_str(&s).ok());
         self.ship = Some(match kept {
             Some((path, height, codec, quality, audio)) if path.is_absolute() => Ship {
@@ -203,7 +203,7 @@ impl Origami {
         let Some(mut s) = self.ship.take() else { return };
         let codec = CODECS.iter().position(|c| c.0 == s.opts.codec).unwrap_or(0);
         let kept = (&s.path, s.opts.height, codec, s.opts.quality, s.opts.audio);
-        let _ = fs::create_dir_all(self.script.with_file_name(".origami"));
+        let _ = self.kept().parent().map(fs::create_dir_all);
         let _ = origami_lang::save(&self.kept(), serde_json::to_string(&kept).unwrap_or_default());
         s.opts.range = self.opened().filter(|_| s.clip).map(|c| (c.start, c.end));
         self.send(out.unwrap_or(s.path).to_string_lossy().to_string(), s.opts, cx);
@@ -466,6 +466,7 @@ pub mod tests {
         let _one = ONE.lock();
         let dir = env::temp_dir().join("origami-ship-test").join("trip");
         let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_file(crash::kept(&dir.join("edit.js"), "export"));
         fs::create_dir_all(&dir).unwrap();
         let src = "settings({ size: [64, 36] })\ncat(color('#ff0000').for(1), color('#00ff00').for(1))";
         fs::write(dir.join("edit.js"), src).unwrap();
@@ -525,8 +526,8 @@ pub mod tests {
         assert!(fs::metadata(&out).unwrap().modified().unwrap() > before);
     }
 
-    // A remembered destination that is not a full file path, such as a web address shipped inside a
-    // downloaded project, is ignored and the dialog offers the file next to the script.
+    // A remembered destination shipped inside a downloaded project, such as a web address in its
+    // .origami folder, is ignored and the dialog offers the file next to the script.
     #[gpui::test]
     fn ignores_a_remembered_web_address(cx: &mut gpui::TestAppContext) {
         let dir = env::temp_dir().join("origami-ship-test").join("far");

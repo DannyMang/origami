@@ -58,7 +58,7 @@ The later crates depend on the earlier ones by relative path.
 | `lint.rs` | Inline warnings and hover tips |
 | `fold.rs`, `search.rs` | Code folding and find |
 | `pulse.rs` | Opt-in anonymous usage and crash reports: the question, the stored answer and install id, the events, the crash scrubber |
-| `crash.rs` | Panic hook: saves unsaved code to `<script>.recovered` and logs to `~/Library/Logs/Origami/origami.log`; a quit that could not ask saves it there too |
+| `crash.rs` | Panic hook: saves unsaved code to `~/Library/Application Support/Origami/recovered`, under a name made from the script's path, and logs to `~/Library/Logs/Origami/origami.log`; a quit that could not ask saves it there too |
 
 ## Build, run, test
 

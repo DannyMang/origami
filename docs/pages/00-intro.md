@@ -35,7 +35,7 @@ Origami works on your Mac and keeps your scripts, footage and exports there.
   - `text edited on picture`: when you retype an existing text on the preview and save it.
   - `font picked`: when you choose from the font list. The font's name is not sent.
   - `voiceover recorded`: when a recorded take is added to the script.
-  - `crash`: the next time Origami opens after a crash, with the first line of the error cut at its first colon, quoted text removed and everything from a path or file name onwards dropped, and the file and line of Origami's source code where it happened.
+  - `crash`: the next time Origami opens after a crash, with the file, line and column of the source code where it happened (such as `origami-app/src/view.rs:10:5`, or `unknown` when it does not look like one), and the error message only when it is one of a fixed list of standard messages made of set words and numbers, such as `index out of bounds: the len is 3 but the index is 7` or ``called `Option::unwrap()` on a `None` value``. Anything after the set words is dropped, and any other message is sent as just `panic`.
 
   Every event also carries a random install id, Origami's version, the macOS version and the chip type (`aarch64` or `x86_64`). The id is 16 random bytes made when you first say yes; it is not derived from your Mac, your name or your files. Events are marked so PostHog keeps no person profile for them and does not look up a location, but PostHog sees your IP address, as any website does.
 - **What is never sent.** Script contents, the names of files, folders, media and fonts, paths, your user name, and anything from the `origami` command-line tool. A crash that happens while reports are off is not sent later.

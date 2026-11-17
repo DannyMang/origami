@@ -91,10 +91,10 @@ impl Origami {
         let spare = crash::spare(&self.script);
         if fs::symlink_metadata(&spare).is_ok_and(|m| m.is_file())
             && stamp(&spare) > stamp(&self.script)
-            && let Ok(text) = fs::read_to_string(&spare)
+            && let Ok(text) = origami_lang::load(&spare)
         {
             let _ = fs::remove_file(&spare);
-            if fs::read_to_string(&self.script).unwrap_or_default().lines().ne(text.lines()) {
+            if origami_lang::load(&self.script).unwrap_or_default().lines().ne(text.lines()) {
                 (self.lines, self.dirty) = (text.lines().map(String::from).collect(), true);
                 self.note = "recovered unsaved changes from last time: keep mine saves them, use disk drops them".into();
             }

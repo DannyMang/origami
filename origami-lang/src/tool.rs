@@ -21,18 +21,22 @@ static TOOLS: LazyLock<[PathBuf; 2]> = LazyLock::new(|| {
 
 fn find(name: &str, exe: &Path, path: &OsStr) -> PathBuf {
     let known = ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"].map(PathBuf::from);
-    let dirs = [exe.to_path_buf()].into_iter().chain(env::split_paths(path)).chain(known);
+    let dirs = [exe.to_path_buf()].into_iter().chain(env::split_paths(path)).chain(known.clone());
     dirs.map(|d| d.join(name))
         .find(|p| p.is_absolute() && fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
-        .unwrap_or_else(|| name.into())
+        .unwrap_or_else(|| known[0].join(name))
 }
 
 pub fn ffmpeg() -> Command {
-    Command::new(&TOOLS[0])
+    let mut cmd = Command::new(&TOOLS[0]);
+    cmd.args(["-protocol_whitelist", "file,pipe,fd"]);
+    cmd
 }
 
 pub fn ffprobe() -> Command {
-    Command::new(&TOOLS[1])
+    let mut cmd = Command::new(&TOOLS[1]);
+    cmd.args(["-protocol_whitelist", "file"]);
+    cmd
 }
 
 fn absent(tool: &OsStr) -> Option<String> {
@@ -46,7 +50,7 @@ fn absent(tool: &OsStr) -> Option<String> {
 }
 
 pub fn missing() -> Option<String> {
-    TOOLS.iter().filter(|t| !t.is_absolute()).find_map(|t| absent(t.as_os_str()))
+    TOOLS.iter().filter(|t| !t.is_file()).find_map(|t| absent(t.as_os_str()))
 }
 
 pub fn start(cmd: &mut Command) -> io::Result<Child> {
@@ -121,7 +125,7 @@ mod tests {
 
     // A copy next to the program should win over PATH, PATH should be searched in order skipping
     // relative entries and files that cannot be run, the usual install folders should be tried when
-    // PATH is bare (as when opened from Finder), and a tool found nowhere should be left to the system by name.
+    // PATH is bare (as when opened from Finder), and a tool found nowhere should point at the Homebrew folder, never at a bare name.
     #[test]
     fn finds_tools_in_order() {
         let dir = env::temp_dir().join("origami-tools");
@@ -143,7 +147,7 @@ mod tests {
         assert_eq!(find("ffprobe", &app, &path), two.join("ffprobe"));
         made(one.join("ffprobe"), 0o755);
         assert_eq!(find("ffprobe", &app, &path), one.join("ffprobe"));
-        assert_eq!(find("lib.rs", &app, &path), PathBuf::from("lib.rs"));
+        assert_eq!(find("lib.rs", &app, &path), PathBuf::from("/opt/homebrew/bin/lib.rs"));
         assert!(find("ffmpeg", Path::new(""), OsStr::new("/usr/bin:/bin")).is_absolute());
     }
 }

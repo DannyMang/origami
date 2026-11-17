@@ -526,12 +526,13 @@ mod tests {
         assert!(view.update(cx, |o, _| o.export.is_some() && !o.dirty));
     }
 
-    // Being told to quit without a prompt, as from the Dock or at logout, should keep unsaved code next to
-    // the script for the next open, while a quit that chose to discard the changes should keep nothing.
+    // Being told to quit without a prompt, as from the Dock or at logout, should keep unsaved code in
+    // Origami's own folder for the next open, while a quit that chose to discard the changes should keep nothing.
     #[gpui::test]
     fn forced_quit_keeps_unsaved(cx: &mut TestAppContext) {
         let (view, cx, path) = project(cx, "forced-quit");
         let spare = crate::crash::spare(&path);
+        let _ = fs::remove_file(&spare);
         let edit = |o: &mut Origami, _: &mut Context<Origami>| {
             o.lines.push("// mine".into());
             o.dirty = true;

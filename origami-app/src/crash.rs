@@ -6,6 +6,7 @@ use std::{
     fs::{self, OpenOptions},
     future::{Ready, ready},
     io::Write,
+    os::unix::ffi::OsStrExt,
     panic,
     path::{Path, PathBuf},
     process::Command,
@@ -15,16 +16,32 @@ use std::{
 
 pub static UNSAVED: Mutex<Option<(PathBuf, String)>> = Mutex::new(None);
 
+pub fn kept(script: &Path, what: &str) -> PathBuf {
+    let key = script
+        .as_os_str()
+        .as_bytes()
+        .iter()
+        .fold(0xcbf29ce484222325, |h: u64, b| (h ^ *b as u64).wrapping_mul(0x100000001b3));
+    let home = PathBuf::from(env::var("HOME").unwrap_or_default());
+    home.join("Library/Application Support/Origami")
+        .join(what)
+        .join(format!("{key:016x}"))
+}
+
 pub fn spare(script: &Path) -> PathBuf {
-    let mut name = script.as_os_str().to_owned();
-    name.push(".recovered");
-    name.into()
+    kept(script, "recovered")
+}
+
+fn stash(script: &Path, text: &str) {
+    let spare = spare(script);
+    let _ = spare.parent().map(fs::create_dir_all);
+    let _ = origami_lang::save(&spare, text);
 }
 
 impl Origami {
     pub fn keep(&mut self, _: &mut Context<Self>) -> Ready<()> {
         if self.dirty {
-            let _ = origami_lang::save(&spare(&self.script), self.text());
+            stash(&self.script, &self.text());
         }
         ready(())
     }
@@ -32,9 +49,9 @@ impl Origami {
 
 fn rescue(what: &str, log: &Path) {
     if let Some((script, text)) = UNSAVED.try_lock().ok().and_then(|u| u.clone()) {
-        let _ = origami_lang::save(&spare(&script), text);
+        stash(&script, &text);
     }
-    let when = origami_lang::output(&mut Command::new("date")).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    let when = origami_lang::output(&mut Command::new("/bin/date")).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
     let me = thread::current();
     let entry = format!(
         "{} thread '{}' {what}\n{}\n",
@@ -65,9 +82,10 @@ mod tests {
     use super::*;
     use gpui::TestAppContext;
 
-    // A crash with unsaved changes should keep the code on screen next to the script, replacing a link
-    // planted there instead of writing through it, and log the panic; opening the script again should
-    // bring that code back with the keep mine / use disk bar, and a planted link is never read.
+    // A crash with unsaved changes should keep the code on screen in Origami's own folder under a name
+    // made from the script's path, replacing a link there instead of writing through it, and log the
+    // panic; opening the script again should bring that code back with the keep mine / use disk bar,
+    // while a link there or a .recovered file shipped beside the script is never read.
     #[gpui::test]
     fn crash_keeps_unsaved(cx: &mut TestAppContext) {
         let dir = env::temp_dir().join("origami-crash-test");
@@ -76,6 +94,8 @@ mod tests {
         let (script, log) = (dir.join("edit.js"), dir.join("Logs/origami.log"));
         fs::write(&script, "text(\"a\")\n").unwrap();
         fs::write(dir.join("other"), "precious").unwrap();
+        let _ = fs::remove_file(spare(&script));
+        fs::create_dir_all(spare(&script).parent().unwrap()).unwrap();
         std::os::unix::fs::symlink(dir.join("other"), spare(&script)).unwrap();
         *UNSAVED.lock().unwrap() = Some((script.clone(), "text(\"b\")\n".into()));
         rescue("panicked at here:\nboom", &log);
@@ -97,5 +117,9 @@ mod tests {
         std::os::unix::fs::symlink(dir.join("other"), spare(&script)).unwrap();
         view.update(cx, |o, cx| o.open(script.clone(), cx));
         assert!(!view.update(cx, |o, _| o.dirty) && spare(&script).is_symlink());
+        fs::remove_file(spare(&script)).unwrap();
+        fs::write(dir.join("edit.js.recovered"), "text(\"c\")\n").unwrap();
+        view.update(cx, |o, cx| o.open(script.clone(), cx));
+        assert!(!view.update(cx, |o, _| o.dirty));
     }
 }

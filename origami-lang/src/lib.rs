@@ -357,12 +357,7 @@ fn probe(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
 }
 
 fn read(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
-    host(args, cx, find, |_, path| {
-        if fs::metadata(path)?.len() > 1 << 24 {
-            bail!("the file is over 16 MB");
-        }
-        Ok(fs::read_to_string(path)?)
-    })
+    host(args, cx, find, |_, path| Ok(load(path)?))
 }
 
 fn lut(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
@@ -404,6 +399,14 @@ pub fn save(path: &Path, data: impl AsRef<[u8]>) -> io::Result<()> {
         fs::remove_file(path)?;
     }
     fs::write(path, data)
+}
+
+pub fn load(path: &Path) -> io::Result<String> {
+    match fs::metadata(path)? {
+        m if !m.is_file() => Err(io::Error::other("not a plain file")),
+        m if m.len() > 1 << 24 => Err(io::Error::other("the file is over 16 MB")),
+        _ => fs::read_to_string(path),
+    }
 }
 
 fn assigns(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
@@ -502,7 +505,7 @@ fn ramp(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
             i => v[i - 1] + (v[i] - v[i - 1]) * ((x - t[i - 1]) / (t[i] - t[i - 1])),
         })
     };
-    Ok(JsArray::from_iter((0..n as usize).map(at).collect::<Vec<_>>(), cx).into())
+    Ok(JsArray::from_iter((0..(n as usize).min(1 << 25)).map(at).collect::<Vec<_>>(), cx).into())
 }
 
 fn single(v: f64) -> f32 {
@@ -613,6 +616,7 @@ fn ask(script: &Path, relock: bool, src: Option<&str>, measure: Measure) -> Resu
         drop(back.send(tl.map_err(|e| FAIL.take().filter(|_| src.is_none()).map_or(e, Into::into))));
     };
     let mut vm = VM.lock().unwrap();
+    BUSY.store(false, Relaxed);
     let _ = vm.get_or_insert_with(spawn).send(Box::new(job));
     loop {
         match got.recv_timeout(LIMIT * 3) {
@@ -645,10 +649,10 @@ fn build(cx: &mut Context, script: &Path, relock: bool, src: Option<&str>, measu
     let lock = dir.join("origami.lock");
     let old: Lock = Some(&lock)
         .filter(|l| fs::symlink_metadata(l).is_ok_and(|m| m.is_file()))
-        .and_then(|l| fs::read(l).ok())
-        .and_then(|b| serde_json::from_slice(&b).ok())
+        .and_then(|l| load(l).ok())
+        .and_then(|b| serde_json::from_str(&b).ok())
         .unwrap_or_default();
-    let text = src.map_or_else(|| fs::read_to_string(&script), |s| Ok(s.into()))?;
+    let text = src.map_or_else(|| load(&script).map_err(|e| anyhow!("{}: {e}", script.display())), |s| Ok(s.into()))?;
     let mut depth = 0;
     let nest = |b| {
         depth += matches!(b, b'(' | b'[' | b'{') as i32 - matches!(b, b')' | b']' | b'}') as i32;
@@ -720,7 +724,11 @@ fn build(cx: &mut Context, script: &Path, relock: bool, src: Option<&str>, measu
     if !(fair(tl.fps, 240) && fair(tl.size.0, 16384) && fair(tl.size.1, 16384) && tl.duration <= DAY) {
         bail!("fps {}, size {:?} or length {} is out of range", tl.fps, tl.size, tl.duration);
     }
-    if let Some(c) = tl.clips.iter().find(|c| !(c.start >= -DAY && c.end <= DAY && c.speed > 0.)) {
+    if let Some(c) = tl
+        .clips
+        .iter()
+        .find(|c| !(c.start >= -DAY && c.end <= DAY && c.speed > 0. && c.speed <= 1e3))
+    {
         bail!("line {}: {} has a time or speed out of range", c.line, c.label);
     }
     let files = READ.take();
@@ -1197,8 +1205,8 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
     }
 
     // A script that reaches past the clip functions to name a web address or a file it never opened,
-    // to read a device, a pipe or a huge file, or to hand over values that would hang or crash the
-    // app, is refused with a message instead.
+    // to read a device, a pipe or a huge file (the script itself included), to hand over values that would hang or crash the app, or
+    // to replace a function Origami calls after the script, is refused with a message instead.
     #[test]
     fn reaching_past_the_functions_is_refused() {
         let dir = std::env::temp_dir().join("origami-reach");
@@ -1241,14 +1249,24 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
                 "text('a').for(1).speed(1e-200).speed(1e-200)".into(),
                 "line 1: a has a time or speed out of range",
             ),
+            ("text('a').for(1).speed(1e12)".into(), "line 1: a has a time or speed out of range"),
             (
-                "__out = () => JSON.stringify({ fps: 30, size: [4e8, 4e8], duration: 1, clips: [] })\ntext('a')".into(),
-                "fps 30, size (400000000, 400000000) or length 1 is out of range",
+                "const j = JSON.stringify\nJSON.stringify = v => j({ ...v, size: [4e8, 4e8] })\ntext('a')".into(),
+                "fps 30, size (400000000, 400000000) or length 5 is out of range",
+            ),
+            (
+                "const __out = () => '{}'\ntext('a')".into(),
+                "SyntaxError: cannot redefine non-configurable global property",
             ),
         ] {
             let e = fails(&dir, &src);
             assert!(e.starts_with(says), "{src}: {e}");
         }
+        std::os::unix::fs::symlink("/dev/zero", dir.join("zero.js")).unwrap();
+        assert_eq!(
+            eval(&dir.join("zero.js"), false, size).unwrap_err().to_string(),
+            "/dev/zero: not a plain file"
+        );
     }
 
     // A number that is NaN, Infinity or not a number at all should be refused wherever a method, an

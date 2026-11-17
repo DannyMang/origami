@@ -308,12 +308,11 @@ impl Origami {
             "set" => self.looping = arg == "loop",
             "help" => self.help = !self.help,
             "ir" => {
-                let _ = fs::create_dir_all(dir.join(".origami"));
-                let _ = origami_lang::save(
-                    &dir.join(".origami/ir.json"),
-                    serde_json::to_string_pretty(&*self.tl).unwrap_or_default(),
-                );
-                self.note = "wrote .origami/ir.json".into();
+                let room = dir.join(".origami");
+                let _ = fs::create_dir_all(&room);
+                let ir = serde_json::to_string_pretty(&*self.tl).unwrap_or_default();
+                let wrote = fs::symlink_metadata(&room).is_ok_and(|m| m.is_dir()) && origami_lang::save(&room.join("ir.json"), ir).is_ok();
+                self.note = format!("{} .origami/ir.json", if wrote { "wrote" } else { "could not write" });
             }
             "export" => {
                 let name = arg.split(' ').find(|a| !a.is_empty() && !a.starts_with("--")).unwrap_or("out.mp4");

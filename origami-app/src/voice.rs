@@ -40,9 +40,11 @@ fn top(l: &String) -> bool {
 }
 
 fn bare(l: &str) -> usize {
-    let mut quote = None;
+    let (mut quote, mut skip) = (None, false);
     for (i, c) in l.char_indices() {
         match (quote, c) {
+            _ if std::mem::take(&mut skip) => {}
+            (Some(_), '\\') => skip = true,
             (Some(q), _) if c == q => quote = None,
             (Some(_), _) => {}
             (_, '"' | '\'' | '`') => quote = Some(c),
@@ -131,6 +133,9 @@ impl Origami {
             return self.finish(true);
         }
         let dir = self.script.parent().unwrap().join("voice");
+        if fs::symlink_metadata(&dir).is_ok_and(|m| m.is_symlink()) {
+            return self.note = "cannot record: voice is a link to another folder".into();
+        }
         let n = slot(&dir, &self.lines);
         let path = dir.join(format!("take-{n}.wav"));
         let _ = fs::create_dir_all(&dir);
@@ -337,6 +342,7 @@ mod tests {
         for (src, want) in [
             ("v.trim(1, 5) // the clip", "DEF\nstack(v.trim(1, 5), voice_1.at(1)) // the clip"),
             ("v.trim(1, 5); // the clip", "DEF\nstack(v.trim(1, 5), voice_1.at(1)) // the clip"),
+            ("text('it\\'s // here')", "DEF\nstack(text('it\\'s // here'), voice_1.at(1))"),
             (
                 "stack(\n  a.trim(0, 2), // first\n  b.trim(0, 2) // second\n) // end",
                 "DEF\nstack(\n  a.trim(0, 2), // first\n  b.trim(0, 2), // second\n  voice_1.at(1),\n) // end",

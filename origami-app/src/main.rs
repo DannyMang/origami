@@ -177,7 +177,7 @@ fn clock(script: &Path) -> String {
     if saved.0 == secs / 60 {
         return saved.1;
     }
-    let out = origami_lang::output(Command::new("date").args(["-r", &secs.to_string(), "+%H:%M"]));
+    let out = origami_lang::output(Command::new("/bin/date").args(["-r", &secs.to_string(), "+%H:%M"]));
     let text = out
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
@@ -233,7 +233,7 @@ impl Origami {
     }
 
     fn load(&mut self, cx: &mut Context<Self>) {
-        let read = fs::read_to_string(&self.script);
+        let read = origami_lang::load(&self.script);
         let gone = read.is_err() && !self.fresh;
         let disk: Vec<String> = read.unwrap_or_default().lines().map(String::from).collect();
         let differs = disk != self.lines;
@@ -570,7 +570,7 @@ fn main() {
         }
     });
     app.run(move |cx: &mut App| {
-        let recent: Vec<PathBuf> = fs::read_to_string(mouse::recent())
+        let recent: Vec<PathBuf> = origami_lang::load(&mouse::recent())
             .unwrap_or_default()
             .lines()
             .map(PathBuf::from)

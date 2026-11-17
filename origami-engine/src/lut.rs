@@ -67,12 +67,12 @@ impl Lut {
                 _ => {}
             }
         }
-        (n > 1 && t.len() == if cube { n * n * n } else { n }).then_some(Self { n, cube, t })
+        (n > 1 && Some(t.len()) == if cube { n.checked_pow(3) } else { Some(n) }).then_some(Self { n, cube, t })
     }
 
     pub fn read(path: &str) -> Option<Arc<Self>> {
         let key = (path.to_string(), fs::metadata(path).and_then(|m| m.modified()).ok());
-        let load = || Self::parse(&fs::read_to_string(path).ok()?).map(Arc::new);
+        let load = || Self::parse(&origami_lang::load(path.as_ref()).ok()?).map(Arc::new);
         FILES.lock().unwrap().entry(key).or_insert_with(load).clone()
     }
 
