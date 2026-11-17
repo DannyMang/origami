@@ -37,6 +37,8 @@ text("summer 2026", { size: 96, color: "#ffcc00" }).for(3)
 
 `font` takes a .ttf, .otf or .ttc file, or the name of an installed font. Works on `caption` too.
 
+Text supports Latin, Cyrillic, Greek, Chinese, Japanese and Korean. Arabic, Hebrew, Indic scripts and emoji are not supported yet.
+
 ```js
 text("summer 2026", { font: "fonts/Minecraft.ttf" })
 text("summer 2026", { font: "Impact" })

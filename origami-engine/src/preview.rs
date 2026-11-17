@@ -46,7 +46,7 @@ static RAM: LazyLock<u64> = LazyLock::new(|| {
 });
 
 fn fit(ram: u64) -> (usize, usize) {
-    ((ram / 16).clamp(1 << 28, 1 << 30) as usize, if ram > 8 << 30 { 6 } else { 4 })
+    ((ram / 8).clamp(1 << 28, 1 << 30) as usize, if ram > 8 << 30 { 6 } else { 4 })
 }
 
 fn ask(path: &str, show: &str) -> String {
@@ -1197,7 +1197,7 @@ mod tests {
     #[test]
     fn limits_follow_the_machine() {
         let sized = [2, 8, 12, 16, 96].map(|gb| fit(gb << 30));
-        assert_eq!(sized, [(1 << 28, 4), (1 << 29, 4), (3 << 28, 6), (1 << 30, 6), (1 << 30, 6)]);
+        assert_eq!(sized, [(1 << 28, 4), (1 << 30, 4), (1 << 30, 6), (1 << 30, 6), (1 << 30, 6)]);
         let (room, most) = fit(8 << 30);
         let mut pv = Preview {
             room,
