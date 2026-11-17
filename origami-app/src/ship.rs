@@ -150,7 +150,7 @@ impl Origami {
         let kept = fs::read_to_string(self.kept()).ok();
         let kept: Option<(PathBuf, u32, usize, u8, bool)> = kept.and_then(|s| serde_json::from_str(&s).ok());
         self.ship = Some(match kept {
-            Some((path, height, codec, quality, audio)) => Ship {
+            Some((path, height, codec, quality, audio)) if path.is_absolute() => Ship {
                 path,
                 opts: Opts {
                     height,
@@ -161,7 +161,7 @@ impl Origami {
                 },
                 clip: false,
             },
-            None => Ship {
+            _ => Ship {
                 path: dir.join(format!("{name}.mp4")),
                 opts: Opts {
                     quality: 80,
@@ -204,7 +204,7 @@ impl Origami {
         let codec = CODECS.iter().position(|c| c.0 == s.opts.codec).unwrap_or(0);
         let kept = (&s.path, s.opts.height, codec, s.opts.quality, s.opts.audio);
         let _ = fs::create_dir_all(self.script.with_file_name(".origami"));
-        let _ = fs::write(self.kept(), serde_json::to_string(&kept).unwrap_or_default());
+        let _ = origami_lang::save(&self.kept(), serde_json::to_string(&kept).unwrap_or_default());
         s.opts.range = self.opened().filter(|_| s.clip).map(|c| (c.start, c.end));
         self.send(out.unwrap_or(s.path).to_string_lossy().to_string(), s.opts, cx);
     }
@@ -523,5 +523,21 @@ pub mod tests {
         assert!(dir.join("trip 2.mov").exists() && fs::metadata(&out).unwrap().modified().unwrap() == before);
         assert_eq!(again(cx, "Replace"), (false, true));
         assert!(fs::metadata(&out).unwrap().modified().unwrap() > before);
+    }
+
+    // A remembered destination that is not a full file path, such as a web address shipped inside a
+    // downloaded project, is ignored and the dialog offers the file next to the script.
+    #[gpui::test]
+    fn ignores_a_remembered_web_address(cx: &mut gpui::TestAppContext) {
+        let dir = env::temp_dir().join("origami-ship-test").join("far");
+        fs::create_dir_all(dir.join(".origami")).unwrap();
+        fs::write(dir.join(".origami/export.json"), r#"["http://127.0.0.1:9/a.ts",0,0,80,true]"#).unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            app.script = dir.join("edit.js");
+            app
+        });
+        view.update(cx, |o, _| o.ask());
+        assert_eq!(view.update(cx, |o, _| o.ship.as_ref().unwrap().path.clone()), dir.join("far.mp4"));
     }
 }

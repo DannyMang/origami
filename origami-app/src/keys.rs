@@ -309,8 +309,8 @@ impl Origami {
             "help" => self.help = !self.help,
             "ir" => {
                 let _ = fs::create_dir_all(dir.join(".origami"));
-                let _ = fs::write(
-                    dir.join(".origami/ir.json"),
+                let _ = origami_lang::save(
+                    &dir.join(".origami/ir.json"),
                     serde_json::to_string_pretty(&*self.tl).unwrap_or_default(),
                 );
                 self.note = "wrote .origami/ir.json".into();
@@ -325,7 +325,7 @@ impl Origami {
                         .map(quote)
                         .collect::<Vec<_>>()
                         .join(" ");
-                    let _ = fs::write(dir.join("export.sh"), format!("ffmpeg {line}\n"));
+                    let _ = origami_lang::save(&dir.join("export.sh"), format!("ffmpeg {line}\n"));
                     return self.note = "wrote export.sh".into();
                 }
                 self.send(out, Opts::default(), cx);

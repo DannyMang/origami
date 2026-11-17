@@ -2,6 +2,7 @@ use std::{env, process::Command};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 const FEED: &str = "https://raw.githubusercontent.com/DannyMang/origami/main/latest.json";
+const HOME: &str = "https://github.com/DannyMang/origami/";
 
 pub fn newer(tag: &str, have: &str) -> bool {
     let parts = |v: &str| -> Vec<u64> {
@@ -19,7 +20,7 @@ pub fn newer(tag: &str, have: &str) -> bool {
 pub fn read(feed: &[u8]) -> Option<(String, String)> {
     let found: serde_json::Value = serde_json::from_slice(feed).ok()?;
     let (tag, url) = (found["version"].as_str()?.trim_start_matches('v'), found["url"].as_str()?);
-    (newer(tag, VERSION) && url.starts_with("https://")).then(|| (tag.to_string(), url.to_string()))
+    (newer(tag, VERSION) && url.starts_with(HOME)).then(|| (tag.to_string(), url.to_string()))
 }
 
 pub fn latest() -> Option<(String, String)> {
@@ -47,12 +48,21 @@ mod tests {
         assert!(!newer("junk", "0.1.0"));
     }
 
-    // The feed names the newest version and where to get it; anything else means no update.
+    // The feed names the newest version and a page of this project on GitHub to get it from; anything
+    // else, a lookalike address included, means no update.
     #[test]
     fn reads() {
         let feed = |s: &str| read(s.as_bytes());
-        let up = feed(r#"{ "version": "v99.0.0", "url": "https://example.com/get" }"#);
-        assert_eq!(up, Some(("99.0.0".into(), "https://example.com/get".into())));
+        let get = "https://github.com/DannyMang/origami/releases/latest";
+        let up = feed(&format!(r#"{{ "version": "v99.0.0", "url": "{get}" }}"#));
+        assert_eq!(up, Some(("99.0.0".into(), get.into())));
+        for far in [
+            "https://example.com/get",
+            "https://github.com/DannyMang/origami.evil.com/",
+            "https://github.com@evil.com/DannyMang/origami/",
+        ] {
+            assert_eq!(feed(&format!(r#"{{ "version": "99.0.0", "url": "{far}" }}"#)), None);
+        }
         assert_eq!(
             feed(&format!(r#"{{ "version": "{VERSION}", "url": "https://example.com" }}"#)),
             None

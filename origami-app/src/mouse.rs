@@ -89,7 +89,8 @@ impl Origami {
         (self.folded, self.fresh) = (vec![], true);
         let stamp = |p: &Path| fs::metadata(p).and_then(|m| m.modified()).ok();
         let spare = crash::spare(&self.script);
-        if stamp(&spare) > stamp(&self.script)
+        if fs::symlink_metadata(&spare).is_ok_and(|m| m.is_file())
+            && stamp(&spare) > stamp(&self.script)
             && let Ok(text) = fs::read_to_string(&spare)
         {
             let _ = fs::remove_file(&spare);

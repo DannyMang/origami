@@ -24,7 +24,7 @@ pub fn spare(script: &Path) -> PathBuf {
 impl Origami {
     pub fn keep(&mut self, _: &mut Context<Self>) -> Ready<()> {
         if self.dirty {
-            let _ = fs::write(spare(&self.script), self.text());
+            let _ = origami_lang::save(&spare(&self.script), self.text());
         }
         ready(())
     }
@@ -32,7 +32,7 @@ impl Origami {
 
 fn rescue(what: &str, log: &Path) {
     if let Some((script, text)) = UNSAVED.try_lock().ok().and_then(|u| u.clone()) {
-        let _ = fs::write(spare(&script), text);
+        let _ = origami_lang::save(&spare(&script), text);
     }
     let when = origami_lang::output(&mut Command::new("date")).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
     let me = thread::current();
@@ -65,8 +65,9 @@ mod tests {
     use super::*;
     use gpui::TestAppContext;
 
-    // A crash with unsaved changes should keep the code on screen next to the script and log the
-    // panic, and opening the script again should bring that code back with the keep mine / use disk bar.
+    // A crash with unsaved changes should keep the code on screen next to the script, replacing a link
+    // planted there instead of writing through it, and log the panic; opening the script again should
+    // bring that code back with the keep mine / use disk bar, and a planted link is never read.
     #[gpui::test]
     fn crash_keeps_unsaved(cx: &mut TestAppContext) {
         let dir = env::temp_dir().join("origami-crash-test");
@@ -74,10 +75,13 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let (script, log) = (dir.join("edit.js"), dir.join("Logs/origami.log"));
         fs::write(&script, "text(\"a\")\n").unwrap();
+        fs::write(dir.join("other"), "precious").unwrap();
+        std::os::unix::fs::symlink(dir.join("other"), spare(&script)).unwrap();
         *UNSAVED.lock().unwrap() = Some((script.clone(), "text(\"b\")\n".into()));
         rescue("panicked at here:\nboom", &log);
         *UNSAVED.lock().unwrap() = None;
         assert_eq!(fs::read_to_string(spare(&script)).unwrap(), "text(\"b\")\n");
+        assert_eq!(fs::read_to_string(dir.join("other")).unwrap(), "precious");
         assert!(fs::read_to_string(&log).unwrap().contains("panicked at here:\nboom\n"));
         let (view, cx) = cx.add_window_view(|_, cx| {
             let mut app = crate::fresh(cx.focus_handle(), vec![]);
@@ -90,5 +94,8 @@ mod tests {
         let shown = view.update(cx, |o, _| (o.lines.clone(), o.clash, o.dirty));
         assert_eq!(shown, (vec!["text(\"b\")".to_string()], true, true));
         assert!(!spare(&script).exists());
+        std::os::unix::fs::symlink(dir.join("other"), spare(&script)).unwrap();
+        view.update(cx, |o, cx| o.open(script.clone(), cx));
+        assert!(!view.update(cx, |o, _| o.dirty) && spare(&script).is_symlink());
     }
 }

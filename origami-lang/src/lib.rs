@@ -13,7 +13,7 @@ use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::{self, Read, Seek, SeekFrom},
     mem,
@@ -57,12 +57,11 @@ enum Run {
 }
 
 fn frames<'a, D: Deserializer<'a>>(d: D) -> Result<Vec<f32>, D::Error> {
-    match Run::deserialize(d)? {
-        Run::Kept(i) => KEPT
-            .with_borrow_mut(|k| k.get_mut(i).map(mem::take))
-            .ok_or_else(|| D::Error::custom("no such run")),
-        Run::Given(s) => Ok(s),
-    }
+    let s = match Run::deserialize(d)? {
+        Run::Kept(i) => KEPT.with_borrow_mut(|k| k.get_mut(i).map(mem::take)),
+        Run::Given(s) => Some(s),
+    };
+    s.filter(|s| !s.is_empty()).ok_or_else(|| D::Error::custom("no such run"))
 }
 
 impl Val {
@@ -193,7 +192,7 @@ thread_local! {
 
 fn find(dir: &Path, rel: &str) -> Option<PathBuf> {
     let path = dir.join(rel);
-    if path.exists() {
+    if path.is_file() {
         return Some(path);
     }
     let named = |p: &PathBuf| p.is_file() && p.file_stem() == path.file_name();
@@ -358,7 +357,12 @@ fn probe(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
 }
 
 fn read(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
-    host(args, cx, find, |_, path| Ok(fs::read_to_string(path)?))
+    host(args, cx, find, |_, path| {
+        if fs::metadata(path)?.len() > 1 << 24 {
+            bail!("the file is over 16 MB");
+        }
+        Ok(fs::read_to_string(path)?)
+    })
 }
 
 fn lut(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
@@ -373,8 +377,33 @@ fn extent(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> 
     let text = args.first().cloned().unwrap_or_default().to_string(cx)?.to_std_string_escaped();
     let num = |i: usize| args.get(i).and_then(JsValue::as_number).unwrap_or(0.);
     let clip: Clip = serde_json::from_str(&text).map_err(|e| JsNativeError::error().with_message(e.to_string()))?;
+    let read = |f: &str| READ.with_borrow(|r| r.iter().any(|(_, p)| p.as_os_str() == f));
+    if let Some(e) = stray(&clip, read) {
+        return Err(JsNativeError::error().with_message(e).into());
+    }
     let (w, h) = ST.with_borrow(|st| st.4).map_or((0., 0.), |f| f(&clip, (num(1), num(2))));
     Ok(if num(3) == 0. { w } else { h }.into())
+}
+
+fn stray(c: &Clip, opened: impl Fn(&str) -> bool) -> Option<String> {
+    let media = matches!(c.kind, Kind::Video | Kind::Sound | Kind::Image).then_some(&c.src);
+    let looks = c.grade.iter().flat_map(|g| g.input_lut.iter().chain(g.look.iter().map(|l| &l.0)));
+    let f = media
+        .into_iter()
+        .chain([&c.font])
+        .chain(looks)
+        .find(|f| !f.is_empty() && !opened(f.as_str()))?;
+    Some(format!(
+        "line {}: {} uses {f}, a file the script did not open with video, sound, image, font or look",
+        c.line, c.label
+    ))
+}
+
+pub fn save(path: &Path, data: impl AsRef<[u8]>) -> io::Result<()> {
+    if fs::symlink_metadata(path).is_ok_and(|m| !m.is_file()) {
+        fs::remove_file(path)?;
+    }
+    fs::write(path, data)
 }
 
 fn assigns(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
@@ -614,8 +643,9 @@ fn build(cx: &mut Context, script: &Path, relock: bool, src: Option<&str>, measu
         .with_context(|| format!("missing script: {}", script.display()))?;
     let dir = script.parent().unwrap().to_path_buf();
     let lock = dir.join("origami.lock");
-    let old: Lock = fs::read(&lock)
-        .ok()
+    let old: Lock = Some(&lock)
+        .filter(|l| fs::symlink_metadata(l).is_ok_and(|m| m.is_file()))
+        .and_then(|l| fs::read(l).ok())
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default();
     let text = src.map_or_else(|| fs::read_to_string(&script), |s| Ok(s.into()))?;
@@ -674,7 +704,7 @@ fn build(cx: &mut Context, script: &Path, relock: bool, src: Option<&str>, measu
     let out = say(cx, out)?;
     let new = ST.take().2;
     if new != old && src.is_none() {
-        let _ = fs::write(lock, serde_json::to_string_pretty(&new)?);
+        let _ = save(&lock, serde_json::to_string_pretty(&new)?);
     }
     let mut tl: Timeline = serde_json::from_str(&out).or_else(|_| {
         let all: serde_json::Value = serde_json::from_str(&out)?;
@@ -685,6 +715,19 @@ fn build(cx: &mut Context, script: &Path, relock: bool, src: Option<&str>, measu
         }
         Ok::<_, anyhow::Error>(serde_json::from_value(all)?)
     })?;
+    const DAY: f64 = 86400.;
+    let fair = |v: u32, top: u32| (1..=top).contains(&v);
+    if !(fair(tl.fps, 240) && fair(tl.size.0, 16384) && fair(tl.size.1, 16384) && tl.duration <= DAY) {
+        bail!("fps {}, size {:?} or length {} is out of range", tl.fps, tl.size, tl.duration);
+    }
+    if let Some(c) = tl.clips.iter().find(|c| !(c.start >= -DAY && c.end <= DAY && c.speed > 0.)) {
+        bail!("line {}: {} has a time or speed out of range", c.line, c.label);
+    }
+    let files = READ.take();
+    let opened: BTreeSet<&Path> = files.iter().map(|(_, f)| f.as_path()).collect();
+    if let Some(e) = tl.clips.iter().find_map(|c| stray(c, |f| opened.contains(Path::new(f)))) {
+        bail!("{e}");
+    }
     let frame = (tl.size.0 as f64, tl.size.1 as f64);
     if let Some((c, (w, h))) = tl
         .clips
@@ -698,7 +741,7 @@ fn build(cx: &mut Context, script: &Path, relock: bool, src: Option<&str>, measu
             c.label
         );
     }
-    tl.files = READ.take();
+    tl.files = files;
     Ok(tl)
 }
 
@@ -1151,6 +1194,61 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         }
         let fine = format!("{}text('a'){}", "stack(".repeat(99), ")".repeat(99));
         assert_eq!(tl(&fine).clips.len(), 1);
+    }
+
+    // A script that reaches past the clip functions to name a web address or a file it never opened,
+    // to read a device, a pipe or a huge file, or to hand over values that would hang or crash the
+    // app, is refused with a message instead.
+    #[test]
+    fn reaching_past_the_functions_is_refused() {
+        let dir = std::env::temp_dir().join("origami-reach");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        status(std::process::Command::new("mkfifo").arg(dir.join("pipe.srt"))).unwrap();
+        fs::File::create(dir.join("big.srt")).unwrap().set_len((1 << 24) + 1).unwrap();
+        let away = "Object.assign(v.$, { kind: 'video', src: 'http://127.0.0.1:9/a.mp4' })";
+        for (src, says) in [
+            (
+                format!("const v = color('#000')\n{away}\nv"),
+                "line 1: v uses http://127.0.0.1:9/a.mp4, a file the script did not open",
+            ),
+            (
+                "const t = text('a')\nt.$.font = '/etc/hosts'\nt".into(),
+                "line 1: t uses /etc/hosts, a file",
+            ),
+            (
+                "const t = text('a')\nt.$.font = '/dev/zero'\ntext('b').pos(t.pos)".into(),
+                "line 1: t uses /dev/zero, a file",
+            ),
+            (
+                "const t = text('a')\nt.$.grade = { look: ['/dev/zero', 100] }\nt".into(),
+                "line 1: t uses /dev/zero, a file",
+            ),
+            (
+                "text('a')\ncaptions('/dev/zero')".into(),
+                "line 2: captions(\"/dev/zero\") points to a file that does not exist",
+            ),
+            (
+                "captions('pipe.srt')".into(),
+                "line 1: captions(\"pipe.srt\") points to a file that does not exist",
+            ),
+            (
+                "captions('big.srt')".into(),
+                "line 1: captions(\"big.srt\"): the file is over 16 MB",
+            ),
+            ("const t = text('a').for(1)\nt.$.opacity = [1, []]\nt".into(), "line 1: "),
+            (
+                "text('a').for(1).speed(1e-200).speed(1e-200)".into(),
+                "line 1: a has a time or speed out of range",
+            ),
+            (
+                "__out = () => JSON.stringify({ fps: 30, size: [4e8, 4e8], duration: 1, clips: [] })\ntext('a')".into(),
+                "fps 30, size (400000000, 400000000) or length 1 is out of range",
+            ),
+        ] {
+            let e = fails(&dir, &src);
+            assert!(e.starts_with(says), "{src}: {e}");
+        }
     }
 
     // A number that is NaN, Infinity or not a number at all should be refused wherever a method, an
