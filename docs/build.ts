@@ -76,7 +76,8 @@ for (const f of readdirSync(videos)) if (!used.has(f)) rmSync(join(videos, f))
 for (const f of readdirSync(dist)) if (f.endsWith(".html")) rmSync(join(dist, f))
 const template = readFileSync(join(root, "template.html"), "utf8")
 for (const p of site) {
-  const nav = site.map(q => `<a href="${q.file}"${q === p ? ' aria-current="page"' : ""}>${q.title}</a>`)
+  const nav = site.map(q =>
+    q === p ? `<a href="${q.file}" aria-current="page">${q.title}</a><div>${q.links.join("")}</div>` : `<a href="${q.file}">${q.title}</a>`)
   writeFileSync(
     join(dist, p.file),
     template.replace("{{title}}", () => escape(p.name))

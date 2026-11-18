@@ -14,7 +14,7 @@ Open `dist/index.html`. Needs ffmpeg.
 
 ## Deploy
 
-The site is static and hosted on Cloudflare Pages. Build it on a Mac, because the examples are rendered with the CLI and ffmpeg, then upload `dist/`:
+The site is static and hosted on Cloudflare at https://origami-docs.veri-web.workers.dev. Build it on a Mac, because the examples are rendered with the CLI and ffmpeg, then upload `dist/`:
 
 ```
 bun run deploy
