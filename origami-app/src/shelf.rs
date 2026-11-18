@@ -328,6 +328,18 @@ impl Shelf {
         }
     }
 
+    pub fn clear(&self) -> bool {
+        let Some((mut log, _held)) = self.hold(Duration::from_millis(240)) else {
+            return false;
+        };
+        if self.mine() == Some(false) {
+            return false;
+        }
+        self.queue.lock().unwrap().clear();
+        *log = None;
+        ["log", "index"].iter().all(|name| swap(&self.dir.join(name), &[], true).is_ok())
+    }
+
     fn mine(&self) -> Option<bool> {
         let path = self.dir.join("path");
         let kept = slice(&path, 0, len(&path)).filter(|p| !p.is_empty())?;

@@ -26,7 +26,7 @@ cp "${CARGO_TARGET_DIR:-origami-engine/target}/release/origami" "$bin/"
 if [ -n "${FFMPEG_DIR:-}" ]; then
   cp "$FFMPEG_DIR/ffmpeg" "$FFMPEG_DIR/ffprobe" "$bin/"
 fi
-cp LICENSE.md THIRD-PARTY.md "$app/Contents/Resources/"
+cp LICENSE.md THIRD-PARTY.md THIRD-PARTY-LICENSES.txt "$app/Contents/Resources/"
 
 cat > "$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>

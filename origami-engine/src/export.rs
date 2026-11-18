@@ -401,14 +401,18 @@ pub fn render(tl: &Timeline, out: &str, o: &Opts, mut progress: impl FnMut(f64))
             file.display()
         );
     }
-    if fs::symlink_metadata(out).is_ok_and(|m| !m.is_file() && !m.is_dir()) {
-        fs::remove_file(out)?;
-    }
-    let dir = room();
+    let (dir, mut salt) = (room(), [0; 8]);
+    fs::File::open("/dev/urandom")?.read_exact(&mut salt)?;
+    let part = Path::new(out).with_file_name(format!(
+        ".{:016x}.{}",
+        u64::from_le_bytes(salt),
+        Path::new(out).file_name().unwrap_or_default().to_string_lossy()
+    ));
+    let part = &*part.to_string_lossy();
     let mut child = start(
         ffmpeg()
             .args(["-v", "error", "-nostats", "-progress", "pipe:1"])
-            .args(args(tl, out, o, &dir))
+            .args(args(tl, part, o, &dir))
             .stdin(if pipe { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped()),
@@ -449,6 +453,9 @@ pub fn render(tl: &Timeline, out: &str, o: &Opts, mut progress: impl FnMut(f64))
     child.stderr.take().unwrap().read_to_string(&mut err)?;
     let done = child.wait()?.success();
     let _ = fs::remove_dir_all(dir);
+    if !done || stuck.load(Relaxed) {
+        let _ = fs::remove_file(part);
+    }
     if stuck.load(Relaxed) {
         bail!("export of {out} stopped: ffmpeg made no progress for {} seconds", STALL.as_secs());
     }
@@ -462,7 +469,10 @@ pub fn render(tl: &Timeline, out: &str, o: &Opts, mut progress: impl FnMut(f64))
         let at = clip.map_or(String::new(), |c| format!(" at line {} ({})", c.line, c.label));
         bail!("export of {out} failed{at}: {}", why.chars().take(200).collect::<String>());
     }
-    Ok(())
+    fs::rename(part, out).or_else(|e| {
+        let _ = fs::remove_file(part);
+        bail!("export of {out} failed: {e}")
+    })
 }
 
 #[cfg(test)]
@@ -475,7 +485,7 @@ mod tests {
 
     // Slow and very fast motion with sound, a fade longer than its clip and layers too small to see export
     // and play, two exports at once neither disturb each other nor leave files behind, and a failing export
-    // says what failed and, when a clip caused it, on which line.
+    // says what failed and, when a clip caused it, on which line, keeping the file that was there.
     #[test]
     fn exports_odd_timelines() {
         let _tidy = TIDY.write();
@@ -520,7 +530,15 @@ mod tests {
         assert_eq!(left.count(), 0);
         let gone = tl("text('a').for(1)\nvideo('b.mp4').trim(0, 1)");
         fs::remove_file(dir.join("b.mp4")).unwrap();
+        fs::write(out("gone.mp4"), "old").unwrap();
         let e = render(&gone, &out("gone.mp4"), &Opts::default(), |_| {}).unwrap_err().to_string();
+        assert_eq!(fs::read_to_string(out("gone.mp4")).unwrap(), "old");
+        assert!(
+            fs::read_dir(&dir)
+                .unwrap()
+                .flatten()
+                .all(|e| !e.file_name().to_string_lossy().starts_with('.'))
+        );
         assert!(
             e.starts_with(&format!("export of {} failed at line 2 (b): ", out("gone.mp4"))),
             "{e}"

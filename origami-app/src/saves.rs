@@ -35,6 +35,7 @@ pub struct Saves {
     zone: i64,
     diff: Option<Diff>,
     mark: Option<String>,
+    sure: bool,
 }
 fn changed(row: &Row) -> bool {
     matches!(row, Row::Gone(_) | Row::Came(_))
@@ -251,6 +252,7 @@ impl Origami {
             top: 0.,
             diff: None,
             mark: None,
+            sure: false,
         })
     }
 
@@ -320,6 +322,28 @@ impl Origami {
         }
         self.change(|this| this.lines = lines);
         self.note = format!("restored {when} as a new save \u{b7} cmd+z undoes it");
+    }
+
+    pub fn wipe(&mut self, cx: &mut Context<Self>) {
+        let Some(shelf) = self.shelf.clone() else { return };
+        let mine = shelf.clone();
+        cx.spawn(async move |this, cx| {
+            let done = cx.background_executor().spawn(async move { shelf.clear() }).await;
+            this.update(cx, |this, cx| {
+                if !this.holds(&mine) {
+                    return;
+                }
+                this.note = match done {
+                    true => "removed this script's saved versions".into(),
+                    false => "saved versions could not be removed: try again".into(),
+                };
+                if let Some(s) = this.saves.as_mut().filter(|_| done) {
+                    (s.list, s.pick, s.diff, s.top) = (vec![], None, None, 0.);
+                }
+                cx.notify();
+            })
+        })
+        .detach();
     }
 
     fn spin(&mut self, by: f32) {
@@ -527,6 +551,30 @@ impl Origami {
                 );
             head.into_iter().chain([row])
         });
+        let sure = s.sure;
+        let ask = |label: &'static str, color: u32, wipe: bool| {
+            div()
+                .w(px(44.))
+                .flex()
+                .justify_end()
+                .cursor_pointer()
+                .text_color(rgb(color))
+                .hover(|s| s.text_color(rgb(TEXT)))
+                .child(label)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        if let Some(s) = &mut this.saves {
+                            s.sure = !sure;
+                        }
+                        if wipe {
+                            this.wipe(cx);
+                        }
+                        cx.stop_propagation();
+                        cx.notify();
+                    }),
+                )
+        };
         let foot = div()
             .h(px(26.))
             .flex_none()
@@ -538,8 +586,23 @@ impl Origami {
             .border_color(rgb(BORDER))
             .text_size(px(11.))
             .text_color(rgb(FAINT))
-            .child(format!("{} versions \u{b7} kept on this Mac, not in the project", s.list.len()))
-            .child("esc closes");
+            .child(match s.sure {
+                true => format!("Remove all {} versions? This cannot be undone.", s.list.len()),
+                false => format!("{} versions \u{b7} kept on this Mac, not in the project", s.list.len()),
+            })
+            .child(
+                div()
+                    .flex()
+                    .gap(px(12.))
+                    .child(match s.sure {
+                        true => ask("cancel", MUTED, false),
+                        false => div().child("esc closes"),
+                    })
+                    .child(match s.sure {
+                        true => ask("remove", RED, true),
+                        false => ask("clear", MUTED, false),
+                    }),
+            );
         Some(panel.p(px(4.)).children(lines.collect::<Vec<_>>()).child(foot))
     }
 
@@ -702,6 +765,7 @@ mod tests {
             zone: 0,
             diff: None,
             mark: None,
+            sure: false,
         };
         let rows: Vec<_> = saves
             .shown(NOW)
@@ -856,6 +920,34 @@ mod tests {
         cx.run_until_parked();
         let shown = view.update(cx, |o, _| o.saves.as_ref().map(|s| (s.list.len(), s.pick, s.diff.is_none())));
         assert_eq!(shown, Some((2, None, true)));
+    }
+
+    // The clear button asks first, cancel keeps every version, and remove or :history clear deletes
+    // them all from the script's history.
+    #[gpui::test]
+    fn clears_by_command_and_click(cx: &mut TestAppContext) {
+        let (view, cx, _) = open(cx, "clear", &[&["a"], &["b"], &["c"]]);
+        let w = cx.update(|window, _| f32::from(window.viewport_size().width));
+        let kept = |cx: &mut VisualTestContext, at: Option<f32>| {
+            if let Some(x) = at {
+                cx.simulate_click(point(px(x), px(179.)), Modifiers::default());
+            }
+            cx.run_until_parked();
+            view.update(cx, |o, _| {
+                (o.shelf.as_ref().unwrap().list().len(), o.saves.as_ref().map(|s| s.list.len()))
+            })
+        };
+        cx.simulate_keystrokes("cmd-y");
+        let asked = [kept(cx, Some(w - 30.)), kept(cx, Some(w - 86.)), kept(cx, Some(w - 30.))];
+        assert_eq!(asked, [(3, Some(3)); 3]);
+        assert_eq!(kept(cx, Some(w - 30.)), (0, Some(0)));
+        view.update(cx, |o, cx| {
+            o.shelve("d\n".into());
+            o.stow(cx);
+        });
+        assert_eq!(kept(cx, None).0, 1);
+        cx.simulate_keystrokes(": h i s t o r y space c l e a r enter");
+        assert_eq!(kept(cx, None).0, 0);
     }
 
     // :history, cmd+Y, File > History, j k enter esc and ]c [c reach the same states as clicking the

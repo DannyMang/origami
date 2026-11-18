@@ -1,6 +1,6 @@
 # Third-party notices
 
-Origami is made of the three crates in this repository and the open-source Rust crates below, each used under the licence shown. Where a crate offers a choice of licences, Origami uses it under any one of them. Each crate's licence text and copyright notice are in its source, linked in the last column.
+Origami is made of the three crates in this repository and the open-source Rust crates below, each used under the licence shown. Where a crate offers a choice of licences, Origami uses it under any one of them. The licence texts and copyright notices are in [THIRD-PARTY-LICENSES.txt](THIRD-PARTY-LICENSES.txt), which ships inside the app next to this file.
 
 The list covers every crate compiled into the app and the `origami` command-line tool for Apple silicon, build-time tools included, and leaves out crates used only by tests. It comes from `cargo metadata` and changes when a `Cargo.lock` changes.
 

@@ -114,4 +114,4 @@ Open an issue at [github.com/DannyMang/origami/issues](https://github.com/DannyM
 
 ## Licence
 
-[FSL-1.1-ALv2](LICENSE.md): use, change and share Origami for any purpose except a commercial product or service that competes with it. Each release becomes Apache-2.0 two years after it ships. The open-source crates Origami is built with are listed in [THIRD-PARTY.md](THIRD-PARTY.md).
+[FSL-1.1-ALv2](LICENSE.md): use, change and share Origami for any purpose except a commercial product or service that competes with it. Each release becomes Apache-2.0 two years after it ships. The open-source crates Origami is built with are listed in [THIRD-PARTY.md](THIRD-PARTY.md), with their licence texts in [THIRD-PARTY-LICENSES.txt](THIRD-PARTY-LICENSES.txt).
