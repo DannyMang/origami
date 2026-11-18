@@ -1,3 +1,10 @@
 node_modules
 media/origami.lock
 media/.example.*
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
+.env*
+!.env.example

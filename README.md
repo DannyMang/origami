@@ -80,7 +80,7 @@ If macOS stops it the first time, allow it in Privacy & Security as above, or ru
 
 The guide and language reference are in [`docs/pages`](docs/pages): [Intro](docs/pages/00-intro.md), [Basics](docs/pages/01-basics.md), [Video](docs/pages/02-video.md), [Arranging](docs/pages/03-arranging.md), [Methods](docs/pages/04-methods.md), [Color](docs/pages/05-color.md), [Editor](docs/pages/06-editor.md), [Motion](docs/pages/07-motion.md) and the [Changelog](docs/pages/08-changelog.md).
 
-Read them online, with every example rendered, at DOCS_URL <!-- replace DOCS_URL with the hosted docs address -->.
+Read them online, with every example rendered, at https://origami-docs.veri-web.workers.dev.
 
 `CONTRIBUTING.md` maps the code and `docs/README.md` explains how to build the docs.
 
