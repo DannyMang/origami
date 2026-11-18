@@ -1,0 +1,62 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{title}} · Origami Docs</title>
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #282c33; --bar: #3b414d; --code: #2f343e; --line: #464b57;
+  --fg: #dce0e5; --dim: #a9afbc; --accent: #74ade8;
+  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box }
+html { scroll-padding-top: 72px }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 var(--sans) }
+header { position: sticky; top: 0; z-index: 5; height: 56px; display: flex; align-items: baseline; gap: 8px; background: var(--bar); padding: 14px 16px }
+header b { font-size: 20px }
+header span { font-size: 14px; font-weight: 500 }
+.wrap { display: flex; gap: 48px; max-width: 1280px; padding: 24px 16px 96px }
+nav, aside { flex: none; position: sticky; top: 72px; align-self: flex-start; max-height: calc(100vh - 88px); overflow-y: auto; display: flex; flex-direction: column }
+nav { width: 200px; gap: 2px }
+nav a, aside a { text-decoration: none; border-radius: 4px }
+nav a { color: var(--fg); padding: 4px 12px }
+nav a:hover, nav a:focus-visible, nav a[aria-current] { background: var(--bar); outline: none }
+nav a[aria-current] { font-weight: 600 }
+aside { width: 180px; order: 1; font-size: 14px }
+aside b { font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--dim); padding: 0 12px 6px }
+aside a { color: var(--dim); padding: 2px 12px; border-left: 2px solid var(--line); border-radius: 0 }
+aside a:hover, aside a:focus-visible { color: var(--fg); outline: none }
+aside a[aria-current] { color: var(--accent); border-color: var(--accent) }
+aside:not(:has(a)) { visibility: hidden }
+main { flex: 1; min-width: 0; max-width: 740px }
+main > * { margin: 8px 0 0 }
+main h1 { font-size: 28px; font-weight: 700; margin-top: 48px }
+main h1:first-child { margin-top: 0 }
+main h2 { font: 600 18px var(--mono); margin-top: 28px; color: var(--accent) }
+main a { color: var(--accent) }
+p, li { color: var(--dim) }
+code { font: 14px/1.6 var(--mono) }
+pre { padding: 12px 16px; background: var(--code); border: 1px solid var(--line); border-radius: 6px; overflow-x: auto }
+video, img { display: block; max-width: 100%; border: 1px solid var(--line); border-radius: 6px }
+table { border-collapse: collapse; display: block; overflow-x: auto }
+th, td { text-align: left; vertical-align: top; padding: 6px 12px; border: 1px solid var(--line); color: var(--dim) }
+th { background: var(--code); color: var(--fg) }
+@media (max-width: 1000px) { aside { display: none } }
+@media (max-width: 720px) { nav { display: none } }
+</style>
+<header><b>origami</b><span>DOCS</span></header>
+<div class="wrap"><nav>{{nav}}</nav><aside><b>On this page</b>{{toc}}</aside><main>{{main}}</main></div>
+<script>
+const links = [...document.querySelectorAll("aside a")]
+const heads = links.map(a => document.getElementById(decodeURIComponent(a.hash.slice(1))))
+const spy = () => {
+  const end = innerHeight + scrollY >= document.documentElement.scrollHeight - 2
+  const at = end ? heads.length - 1 : Math.max(0, heads.findLastIndex(h => h.getBoundingClientRect().top <= 80))
+  links.forEach((a, i) => i === at ? a.setAttribute("aria-current", "true") : a.removeAttribute("aria-current"))
+  links[at]?.scrollIntoView({ block: "nearest" })
+}
+addEventListener("scroll", spy, { passive: true })
+addEventListener("resize", spy)
+spy()
+</script>

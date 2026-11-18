@@ -1,0 +1,16 @@
+[package]
+name = "origami-app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+gpui = { version = "0.2.2", features = ["runtime_shaders"] }
+image = "0.25"
+origami-engine = { path = "../origami-engine" }
+origami-lang = { path = "../origami-lang" }
+regex = "1"
+serde_json = "1.0.154"
+
+[dev-dependencies]
+gpui = { version = "0.2.2", features = ["test-support"] }

@@ -1,0 +1,402 @@
+use crate::{
+    Origami, crash,
+    menu::menus,
+    release::VERSION,
+    view::{BAR, DIM, TEXT},
+};
+use gpui::{Context, Div, MouseButton, div, prelude::*, px, rgb};
+use origami_engine::{Opts, sized};
+use origami_lang::Timeline;
+use regex::Regex;
+use serde_json::{Value, json};
+use std::{
+    env,
+    fs::{self, OpenOptions},
+    io::{Read, Seek, SeekFrom, Write},
+    os::unix::fs::OpenOptionsExt,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+    sync::{LazyLock, Mutex, MutexGuard, PoisonError},
+    thread,
+};
+
+const HOST: &str = "https://us.i.posthog.com";
+const NOFOLLOW_NONBLOCK: i32 = 0x0100 | 0x0004;
+const KEY: &str = match option_env!("ORIGAMI_POSTHOG_KEY") {
+    Some(key) => key,
+    None => "",
+};
+
+type Said = (String, String, usize);
+
+static SAID: LazyLock<Mutex<Said>> = LazyLock::new(|| Mutex::new(read(&file())));
+
+static MAC: LazyLock<String> = LazyLock::new(|| crash::reply(Command::new("/usr/bin/sw_vers").arg("-productVersion")));
+
+fn file() -> PathBuf {
+    crash::home().join("Library/Application Support/Origami/pulse")
+}
+
+fn said() -> MutexGuard<'static, Said> {
+    SAID.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn read(file: &Path) -> Said {
+    let kept = origami_lang::load(file).unwrap_or_default();
+    let mut lines = kept.lines();
+    let mut next = || lines.next().unwrap_or_default().to_string();
+    (next(), next(), next().parse().unwrap_or(0))
+}
+
+fn write(file: &Path, (answer, id, mark): &Said) {
+    let _ = file.parent().map(fs::create_dir_all);
+    let _ = origami_lang::save(file, format!("{answer}\n{id}\n{mark}\n"));
+}
+
+fn fresh() -> String {
+    let mut raw = [0; 16];
+    let read = fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut raw));
+    read.map(|_| raw.iter().map(|b| format!("{b:02x}")).collect()).unwrap_or_default()
+}
+
+fn settle(said: &mut Said, yes: bool) {
+    said.0 = if yes { "yes" } else { "no" }.into();
+    if yes && said.1.is_empty() {
+        said.1 = fresh();
+    }
+}
+
+fn stance(key: &str, off: bool, answer: &str) -> Option<Option<bool>> {
+    (!key.is_empty() && !off).then(|| (!answer.is_empty()).then(|| answer == "yes"))
+}
+
+fn now() -> Option<Option<bool>> {
+    let off = cfg!(test) || env::var_os("ORIGAMI_NO_TELEMETRY").is_some();
+    stance(KEY, off, &said().0)
+}
+
+pub fn shared() -> Option<bool> {
+    now().map(|a| a == Some(true))
+}
+
+fn payload(key: &str, id: &str, event: &str, mut properties: Value) -> Value {
+    properties["$process_person_profile"] = false.into();
+    properties["$geoip_disable"] = true.into();
+    properties["app"] = VERSION.into();
+    properties["macos"] = MAC.as_str().into();
+    properties["chip"] = env::consts::ARCH.into();
+    json!({ "api_key": key, "event": event, "distinct_id": id, "properties": properties })
+}
+
+fn post(event: &'static str, properties: Value) {
+    let id = said().1.clone();
+    if now() != Some(Some(true)) || id.is_empty() {
+        return;
+    }
+    let _ = thread::Builder::new().spawn(move || {
+        let body = payload(KEY, &id, event, properties).to_string();
+        let mut sent = origami_lang::start(
+            curl(&format!("{HOST}/i/v0/e/"))
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null()),
+        )?;
+        let _ = sent.stdin.take().map(|mut i| i.write_all(body.as_bytes()));
+        sent.wait()
+    });
+}
+
+fn curl(to: &str) -> Command {
+    let mut cmd = Command::new("/usr/bin/curl");
+    let json = "Content-Type: application/json";
+    cmd.args(["-q", "--proto", "=https", "-fs", "--max-time", "5", "-H", json, "-d", "@-", to]);
+    cmd
+}
+
+pub fn beat(event: &'static str) {
+    post(event, json!({}));
+}
+
+pub fn exported(tl: &Timeline, o: &Opts, succeeded: bool) {
+    let (codec, (width, height)) = (format!("{:?}", o.codec).to_lowercase(), sized(tl, o).1);
+    let seconds = o.range.map_or(tl.duration, |(a, b)| b - a).round() as u64;
+    post(
+        "exported",
+        json!({ "codec": codec, "width": width, "height": height, "seconds": seconds, "succeeded": succeeded }),
+    );
+}
+
+const SHAPES: &str = concat!(
+    r"^(index out of bounds: the len is \d+ but the index is \d+$",
+    r"|called `Option::unwrap\(\)` on a `None` value$",
+    r"|called `Result::unwrap\(\)` on an `Err` value",
+    r"|attempt to (add|subtract|multiply|negate|shift left|shift right) with overflow$",
+    r"|attempt to (divide|calculate the remainder) (by|with a divisor of) zero$",
+    r"|byte index \d+ is (not a char boundary|out of bounds)",
+    r"|range (start|end) index \d+ out of range for slice of length \d+$",
+    r"|slice index starts at \d+ but ends at \d+$",
+    r"|capacity overflow$)"
+);
+
+fn crash(log: &str) -> Option<(String, String)> {
+    let (at, what) = log.rsplit_once(crash::MARK)?.1.lines().next()?.split_once('\t')?;
+    let from = at.rfind("/src/").and_then(|i| at[..i].rfind('/'));
+    let from = from.or(at.rfind('/').filter(|_| at.starts_with('/'))).map_or(0, |i| i + 1);
+    let fixed = |shape: &str, s: &str, or: &str| Some(Regex::new(shape).ok()?.find(s).map_or(or, |m| m.as_str()).to_string());
+    let what = fixed(SHAPES, what, "panic")?;
+    Some((what, fixed(r"^[a-z0-9_./-]+\.rs:\d+:\d+$", &at[from..], "unknown")?))
+}
+
+fn tail(log: &Path, mark: u64) -> Option<(String, u64)> {
+    let mut f = OpenOptions::new().read(true).custom_flags(NOFOLLOW_NONBLOCK).open(log).ok()?;
+    let end = f.metadata().ok().filter(|m| m.is_file())?.len();
+    let from = if mark <= end { mark } else { 0 }.max(end.saturating_sub(1 << 20));
+    f.seek(SeekFrom::Start(from)).ok()?;
+    let mut buf = vec![];
+    f.take(end - from).read_to_end(&mut buf).ok()?;
+    Some((String::from_utf8_lossy(&buf).into(), end))
+}
+
+pub fn launch() {
+    let mark = said().2;
+    let (log, end) = tail(&crash::journal(), mark as u64).unwrap_or_default();
+    if mark as u64 != end {
+        said().2 = end as usize;
+        write(&file(), &said());
+    }
+    if let Some((message, at)) = crash(&log) {
+        post("crash", json!({ "message": message, "at": at }));
+    }
+    beat("app opened");
+}
+
+impl Origami {
+    pub fn share(&mut self, yes: bool, cx: &mut Context<Self>) {
+        let mut said = said();
+        settle(&mut said, yes);
+        write(&file(), &said);
+        drop(said);
+        cx.set_menus(menus(&self.recent));
+        cx.notify();
+    }
+
+    pub fn consent(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let pick = |label: &'static str, yes: bool| {
+            div()
+                .px_2()
+                .rounded(px(3.))
+                .bg(rgb(BAR))
+                .text_color(rgb(TEXT))
+                .cursor_pointer()
+                .child(label)
+                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| this.share(yes, cx)))
+        };
+        (now() == Some(None)).then(|| {
+            div()
+                .absolute()
+                .bottom(px(52.))
+                .flex()
+                .items_center()
+                .gap_2()
+                .text_size(px(12.))
+                .text_color(rgb(DIM))
+                .child("Help improve Origami? Send anonymous usage and crash reports.")
+                .child(pick("Yes", true))
+                .child(pick("No thanks", false))
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Nothing is sent, asked or shown in the menu while the key is empty or ORIGAMI_NO_TELEMETRY is
+    // set; with a key the question shows until it is answered, and events go only after a yes.
+    #[test]
+    fn sends_only_after_a_yes() {
+        for answer in ["", "yes", "no"] {
+            assert_eq!(stance("", false, answer), None);
+            assert_eq!(stance("key", true, answer), None);
+        }
+        assert_eq!(stance("key", false, ""), Some(None));
+        assert_eq!(stance("key", false, "yes"), Some(Some(true)));
+        assert_eq!(stance("key", false, "no"), Some(Some(false)));
+        assert_eq!(stance("key", false, "junk"), Some(Some(false)));
+        assert_eq!((now(), shared()), (None, None));
+    }
+
+    // An event carries the key, its name, the install id and exactly its own properties plus the
+    // anonymous flags, app version, macOS version and chip, and curl reads it from stdin, over HTTPS only,
+    // ignoring any curl settings file.
+    #[test]
+    fn builds_the_payload() {
+        let sent = payload("key", "abc", "exported", json!({ "codec": "h264", "seconds": 12 }));
+        let properties = json!({
+            "codec": "h264",
+            "seconds": 12,
+            "$process_person_profile": false,
+            "$geoip_disable": true,
+            "app": VERSION,
+            "macos": MAC.as_str(),
+            "chip": env::consts::ARCH,
+        });
+        let whole = json!({ "api_key": "key", "event": "exported", "distinct_id": "abc", "properties": properties });
+        assert_eq!(sent, whole);
+        assert_eq!(
+            payload("key", "abc", "font picked", json!({}))["properties"]
+                .as_object()
+                .unwrap()
+                .len(),
+            5
+        );
+        let args: Vec<String> = curl("https://x/").get_args().map(|a| a.to_string_lossy().into()).collect();
+        assert!(args[..3] == ["-q", "--proto", "=https"] && args.ends_with(&["-d".into(), "@-".into(), "https://x/".into()]));
+    }
+
+    // A crash report is the newest panic's first line only when it is one of the standard library's
+    // fixed messages (with any text after the fixed part dropped), otherwise just "panic", and the source
+    // file the panic hook recorded, without the folders above the crate, or "unknown" when that does not
+    // look like a source file, whatever the panic message itself says.
+    #[test]
+    fn scrubs_a_crash() {
+        let log = |at: &str, what: &str| {
+            let first = what.lines().next().unwrap_or_default();
+            format!(
+                "Mon thread 'main' panicked at old.rs:1:1:\nold\n\u{1e}old.rs:1:1\told\nTue thread 'main' panicked at {at}:\n{what}\n   0: frame\n\u{1e}{at}\t{first}\n"
+            )
+        };
+        let report = |at: &str, what: &str| crash(&log(at, what)).unwrap();
+        let app = "/Users/me/code/origami-app/src/view.rs:10:5";
+        assert_eq!(
+            report(app, "called `Result::unwrap()` on an `Err` value: missing /Users/me/trip/clip.mp4"),
+            (
+                "called `Result::unwrap()` on an `Err` value".into(),
+                "origami-app/src/view.rs:10:5".into()
+            )
+        );
+        for kept in [
+            "called `Option::unwrap()` on a `None` value",
+            "index out of bounds: the len is 3 but the index is 7",
+            "attempt to subtract with overflow",
+            "attempt to divide by zero",
+            "range end index 9 out of range for slice of length 4",
+            "capacity overflow",
+        ] {
+            assert_eq!(report("src/main.rs:3:9", kept).0, kept);
+        }
+        assert_eq!(
+            report(
+                "src/main.rs:3:9",
+                "byte index 2 is not a char boundary; it is inside 'é' of `text(\"héllo\")`"
+            )
+            .0,
+            "byte index 2 is not a char boundary"
+        );
+        for dropped in [
+            "clip Acme merger teaser for Bob Smith has no frames",
+            "no file at /Users/me/My Films/a.mov today",
+            "\u{201c}smart quoted secret\u{201d}",
+            "Token ghp_abcdefghijklmnop leaked",
+            "index out of bounds: the len is 3 but the index is 7 for Bob",
+            &"x".repeat(900),
+        ] {
+            assert_eq!(report("src/main.rs:3:9", dropped).0, "panic");
+        }
+        assert_eq!(
+            report("/Users/me/.cargo/registry/src/index/gpui-0.2.2/src/app.rs:7:1", "x").1,
+            "gpui-0.2.2/src/app.rs:7:1"
+        );
+        assert_eq!(report("/Users/me/odd.rs:7:1", "x").1, "odd.rs:7:1");
+        assert_eq!(
+            report("origami/origami-engine/src/lut.rs:4:2", "x").1,
+            "origami-engine/src/lut.rs:4:2"
+        );
+        assert_eq!(
+            report(
+                "~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gpui-0.2.2/src/app.rs:7:1",
+                "x"
+            )
+            .1,
+            "gpui-0.2.2/src/app.rs:7:1"
+        );
+        assert_eq!(report("src/main.rs:3:9", "x").1, "src/main.rs:3:9");
+        assert_eq!(report("Bob Smith.rs:1:1", "x").1, "unknown");
+        assert_eq!(crash("Mon saved unsaved code\n"), None);
+        let file = env::temp_dir().join("origami-scrub-test/origami.log");
+        let _ = fs::remove_file(&file);
+        let fake = "`x panicked at acme-merger/q3-layoffs-draft.rs:1:1:\nindex out of bounds: the len is 1 but the index is 2`";
+        let what = format!("byte index 1 is not a char boundary; it is inside 'é' of {fake}\n\u{1e}acme.rs:1:1\tcapacity overflow");
+        let at = format!("origami-app/src/words.rs:9:9\t{}", what.lines().next().unwrap());
+        crash::record(&format!("panicked at origami-app/src/words.rs:9:9:\n{what}"), &at, &file);
+        assert_eq!(
+            tail(&file, 0).and_then(|(log, _)| crash(&log)),
+            Some(("byte index 1 is not a char boundary".into(), "origami-app/src/words.rs:9:9".into()))
+        );
+    }
+
+    // The crash log is read from the last launch's mark and at most its last megabyte, never through a
+    // link or a pipe, and moves to origami.log.old once it is over 4 MB.
+    #[test]
+    fn reads_only_new_crashes() {
+        let dir = env::temp_dir().join("origami-tail-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("origami.log");
+        fs::write(&log, vec![b'x'; 3 << 20]).unwrap();
+        let read = |mark| tail(&log, mark).map(|(text, end)| (text.len(), end));
+        let want = [(1 << 20, 3 << 20), (5, 3 << 20), (1 << 20, 3 << 20)].map(Some);
+        assert_eq!([0, (3 << 20) - 5, 4 << 20].map(read), want);
+        fs::write(&log, vec![b'x'; 5 << 20]).unwrap();
+        crash::record("panicked at a.rs:1:1:\nboom", "a.rs:1:1\tboom", &log);
+        let (text, end) = tail(&log, 5 << 20).unwrap();
+        assert_eq!(
+            (crash(&text), end as usize),
+            (Some(("panic".into(), "a.rs:1:1".into())), text.len())
+        );
+        assert_eq!(fs::metadata(dir.join("origami.log.old")).unwrap().len(), 5 << 20);
+        fs::remove_file(&log).unwrap();
+        std::os::unix::fs::symlink(dir.join("origami.log.old"), &log).unwrap();
+        assert_eq!(tail(&log, 0), None);
+        fs::remove_file(&log).unwrap();
+        assert!(origami_lang::status(Command::new("mkfifo").arg(&log)).unwrap().success());
+        assert_eq!(tail(&log, 0), None);
+    }
+
+    // The answer, the install id and the crash mark survive a relaunch, the id is random, made only
+    // on a yes and kept when the answer changes, a missing or damaged file or a pipe reads as
+    // unanswered, and a link or pipe in its place is replaced, not written through.
+    #[test]
+    fn keeps_the_answer_and_id() {
+        let file = env::temp_dir().join("origami-pulse-test/Origami/pulse");
+        let _ = fs::remove_dir_all(file.parent().unwrap());
+        assert_eq!(read(&file), (String::new(), String::new(), 0));
+        let mut said = read(&file);
+        settle(&mut said, false);
+        assert_eq!(said, ("no".into(), String::new(), 0));
+        settle(&mut said, true);
+        let id = said.1.clone();
+        assert!(id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()) && id != fresh());
+        said.2 = 77;
+        write(&file, &said);
+        assert_eq!(read(&file), ("yes".into(), id.clone(), 77));
+        let mut again = read(&file);
+        settle(&mut again, false);
+        settle(&mut again, true);
+        write(&file, &again);
+        assert_eq!(read(&file), ("yes".into(), id, 77));
+        fs::write(&file, "yes").unwrap();
+        assert_eq!(read(&file), ("yes".into(), String::new(), 0));
+        let other = file.with_file_name("other");
+        fs::write(&other, "keep").unwrap();
+        fs::remove_file(&file).unwrap();
+        std::os::unix::fs::symlink(&other, &file).unwrap();
+        write(&file, &again);
+        assert!(fs::read_to_string(&other).unwrap() == "keep" && !file.is_symlink());
+        fs::remove_file(&file).unwrap();
+        assert!(origami_lang::status(Command::new("mkfifo").arg(&file)).unwrap().success());
+        assert_eq!(read(&file), (String::new(), String::new(), 0));
+        write(&file, &again);
+        assert_eq!(read(&file), again);
+    }
+}
