@@ -6,6 +6,7 @@ What changed in each version of Origami. The launch screen shows the version you
 
 ### Nov 20
 
+- The timeline's thumbnails fill in about twice as fast for footage that has a small `.LRF` copy beside it, as DJI and GoPro cameras record: they are read from that copy, so they look the same at the same size. A copy that cannot be read, or that ends before the clip does, is skipped for the clip itself.
 - Pressing play no longer freezes the window while Origami reads the media it is about to play. The play button changes at once and the playhead waits where it is until the sound is ready, so a file that takes long to read (up to 20 seconds for one that never answers) no longer stops typing, scrolling or pausing meanwhile.
 - Clicking in the code no longer selects a letter by accident when the pointer slips a pixel during the click. Before, that hidden one-letter selection made the next backspace remove it, which could be the letter after the caret. Dragging more than 3 pixels still selects.
 - The caret in the search field sits right after the last letter instead of a gap away, and in front of the greyed "Search…" hint while the field is empty.

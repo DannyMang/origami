@@ -190,8 +190,13 @@ fn still(path: &str, t: f64, w: usize, h: usize) -> Option<Vec<u8>> {
 }
 
 pub fn thumb(path: &str, t: f64, w: usize, h: usize) -> Option<Vec<u8>> {
-    let ((lead, down, ..), fast) = (probe(path), ["-skip_frame", "nokey", "-ss", &t.to_string(), "-i", path]);
-    raw(&[lead, &fast, &["-vf", &format!("{down}scale={w}:{h}")]].concat(), w * h * 4)
+    let from = |path: &str| {
+        let ((lead, down, ..), fast) = (probe(path), ["-skip_frame", "nokey", "-ss", &t.to_string(), "-i", path]);
+        raw(&[lead, &fast, &["-vf", &format!("{down}scale={w}:{h}")]].concat(), w * h * 4)
+    };
+    let lrf = Path::new(path).with_extension("LRF");
+    let side = Some(lrf.to_string_lossy()).filter(|l| l != path && lrf.is_file());
+    side.and_then(|l| from(&l)).or_else(|| from(path))
 }
 
 const DAY: &str = if cfg!(test) { "60" } else { "86400" };
@@ -1169,6 +1174,32 @@ mod tests {
         assert_eq!(
             [seen("text", 2.), seen("short", 0.5), seen("short", 2.)],
             [(true, false), (false, true), (true, false)]
+        );
+    }
+
+    // A clip's timeline thumbnail comes from the .LRF sidecar beside it when that file has a picture at
+    // that time, and from the clip itself when the sidecar is unreadable or ends sooner.
+    #[test]
+    fn thumbnails_read_sidecars() {
+        let dir = scratch("thumbs");
+        for name in ["good", "text", "short"] {
+            film(&dir.join(format!("{name}.mp4")), "color=red:s=64x36:r=30:d=4", &["-g", "15"]);
+        }
+        film(&dir.join("good.LRF"), "color=blue:s=64x36:r=30:d=4", &["-g", "15", "-f", "mp4"]);
+        film(&dir.join("short.LRF"), "color=blue:s=64x36:r=30:d=1", &["-g", "15", "-f", "mp4"]);
+        fs::write(dir.join("text.LRF"), "not a video").unwrap();
+        let blue = |name: &str, t: f64| {
+            let px = thumb(&dir.join(name).to_string_lossy(), t, 16, 9).unwrap();
+            (px[(4 * 16 + 8) * 4] > 128, px[(4 * 16 + 8) * 4 + 2] > 128)
+        };
+        assert_eq!(
+            [
+                blue("good.mp4", 2.),
+                blue("text.mp4", 2.),
+                blue("short.mp4", 0.5),
+                blue("short.mp4", 2.)
+            ],
+            [(true, false), (false, true), (true, false), (false, true)]
         );
     }
 
