@@ -7,7 +7,7 @@ What changed in each version of Origami. The launch screen shows the version you
 ### Nov 20
 
 - Exports use less memory: a 1080p export keeps only the video frames its layers need, so its peak memory fell from about 105 MB to about 65 MB (about 88 to 52 MB with two or three video layers). A 4K export with three or more overlapping video layers, one of them slowed down, no longer restarts a decoder for every repeated frame, so it finishes several times sooner (about 6 s instead of 35 to 60 s for a 4-second example).
-- Stepping backwards a frame or a few frames at a time no longer pauses about every second: while you step through the frames Origami has kept, it reads the ones before them in the background. Stepping back 120 frames of 4K footage used to stop two to four times for about 0.3 s each, and now runs without a pause except where one clip cuts to another.
+- Stepping backwards one frame at a time no longer pauses about every second: while you step through the frames Origami has kept, it reads the ones before them in the background. Stepping back 120 frames of 4K footage used to stop two to three times for about 0.3 s each, and now runs without a pause except where one clip cuts to another. Stepping back three frames at a time pauses about a third as long. Going back over the same few seconds again can find a few more frames to read, because the frames read ahead take up to a quarter of the preview's frame memory.
 - A long timeline cut from a few media files uses less processor time while Origami sits idle: it checks each file for changes once per screen refresh instead of once per clip (with 451 clips from 34 files, about 0.05 ms of every 16 ms instead of 0.4 ms).
 
 ### Nov 19
