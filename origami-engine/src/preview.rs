@@ -675,15 +675,13 @@ impl Preview {
         self.held -= self.frames.push(at, Arc::new(px)).map_or(0, |f| f.1.len());
     }
 
-    fn drain(&mut self, key: &Key) {
+    fn drain(&mut self) {
         for i in (0..self.decoders.len()).rev() {
-            while self.decoders[i].0 == *key
-                && let Some((feed, _)) = &self.decoders[i].1.feed
-            {
+            while let Some((feed, _)) = &self.decoders[i].1.feed {
                 match feed.try_recv() {
                     Ok(px) => {
                         let len = px.len();
-                        self.keep((key.clone(), self.decoders[i].1.next), px);
+                        self.keep((self.decoders[i].0.clone(), self.decoders[i].1.next), px);
                         if let Some((_, give)) = &self.decoders[i].1.feed {
                             recycle(&mut self.spare, give, len);
                         }
@@ -726,7 +724,7 @@ impl Preview {
     }
 
     fn video(&mut self, key: Key, k: i64, rate: (f64, f64)) -> Option<Px> {
-        self.drain(&key);
+        self.drain();
         let (hit, lap) = (self.frames.get(&(key.clone(), k)).cloned(), self.lap(&key, k));
         let missed = hit.is_none();
         let px = hit.or_else(|| self.read(&key, k, lap, rate));
@@ -755,7 +753,7 @@ impl Preview {
                 }
             };
             let Some(px) = px else {
-                let died = d.child.take().is_some_and(|mut c| c.wait().is_ok_and(|s| !s.success()));
+                let died = d.feed.is_some() || d.child.take().is_some_and(|mut c| c.wait().is_ok_and(|s| !s.success()));
                 if died && again && self.decoder(key, k, d.next, rate).is_some() {
                     (again, d) = (false, self.decoders.pop()?.1);
                     continue;
@@ -945,6 +943,15 @@ impl Preview {
             if !self.frames.contains(&(key.clone(), first)) {
                 self.decoder(&key, first, first, rate);
             }
+        }
+        let fps = tl.fps as f64;
+        let gone = |c: &&Clip| self.back && c.kind == Kind::Video && c.scale.max() > 0. && c.end <= t + 1e-6 && t - 1. < c.end;
+        let last = tl.clips.iter().filter(gone).map(|c| c.end).fold(f64::MIN, f64::max);
+        for c in tl.clips.iter().filter(gone).filter(|c| c.end == last).cloned().collect::<Vec<_>>() {
+            let (tw, th, ..) = place(&c, (pw as f64, ph as f64), k);
+            let at = (((c.end - 1e-6) * fps).ceil() - 1.) / fps;
+            let (key, end, rate) = Self::cell(&c, at, tl.fps, (tw as usize, th as usize), false);
+            self.ahead(&key, end + 1, rate);
         }
         self.spare.clear();
         out
@@ -1275,6 +1282,45 @@ mod tests {
         stepped.reverse();
         assert!(kept);
         assert!(stepped == (0..=100).map(|k| shown(&mut played, k)).collect::<Vec<_>>());
+    }
+
+    // Stepping backwards toward a cut should read the last frames of the clip before it in the background,
+    // so crossing the cut finds them kept, and show the same pictures as playing forwards.
+    #[test]
+    fn stepping_back_reads_across_cuts() {
+        let dir = scratch("cut");
+        let files = [dir.join("a.mp4"), dir.join("b.mp4")];
+        for f in &files {
+            film(f, "testsrc=s=64x36:r=30:d=2", &[]);
+        }
+        let part = |i: usize| Clip {
+            src: files[i].to_string_lossy().into(),
+            w: 64,
+            h: 36,
+            start: 2. * i as f64,
+            end: 2. * i as f64 + 2.,
+            ..clip("video", "")
+        };
+        let tl = Timeline {
+            fps: 30,
+            size: (64, 36),
+            duration: 4.,
+            clips: vec![part(0), part(1)],
+            ..Default::default()
+        };
+        let (mut back, mut played) = (Preview::default(), Preview::default());
+        let shown = |pv: &mut Preview, k: i64| pv.frame(&tl, k as f64 / 30., (64, 36));
+        let mut stepped: Vec<_> = (70..=80).rev().map(|k| shown(&mut back, k)).collect();
+        let key = (files[0].to_string_lossy().into_owned(), 64, 36);
+        let kept = (0..500).any(|_| {
+            thread::sleep(std::time::Duration::from_millis(10));
+            shown(&mut back, 70);
+            (40..60).all(|k| back.frames.contains(&(key.clone(), k)))
+        });
+        stepped.extend((0..70).rev().map(|k| shown(&mut back, k)));
+        stepped.reverse();
+        assert!(kept);
+        assert!(stepped == (0..=80).map(|k| shown(&mut played, k)).collect::<Vec<_>>());
     }
 
     // A decoder whose ffmpeg dies while playing should be replaced at once, so the frames after it show
