@@ -1,5 +1,5 @@
 use crate::{
-    lut::{Lut, Rgb},
+    lut::{Lut, Rgb, spread},
     text,
 };
 use lru::LruCache;
@@ -194,22 +194,32 @@ pub fn mask(v: &Vignette, w: usize, h: usize) -> Arc<Vec<u8>> {
             let d = (dx.abs().powf(p) + dy.abs().powf(p)).powf(1. / p);
             (top * smooth(edge - soft, edge + soft, d)).round() as u8
         };
-        Arc::new((0..w * h).flat_map(|i| [tone, tone, tone, alpha(i)]).collect())
+        let mut px = vec![0; w * h * 4];
+        spread(&mut px, 4, |from, part| {
+            for (i, p) in (from / 4..).zip(part.chunks_exact_mut(4)) {
+                p.copy_from_slice(&[tone, tone, tone, alpha(i)]);
+            }
+        });
+        Arc::new(px)
     };
     MASKS.lock().unwrap().get_or_insert(format!("{v:?}|{w}x{h}"), draw).clone()
 }
 
-pub fn paint(g: &Grade, px: Arc<Vec<u8>>, (w, h): (usize, usize)) -> Arc<Vec<u8>> {
+pub fn paint(g: &Grade, px: Arc<Vec<u8>>, (w, h): (usize, usize), out: Vec<u8>) -> Arc<Vec<u8>> {
     let (lut, mask) = (lut(g), g.vignette.as_ref().map(|v| mask(v, w, h)));
     if lut.is_none() && mask.is_none() {
         return px;
     }
-    let mut out = lut.map_or_else(|| px.to_vec(), |l| l.apply(&px));
-    for (d, m) in out.chunks_exact_mut(4).zip(mask.iter().flat_map(|m| m.chunks_exact(4))) {
-        let a = m[3] as u32;
-        for i in 0..3 {
-            d[i] = (((d[i] as u32 * (255 - a) + m[i] as u32 * a + 128) * 257) >> 16) as u8;
-        }
+    let mut out = lut.map_or_else(|| px.to_vec(), |l| l.apply(&px, out));
+    if let Some(m) = &mask {
+        spread(&mut out, 4, |from, part| {
+            for (d, m) in part.chunks_exact_mut(4).zip(m[from.min(m.len())..].chunks_exact(4)) {
+                let a = m[3] as u32;
+                for i in 0..3 {
+                    d[i] = (((d[i] as u32 * (255 - a) + m[i] as u32 * a + 128) * 257) >> 16) as u8;
+                }
+            }
+        });
     }
     Arc::new(out)
 }
@@ -291,7 +301,8 @@ mod tests {
     }
 
     // Applying a colour table to a whole picture should give exactly the bytes that sampling the
-    // table at each pixel gives, for any table and any pixel, and keep each pixel's alpha.
+    // table at each pixel gives, for any table and any pixel, keep each pixel's alpha and leave
+    // nothing of the picture it writes over.
     #[test]
     fn applying_matches_sampling() {
         let mut seed = 7u64;
@@ -312,7 +323,7 @@ mod tests {
                     .map(|v| (v as f32 * 255.) as u8);
                 [b, g, r, s[3]]
             });
-            assert!(lut.apply(&px).into_iter().eq(want), "{n}");
+            assert!(lut.apply(&px, vec![7; px.len()]).into_iter().eq(want), "{n}");
         }
     }
 }

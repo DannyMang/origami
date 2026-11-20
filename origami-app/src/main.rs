@@ -33,7 +33,7 @@ use gpui::{
 };
 use image::{Frame, RgbaImage};
 use mouse::Grab;
-use origami_engine::{Player, Preview, footprint, halt, peaks, thumb};
+use origami_engine::{Player, Preview, footprint, halt, learn, peaks, thumb};
 use origami_lang::{Clip, Kind, Timeline};
 use std::{
     cell::RefCell,
@@ -109,8 +109,6 @@ struct Origami {
     slip: Option<motion::Slip>,
     stage: Bounds<Pixels>,
     dense: f32,
-    disc: Arc<RenderImage>,
-    strips: [Arc<RenderImage>; 3],
     finding: Option<String>,
     hit: usize,
     modes: [bool; 3],
@@ -339,6 +337,10 @@ impl Origami {
                 if let Some(old) = this.image.replace(bitmap(px, w, h)) {
                     cx.drop_image(old, None);
                 }
+                if this.shown.is_none_or(|s| s.1 != want.1) {
+                    let tl = this.tl.clone();
+                    cx.background_executor().spawn(async move { learn(&tl, 0.) }).detach();
+                }
                 (this.busy, this.shown, this.rough, this.rest) = (false, Some(want), rough, Some(Instant::now()));
                 this.refresh(cx);
                 cx.notify();
@@ -497,8 +499,6 @@ fn fresh(focus: FocusHandle, recent: Vec<PathBuf>) -> Origami {
         slip: None,
         stage: Bounds::default(),
         dense: 1.,
-        disc: bitmap(knob::disc(), 300, 300),
-        strips: [0, 1, 2].map(|kind| bitmap(knob::strip(kind), 150, 150)),
         finding: None,
         hit: 0,
         modes: [false; 3],

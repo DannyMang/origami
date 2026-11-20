@@ -35,6 +35,11 @@ What changed in each version of Origami. The launch screen shows the version you
 - Exports with text, motion or grades finish about a fifth sooner.
 - Undo history uses far less memory: each step keeps only the lines that changed.
 - Typing in very long scripts is up to three times faster.
+- Colour backgrounds, see-through overlays, pictures with transparency and fades draw about two and a half times faster in the preview and in exports: blending now uses every core.
+- Big shapes and vignettes appear sooner: a large rounded rectangle or a vignette is drawn in under half the time, so dragging their sliders responds faster.
+- Playing graded footage takes about a tenth less time per frame and holds about 100 MB less memory, because the preview reuses its frame memory instead of asking for new memory every frame. Exports finish 5 to 15% sooner for the same reason.
+- Crossing a cut while playing or scrubbing no longer waits about 10 ms for the previous clip's decoder to close.
+- The first press of play after opening a project no longer freezes the window while Origami reads each media file one after another (about 0.2 s on a 10-file project): the files are now read in parallel in the background as soon as the script loads, and exports start about 0.15 s sooner.
 - Fixed a rare freeze where the preview, thumbnails or an export could wait forever on an ffmpeg that had already finished.
 - **Menu bar.** Origami, File, Edit, View, Window and Help menus, with every existing shortcut on its item. New: ⌘N new file, ⌘O open, ⇧⌘E export, ⌘W close, ⌘M minimize, ⌘H hide.
 - **Open….** A button on the launch screen and ⌘O open any script, and double-clicking a `.js` file in Finder (or Open With › Origami) opens it. Opening another script or quitting asks before losing unsaved changes, and quitting asks before stopping a running export.

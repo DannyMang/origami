@@ -1,4 +1,7 @@
-use crate::text::{self, rgba};
+use crate::{
+    lut::spread,
+    text::{self, rgba},
+};
 use origami_lang::{Clip, Kind};
 
 pub fn extent(c: &Clip, (w, h): (f64, f64), k: f64) -> (usize, usize) {
@@ -34,8 +37,13 @@ pub fn image(c: &Clip, size: (f64, f64), k: f64) -> (Vec<u8>, usize, usize) {
         }
     };
     let cover = |i: usize| (0.5 - far((i % tw) as f64 + 0.5 - hw, (i / tw) as f64 + 0.5 - hh)).clamp(0., 1.);
-    let px = (0..tw * th).flat_map(|i| [b, g, r, (a as f64 * cover(i)).round() as u8]);
-    (px.collect(), tw, th)
+    let mut px = vec![0; tw * th * 4];
+    spread(&mut px, tw * 4, |from, rows| {
+        for (i, p) in (from / 4..).zip(rows.chunks_exact_mut(4)) {
+            p.copy_from_slice(&[b, g, r, (a as f64 * cover(i)).round() as u8]);
+        }
+    });
+    (px, tw, th)
 }
 
 #[cfg(test)]

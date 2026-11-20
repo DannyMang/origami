@@ -1,4 +1,4 @@
-use crate::preview::{Preview, lead};
+use crate::preview::{Preview, lead, learn};
 use crate::{grade, lut::Lut, shape, text};
 use anyhow::{Result, bail};
 use origami_lang::{Clip, Kind, Timeline, Val, ffmpeg, start, status};
@@ -183,6 +183,7 @@ fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path, (k, (w, h)): (f64, (
     if video {
         f.push(format!("color=black:s={w}x{h}:r={}:d={}[b0]", tl.fps, tl.duration));
     }
+    learn(tl, from);
     for (i, c) in tl.clips.iter().enumerate().filter(|(_, c)| c.end > from) {
         let skip = (from - c.start).max(0.);
         let (len, on) = (
@@ -245,7 +246,7 @@ fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path, (k, (w, h)): (f64, (
             f.push(match solid {
                 true => {
                     let [r, g, b, _] = text::rgba(&c.src);
-                    let px = lut.map_or(vec![b, g, r], |l| l.apply(&[b, g, r, 255]));
+                    let px = lut.map_or(vec![b, g, r], |l| l.apply(&[b, g, r, 255], vec![]));
                     let shade = mask.map_or(String::new(), |m| format!("[d{i}];[d{i}][{m}:v]overlay={on}"));
                     let fill = format!("color=0x{:02x}{:02x}{:02x}", px[2], px[1], px[0]);
                     format!("[b{b0}]drawbox=w=iw:h=ih:{fill}:t=fill:{on}{shade}[b{}]", b0 + 1)

@@ -108,11 +108,11 @@ impl Lut {
         })
     }
 
-    pub fn apply(&self, px: &[u8]) -> Vec<u8> {
+    pub fn apply(&self, px: &[u8], mut out: Vec<u8>) -> Vec<u8> {
         let (n, t) = (self.n, self.t.iter().map(|&[r, g, b]| [b, g, r, 1.]).collect::<Vec<_>>());
         let [b, g, r] =
             [n * n, n, 1].map(|step| -> [(usize, f32); 256] { array::from_fn(|v| self.cell(v as f64 / 255.)).map(|(i, f)| (i * step, f)) });
-        let mut out = vec![0; px.len()];
+        out.resize(px.len(), 0);
         spread(&mut out, 4, |from, part| {
             for (p, s) in part.chunks_exact_mut(4).zip(px[from..].chunks_exact(4)) {
                 let [(i, fb), (j, fg), (k, fr)] = [b[s[0] as usize], g[s[1] as usize], r[s[2] as usize]];

@@ -131,6 +131,22 @@ fn lands(src: &str, at: f64, start: f64) -> f64 {
     *LANDS.lock().unwrap().entry(key).or_insert(found)
 }
 
+pub fn learn(tl: &Timeline, from: f64) {
+    let used = tl
+        .clips
+        .iter()
+        .filter(|c| c.end > from && matches!(c.kind, Kind::Video | Kind::Sound));
+    let mut new: Vec<&str> = used
+        .map(|c| c.src.as_str())
+        .filter(|f| !KNOWN.lock().unwrap().contains_key(*f) && Path::new(f).is_file())
+        .collect();
+    new.sort();
+    new.dedup();
+    if new.len() > 1 {
+        spread(&mut new, 1, |_, part| part.iter().for_each(|f| drop(probe(f))));
+    }
+}
+
 pub fn lead(src: &str) -> f64 {
     match Path::new(src).is_file().then(|| probe(src)) {
         Some((_, _, n, d, .., late, _, _, true)) if n > 0. => late as f64 * d / n,
@@ -243,6 +259,13 @@ fn nudge(px: &[u8], w: usize, (fx, fy): (f64, f64)) -> Vec<u8> {
         }
     });
     out
+}
+
+fn reuse(spare: &mut Vec<Vec<u8>>, len: usize) -> Vec<u8> {
+    match spare.iter().position(|v| v.len() == len) {
+        Some(i) => spare.swap_remove(i),
+        None => vec![0; len],
+    }
 }
 
 fn kept<V: Clone>(now: &mut HashMap<String, V>, was: &mut HashMap<String, V>, key: String, make: impl FnOnce() -> V) -> V {
@@ -372,14 +395,16 @@ fn rate(src: &str, fps: f64) -> (f64, f64, f64) {
 }
 
 struct Decoder {
-    child: Child,
+    child: Option<Child>,
     next: i64,
 }
 
 impl Drop for Decoder {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            thread::spawn(move || child.wait());
+        }
     }
 }
 
@@ -390,6 +415,7 @@ pub struct Preview {
     stills: HashMap<String, Option<Px>>,
     texts: HashMap<String, Laid>,
     was: (HashMap<String, Option<Px>>, HashMap<String, Laid>),
+    spare: Vec<Vec<u8>>,
     stamps: HashMap<String, Option<(u64, SystemTime)>>,
     at: f64,
     primed: (Vec<u32>, (usize, usize)),
@@ -409,6 +435,7 @@ impl Default for Preview {
             stills: HashMap::new(),
             texts: HashMap::new(),
             was: Default::default(),
+            spare: vec![],
             stamps: HashMap::new(),
             at: -1.,
             primed: Default::default(),
@@ -497,10 +524,10 @@ impl Preview {
     }
 
     pub fn prime(&mut self, tl: &Timeline, t: f64, size: (usize, usize)) {
-        let old: Vec<u32> = self.decoders.iter().map(|(_, d)| d.child.id()).collect();
+        let old: Vec<u32> = self.decoders.iter().flat_map(|(_, d)| d.child.as_ref().map(Child::id)).collect();
         self.at = f64::NAN;
         self.ready(tl, t, size);
-        let ids = self.decoders.iter().map(|(_, d)| d.child.id());
+        let ids = self.decoders.iter().flat_map(|(_, d)| d.child.as_ref().map(Child::id));
         self.primed = (ids.filter(|n| !old.contains(n)).collect(), size);
     }
 
@@ -558,7 +585,13 @@ impl Preview {
                 )
                 .ok()?;
                 self.decoders.drain(..self.decoders.len().saturating_sub(self.most - 1));
-                (key.clone(), Decoder { child, next: from })
+                (
+                    key.clone(),
+                    Decoder {
+                        child: Some(child),
+                        next: from,
+                    },
+                )
             }
         };
         self.decoders.push(found);
@@ -573,14 +606,15 @@ impl Preview {
         self.decoder(&key, k, (k - self.lap(&key, k)).max(0), rate)?;
         let (_, mut d) = self.decoders.pop()?;
         while d.next <= k {
-            let mut px = vec![0; len];
-            if d.child.stdout.as_mut().and_then(|o| o.read_exact(&mut px).ok()).is_none() {
-                break;
-            }
             while self.held + len > self.room
                 && let Some(old) = self.frames.pop_lru()
             {
                 self.held -= old.1.len();
+                self.spare.extend(Arc::try_unwrap(old.1));
+            }
+            let mut px = reuse(&mut self.spare, len);
+            if d.child.as_mut().and_then(|c| c.stdout.as_mut()?.read_exact(&mut px).ok()).is_none() {
+                break;
             }
             self.held += len;
             self.held -= self.frames.push((key.clone(), d.next), Arc::new(px)).map_or(0, |f| f.1.len());
@@ -631,7 +665,7 @@ impl Preview {
         };
         let px = match &c.grade {
             Some(g) => kept(&mut self.stills, &mut self.was.0, format!("{base}|{g:?}"), || {
-                Some(grade::paint(g, px, (tw, th)))
+                Some(grade::paint(g, px, (tw, th), reuse(&mut self.spare, tw * th * 4)))
             })?,
             None => px,
         };
@@ -658,7 +692,7 @@ impl Preview {
             c.grade
         );
         let tint = |mut g: Glyph| {
-            g.px = c.grade.as_ref().map_or(g.px.clone(), |x| grade::paint(x, g.px, (g.w, g.h)));
+            g.px = c.grade.as_ref().map_or(g.px.clone(), |x| grade::paint(x, g.px, (g.w, g.h), vec![]));
             g
         };
         let laid = || {
@@ -677,7 +711,10 @@ impl Preview {
         };
         if !c.background.is_empty() {
             let plate = Arc::new(text::flat(&c.background, tw * th));
-            let plate = c.grade.as_ref().map_or(plate.clone(), |g| grade::paint(g, plate, (*tw, *th)));
+            let plate = c
+                .grade
+                .as_ref()
+                .map_or(plate.clone(), |g| grade::paint(g, plate, (*tw, *th), vec![]));
             blit(out, (pw, ph), &plate, (*tw, *th), q, turn, mid, a);
         }
         for g in glyphs.iter().filter(|g| g.i < n && g.w > 0) {
@@ -712,11 +749,14 @@ impl Preview {
         });
         let (primed, size) = std::mem::take(&mut self.primed);
         if self.fast || size != (pw, ph) {
-            self.decoders.retain(|(_, d)| !primed.contains(&d.child.id()));
+            self.decoders
+                .retain(|(_, d)| d.child.as_ref().is_some_and(|c| !primed.contains(&c.id())));
         }
         let mut out = [0, 0, 0, 255].repeat(pw * ph);
         (self.rough, self.at) = (false, t);
-        self.was = (std::mem::take(&mut self.stills), std::mem::take(&mut self.texts));
+        let was = std::mem::replace(&mut self.was, (std::mem::take(&mut self.stills), std::mem::take(&mut self.texts)));
+        self.spare
+            .extend(was.0.into_values().flatten().filter_map(|px| Arc::try_unwrap(px).ok()));
         for c in tl.clips.iter().filter(|c| c.video && live(c, t)).filter(drawn) {
             let i = ((t - c.start) * tl.fps as f64).round() as usize;
             let (a, solid) = ((alpha(c, t) * c.opacity.at(i)).clamp(0., 1.), c.kind == Kind::Video);
@@ -728,19 +768,27 @@ impl Preview {
                 continue;
             };
             let (x0, x1) = ((-x).max(0) as usize, (pw as i64 - x).clamp(0, sw as i64) as usize);
-            for sy in (0..sh).filter(|sy| x0 < x1 && (0..ph as i64).contains(&(y + *sy as i64))) {
-                let dst = &mut out[((y + sy as i64) as usize * pw + (x + x0 as i64) as usize) * 4..][..(x1 - x0) * 4];
-                let src = &px[(sy * sw + x0) * 4..][..dst.len()];
-                if solid && a >= 1. {
-                    dst.copy_from_slice(src);
-                    continue;
-                }
-                for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
-                    let sa = a * if solid { 1. } else { s[3] as f64 / 255. };
-                    for i in 0..3 {
-                        d[i] = (s[i] as f64 * sa + d[i] as f64 * (1. - sa)) as u8;
+            let (y0, y1) = (y.clamp(0, ph as i64) as usize, (y + sh as i64).clamp(0, ph as i64) as usize);
+            let paint = |from: usize, rows: &mut [u8]| {
+                for (sy, row) in ((y0 + from / (pw * 4)) as i64 - y..).zip(rows.chunks_exact_mut(pw * 4)) {
+                    let dst = &mut row[(x + x0 as i64) as usize * 4..][..(x1 - x0) * 4];
+                    let src = &px[(sy as usize * sw + x0) * 4..][..dst.len()];
+                    if solid && a >= 1. {
+                        dst.copy_from_slice(src);
+                        continue;
+                    }
+                    for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
+                        let sa = a * if solid { 1. } else { s[3] as f64 / 255. };
+                        for i in 0..3 {
+                            d[i] = (s[i] as f64 * sa + d[i] as f64 * (1. - sa)) as u8;
+                        }
                     }
                 }
+            };
+            match x1.saturating_sub(x0) * (y1 - y0) {
+                0 => {}
+                n if n < 1 << 16 || solid && a >= 1. => paint(0, &mut out[y0 * pw * 4..y1 * pw * 4]),
+                _ => spread(&mut out[y0 * pw * 4..y1 * pw * 4], pw * 4, paint),
             }
         }
         let soon = |c: &&Clip| c.kind == Kind::Video && t < c.start && c.start < t + 1.;
@@ -752,6 +800,7 @@ impl Preview {
                 self.decoder(&key, first, first, rate);
             }
         }
+        self.spare.clear();
         out
     }
 }
