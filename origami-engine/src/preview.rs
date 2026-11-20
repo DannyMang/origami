@@ -6,7 +6,7 @@ use crate::{
     text::{self, Glyph},
 };
 use lru::LruCache;
-use origami_lang::{Clip, Kind, Part, Timeline, Val, ffmpeg, ffprobe, output};
+use origami_lang::{Clip, Kind, Part, Timeline, Val, ffmpeg, ffprobe, output, watch};
 use std::{
     collections::HashMap,
     fs,
@@ -661,7 +661,11 @@ impl Preview {
                 self.spare.extend(Arc::try_unwrap(old.1));
             }
             let mut px = reuse(&mut self.spare, len);
-            if d.child.as_mut().and_then(|c| c.stdout.as_mut()?.read_exact(&mut px).ok()).is_none() {
+            let got = d.child.as_mut().and_then(|c| {
+                let _seen = watch(c.id());
+                c.stdout.as_mut()?.read_exact(&mut px).ok()
+            });
+            if got.is_none() {
                 let died = d.child.take().is_some_and(|mut c| c.wait().is_ok_and(|s| !s.success()));
                 if died && again && self.decoder(&key, k, d.next, rate).is_some() {
                     (again, d) = (false, self.decoders.pop()?.1);

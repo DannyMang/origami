@@ -2,14 +2,58 @@ use std::{
     env,
     ffi::OsStr,
     fs,
-    io::{self, ErrorKind::NotFound},
-    os::unix::fs::PermissionsExt,
+    io::{
+        self,
+        ErrorKind::{Interrupted, NotFound},
+        Read,
+    },
+    os::unix::{fs::PermissionsExt, process::ExitStatusExt},
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Output, Stdio},
-    sync::{LazyLock, Mutex, PoisonError},
+    sync::{LazyLock, Mutex, Once, PoisonError},
+    thread,
+    time::{Duration, Instant},
 };
 
 static SPAWN: Mutex<()> = Mutex::new(());
+static QUIET: Mutex<Vec<(u32, Instant)>> = Mutex::new(vec![]);
+const STILL: Duration = Duration::from_secs(if cfg!(test) { 3 } else { 20 });
+
+unsafe extern "C" {
+    fn kill(pid: i32, sig: i32) -> i32;
+}
+
+pub struct Watch(u32);
+
+pub fn watch(pid: u32) -> Watch {
+    static WATCHER: Once = Once::new();
+    WATCHER.call_once(|| {
+        thread::spawn(|| {
+            loop {
+                thread::sleep(STILL / 8);
+                let quiet = QUIET.lock().unwrap_or_else(PoisonError::into_inner);
+                for (pid, _) in quiet.iter().filter(|q| q.1.elapsed() > STILL) {
+                    unsafe { kill(*pid as i32, 9) };
+                }
+            }
+        });
+    });
+    QUIET.lock().unwrap_or_else(PoisonError::into_inner).push((pid, Instant::now()));
+    Watch(pid)
+}
+
+impl Watch {
+    pub fn beat(&self) {
+        let mut quiet = QUIET.lock().unwrap_or_else(PoisonError::into_inner);
+        quiet.iter_mut().filter(|q| q.0 == self.0).for_each(|q| q.1 = Instant::now());
+    }
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        QUIET.lock().unwrap_or_else(PoisonError::into_inner).retain(|q| q.0 != self.0);
+    }
+}
 
 static TOOLS: LazyLock<[PathBuf; 2]> = LazyLock::new(|| {
     let exe = env::current_exe()
@@ -67,21 +111,60 @@ pub fn status(cmd: &mut Command) -> io::Result<ExitStatus> {
     start(cmd)?.wait()
 }
 
+fn drain(pipe: Option<impl Read>, seen: &Watch) -> Vec<u8> {
+    let (mut v, mut buf) = (vec![], vec![0; 1 << 16]);
+    if let Some(mut p) = pipe {
+        loop {
+            match p.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => v.extend_from_slice(&buf[..n]),
+                Err(e) if e.kind() == Interrupted => {}
+                Err(_) => break,
+            }
+            seen.beat();
+        }
+    }
+    v
+}
+
 pub fn output(cmd: &mut Command) -> io::Result<Output> {
-    start(cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()))?.wait_with_output()
+    let mut child = start(cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()))?;
+    let (seen, out, err) = (watch(child.id()), child.stdout.take(), child.stderr.take());
+    let (stdout, stderr) = thread::scope(|s| {
+        let err = s.spawn(|| drain(err, &seen));
+        (drain(out, &seen), err.join().unwrap_or_default())
+    });
+    drop(seen);
+    let status = child.wait()?;
+    let name = Path::new(cmd.get_program()).file_name().unwrap_or_default().to_string_lossy();
+    match status.signal() {
+        Some(9) => Err(io::Error::other(format!(
+            "{name} was stopped after {} seconds without output",
+            STILL.as_secs()
+        ))),
+        _ => Ok(Output { status, stdout, stderr }),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{
-        sync::{
-            atomic::{AtomicBool, Ordering::Relaxed},
-            mpsc,
-        },
-        thread,
-        time::Duration,
+    use std::sync::{
+        atomic::{AtomicBool, Ordering::Relaxed},
+        mpsc,
     };
+
+    // A program that sends nothing for too long is stopped and the call says so, while one that keeps
+    // talking may run longer than that.
+    #[test]
+    fn silent_programs_are_stopped() {
+        let from = Instant::now();
+        let said = output(Command::new("sleep").arg("60")).unwrap_err().to_string();
+        assert_eq!(said, "sleep was stopped after 3 seconds without output");
+        assert!(from.elapsed() < STILL * 2);
+        let chat = "for i in 1 2 3 4 5 6 7 8; do echo $i; sleep 0.5; done";
+        assert_eq!(output(Command::new("/bin/sh").args(["-c", chat])).unwrap().stdout.len(), 16);
+    }
 
     // Reading a short program's output should end when that program ends, however many long-lived
     // programs other threads start at the same moment.

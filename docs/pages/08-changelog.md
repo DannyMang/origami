@@ -4,6 +4,10 @@ What changed in each version of Origami. The launch screen shows the version you
 
 ## 0.1.0 (not yet released)
 
+### Nov 20
+
+- A media file that never ends, such as a live HLS playlist (`.m3u8`) that keeps waiting for its next part, no longer freezes the preview, an export or the timeline's thumbnails until Origami restarts. An ffmpeg or ffprobe that sends nothing for 20 seconds is now stopped: the clip shows black where it could not be read, and a file the script is still reading gives an error on its line.
+
 ### Nov 19
 
 - A timeline with more lanes than fit, such as 55 stacked layers, keeps every lane at least half its usual height instead of squeezing them into a few pixels each. Scrolling up or down then moves through the lanes, and cmd+scroll zooms; when every lane fits, scrolling zooms as before.
