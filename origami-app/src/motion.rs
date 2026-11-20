@@ -432,7 +432,7 @@ fn read(s: &str, from: usize, kind: Kind, name: &str) -> Option<(Slot, bool)> {
     Some((slot(s, &calls, name)?, &s[calls[0].0..calls[0].1] == "caption"))
 }
 
-fn spread(s: &str, from: usize, kind: Kind) -> Option<String> {
+fn spread(s: &str, from: usize, kind: Kind) -> Option<(String, usize)> {
     let calls = chain(s, from, kind)?;
     let mut found = calls[1..].iter().filter(|c| &s[c.0..c.1] == "pos");
     let (&(_, open, end), None) = (found.next()?, found.next()) else {
@@ -440,7 +440,8 @@ fn spread(s: &str, from: usize, kind: Kind) -> Option<String> {
     };
     let clip = s[open + 1..end].trim().strip_suffix(".pos")?;
     link(&format!("{clip}.pos.x"))?;
-    Some(format!("{}{clip}.pos.x, {clip}.pos.y{}", &s[..open + 1], &s[end..]))
+    let last = calls[calls.len() - 1].2 + 1;
+    Some((format!("{}{clip}.pos.x, {clip}.pos.y{}", &s[from..open + 1], &s[end..last]), last))
 }
 
 pub fn name(s: &str, from: usize, kind: Kind) -> Option<&str> {
@@ -453,7 +454,7 @@ pub fn name(s: &str, from: usize, kind: Kind) -> Option<&str> {
 
 pub fn ties(s: &str, from: usize, kind: Kind) -> Vec<(&'static str, Link)> {
     let wide = spread(s, from, kind);
-    let s = wide.as_deref().unwrap_or(s);
+    let (s, from) = wide.as_ref().map_or((s, from), |w| (w.0.as_str(), 0));
     let tied = |n: &&'static str| {
         let (slot, _) = read(s, from, kind, n)?;
         Some((*n, link(&s[slot.a..slot.b])?))
@@ -496,6 +497,7 @@ pub fn sever(s: &str, from: usize, kind: Kind, name: &str, now: impl Fn(&str) ->
 
 pub fn amend(s: &str, from: usize, kind: Kind, name: &str, f: impl FnOnce(&str) -> String) -> Option<String> {
     let wide = spread(s, from, kind).filter(|_| matches!(name, "x" | "y"));
+    let wide = wide.map(|(w, last)| format!("{}{w}{}", &s[..from], &s[last..]));
     let s = wide.as_deref().unwrap_or(s);
     let (slot, _) = read(s, from, kind, name)?;
     let old = s[slot.a..slot.b].trim();
@@ -547,7 +549,7 @@ impl Origami {
 
     pub fn rows_at(&self, c: &Clip, text: &str, from: Option<usize>) -> Vec<Row> {
         let (wide, frame) = (from.and_then(|from| spread(text, from, c.kind)), self.frame(c) as usize);
-        let text = wide.as_deref().unwrap_or(text);
+        let (text, from) = wide.as_ref().map_or((text, from), |w| (w.0.as_str(), Some(0)));
         let fits = |a: &&(&str, &str, f64, f64, f64, usize)| match (c.kind, a.0) {
             (Kind::Sound, _) => false,
             (Kind::Text, "shown" | "size") | (Kind::Rect, "width" | "height" | "radius") | (Kind::Line, "width") => true,

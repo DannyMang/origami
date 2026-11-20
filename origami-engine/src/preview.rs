@@ -36,8 +36,9 @@ type Info = (
     bool,
 );
 
+const AGAIN: u32 = 300;
 static KNOWN: LazyLock<Mutex<HashMap<String, (Info, u32)>>> = LazyLock::new(Mutex::default);
-static LANDS: LazyLock<Mutex<HashMap<(String, u64), f64>>> = LazyLock::new(Mutex::default);
+static LANDS: LazyLock<Mutex<HashMap<(String, u64), (f64, u32)>>> = LazyLock::new(Mutex::default);
 static RAM: LazyLock<u64> = LazyLock::new(|| {
     let told = output(Command::new("/usr/sbin/sysctl").args(["-n", "hw.memsize"])).map(|o| o.stdout);
     String::from_utf8_lossy(&told.unwrap_or_default())
@@ -115,7 +116,7 @@ fn probe(path: &str) -> Info {
         let start = first.parse().map_or(0., |f: f64| f - zero);
         let stamps = if ts { vec![] } else { stamps };
         let info = (lead, down, n, d, num(dur), tb, late, start, stamps.into(), ts);
-        (info, if text.is_empty() { 300 } else { u32::MAX })
+        (info, if text.is_empty() { AGAIN } else { u32::MAX })
     };
     let known = KNOWN.lock().unwrap().get_mut(path).and_then(|(info, left)| {
         *left = left.checked_sub(1)?;
@@ -137,12 +138,18 @@ fn lands(src: &str, at: f64, start: f64) -> f64 {
             .split("pts_time:")
             .nth(1)
             .and_then(|s| s.split_whitespace().next()?.parse().ok());
-        at.max(start) + pts.unwrap_or(0.)
+        (at.max(start) + pts.unwrap_or(0.), if pts.is_none() { AGAIN } else { u32::MAX })
     };
     let key = (src.to_string(), at.to_bits());
-    let known = LANDS.lock().unwrap().get(&key).copied();
-    let found = known.unwrap_or_else(make);
-    *LANDS.lock().unwrap().entry(key).or_insert(found)
+    let known = LANDS.lock().unwrap().get_mut(&key).and_then(|(found, left)| {
+        *left = left.checked_sub(1)?;
+        Some(*found)
+    });
+    known.unwrap_or_else(|| {
+        let made = make();
+        LANDS.lock().unwrap().insert(key, made);
+        made.0
+    })
 }
 
 pub fn learn(tl: &Timeline, from: f64) {
@@ -451,7 +458,7 @@ pub struct Preview {
     texts: HashMap<String, Laid>,
     was: (HashMap<String, Option<Px>>, HashMap<String, Laid>),
     spare: Vec<Vec<u8>>,
-    stamps: HashMap<String, Option<(u64, SystemTime)>>,
+    stamps: HashMap<String, (Option<(u64, SystemTime)>, Option<bool>)>,
     at: f64,
     primed: (Vec<u32>, (usize, usize)),
     pub(crate) room: usize,
@@ -521,18 +528,23 @@ impl Preview {
 
     fn renew(&mut self, src: &str) {
         let now = fs::metadata(src).and_then(|m| Ok((m.len(), m.modified()?))).ok();
-        if self.stamps.insert(src.into(), now).is_none_or(|was| was == now) {
+        let read = KNOWN.lock().unwrap().get(src).map(|(_, left)| *left > AGAIN);
+        let Some((was, seen)) = self.stamps.insert(src.into(), (now, read)) else {
+            return;
+        };
+        if was != now {
+            KNOWN.lock().unwrap().remove(src);
+            LANDS.lock().unwrap().retain(|k, _| k.0 != src);
+            for stills in [&mut self.stills, &mut self.was.0] {
+                stills.retain(|k, _| !k.contains(src));
+            }
+        } else if (seen, read) != (Some(false), Some(true)) {
             return;
         }
-        KNOWN.lock().unwrap().remove(src);
-        LANDS.lock().unwrap().retain(|k, _| k.0 != src);
         self.decoders.retain(|(k, _)| k.0 != src);
         let old: Vec<_> = self.frames.iter().map(|(k, _)| k.clone()).filter(|k| k.0.0 == src).collect();
         for k in old {
             self.held -= self.frames.pop(&k).map_or(0, |px| px.len());
-        }
-        for stills in [&mut self.stills, &mut self.was.0] {
-            stills.retain(|k, _| !k.contains(src));
         }
     }
 
@@ -1223,6 +1235,52 @@ mod tests {
         film(&file, "testsrc=s=64x36:r=30:d=1", &[]);
         let rates: Vec<f64> = (0..301).map(|_| probe(&path).2).collect();
         assert!(rates[..300].iter().all(|n| *n == 0.) && rates[300] == 30.);
+    }
+
+    // A first frame ffmpeg could not find should be looked for again after a few hundred lookups rather
+    // than on every one, so it is found once the file can be read.
+    #[test]
+    fn failed_lands_are_asked_again() {
+        let file = scratch("unlanded").join("a.mp4");
+        fs::write(&file, "not a film").unwrap();
+        let path = file.to_string_lossy();
+        assert_eq!(lands(&path, 0.51, 0.), 0.51);
+        film(&file, "testsrc=s=64x36:r=30:d=1", &[]);
+        let found: Vec<f64> = (0..301).map(|_| lands(&path, 0.51, 0.)).collect();
+        assert!(found[..300].iter().all(|t| *t == 0.51) && found[300] > 0.52);
+    }
+
+    // Frames shown while a file's probe was failing should be dropped once it reads the file, so the
+    // preview shows what a fresh one shows.
+    #[test]
+    fn recovered_probes_drop_old_frames() {
+        let file = scratch("healed").join("a.mp4");
+        fs::write(&file, "not a film").unwrap();
+        let path = file.to_string_lossy().into_owned();
+        assert_eq!(probe(&path).2, 0.);
+        film(
+            &file,
+            "color=black:s=64x36:r=25:d=2,format=yuv444p,geq=lum='16+4*N':cb=128:cr=128",
+            &[],
+        );
+        let tl = Timeline {
+            fps: 30,
+            size: (64, 36),
+            duration: 2.,
+            clips: vec![Clip {
+                src: path.clone(),
+                w: 64,
+                h: 36,
+                end: 2.,
+                ..clip("video", "")
+            }],
+            ..Default::default()
+        };
+        let shown = |pv: &mut Preview| (0..30).map(|k| pv.frame(&tl, k as f64 / 30., (64, 36))).collect::<Vec<_>>();
+        let mut pv = Preview::default();
+        shown(&mut pv);
+        (0..301).for_each(|_| drop(probe(&path)));
+        assert!(shown(&mut pv) == shown(&mut Preview::default()));
     }
 
     // Variable-frame-rate footage should show the frame a plain export shows: the clip starts on the

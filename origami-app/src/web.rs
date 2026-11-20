@@ -308,7 +308,7 @@ stack(shot, title, text(\"loose\").scale(title.scale), tag, dot)";
 
     // The Graph tab, the follow menu and going to a followed clip's source should take time that
     // grows with the clips, not with clips times script, on 20,000 clips that each follow the one
-    // above.
+    // above, including clips written to follow another's whole position.
     #[gpui::test]
     fn many_clips_graph_quickly(cx: &mut gpui::TestAppContext) {
         let path = std::env::temp_dir().join("origami-graph-test.js");
@@ -318,7 +318,7 @@ stack(shot, title, text(\"loose\").scale(title.scale), tag, dot)";
         cx.update(|window, cx| {
             view.update(cx, |o, cx| {
                 o.lines = (0..20000)
-                    .map(|i| format!("const c{} = text('t').opacity(c{i}.opacity)", i + 1))
+                    .map(|i| format!("const c{} = text('t').pos(c{i}.pos).opacity(c{i}.opacity)", i + 1))
                     .collect();
                 let each = |home| origami_lang::Clip {
                     home,
