@@ -285,6 +285,10 @@ fn nudge(px: &[u8], w: usize, (fx, fy): (f64, f64)) -> Vec<u8> {
     out
 }
 
+fn reach(src: &str) -> i64 {
+    if src.ends_with(".LRF") { 20 } else { 30 }
+}
+
 fn reuse(spare: &mut Vec<Vec<u8>>, len: usize) -> Vec<u8> {
     match spare.iter().position(|v| v.len() == len) {
         Some(i) => spare.swap_remove(i),
@@ -526,10 +530,9 @@ impl Preview {
     }
 
     fn near(&self, key: &Key, k: i64) -> Option<usize> {
-        let reach = if key.0.ends_with(".LRF") { 20 } else { 30 };
         self.decoders
             .iter()
-            .position(|(o, d)| o == key && d.next <= k && k <= d.next + reach)
+            .position(|(o, d)| o == key && d.next <= k && k <= d.next + reach(&key.0))
     }
 
     pub fn ready(&mut self, tl: &Timeline, t: f64, (pw, ph): (usize, usize)) -> bool {
@@ -627,9 +630,10 @@ impl Preview {
         if let Some(px) = self.frames.get(&(key.clone(), k)) {
             return Some(px.clone());
         }
-        let len = key.1 * key.2 * 4;
-        self.decoder(&key, k, (k - self.lap(&key, k)).max(0), rate)?;
+        let (len, lap) = (key.1 * key.2 * 4, self.lap(&key, k));
+        self.decoder(&key, k, (k - lap).max(0), rate)?;
         let (_, mut d) = self.decoders.pop()?;
+        let low = d.next;
         while d.next <= k {
             while self.held + len > self.room
                 && let Some(old) = self.frames.pop_lru()
@@ -646,6 +650,9 @@ impl Preview {
             d.next += 1;
         }
         self.decoders.push((key.clone(), d));
+        if lap > 0 && low > 0 {
+            self.decoder(&key, low - 1, (low - reach(&key.0)).max(0), rate);
+        }
         self.frames.get(&(key, k)).cloned()
     }
 
@@ -1117,6 +1124,38 @@ mod tests {
             .filter(|k| played.frame(&tl, *k as f64 / 30., (64, 36)) != Preview::default().frame(&tl, *k as f64 / 30., (64, 36)))
             .collect();
         assert!(wrong.is_empty(), "{wrong:?}");
+    }
+
+    // Stepping backwards should start the decoder for the frames before the kept ones while those are
+    // shown, and show the same pictures as playing forwards.
+    #[test]
+    fn stepping_back_reads_ahead() {
+        let file = scratch("back").join("a.mp4");
+        film(&file, "testsrc=s=64x36:r=30:d=4", &[]);
+        let tl = Timeline {
+            fps: 30,
+            size: (64, 36),
+            duration: 4.,
+            clips: vec![Clip {
+                src: file.to_string_lossy().into(),
+                w: 64,
+                h: 36,
+                end: 4.,
+                ..clip("video", "")
+            }],
+            ..Default::default()
+        };
+        let (mut back, mut played) = (Preview::default(), Preview::default());
+        let shown = |pv: &mut Preview, k: i64| pv.frame(&tl, k as f64 / 30., (64, 36));
+        let mut stepped: Vec<_> = (60..=100).rev().map(|k| shown(&mut back, k)).collect();
+        let waiting = back
+            .decoders
+            .iter()
+            .any(|(key, d)| d.next < 60 && !back.frames.contains(&(key.clone(), d.next)));
+        stepped.extend((0..60).rev().map(|k| shown(&mut back, k)));
+        stepped.reverse();
+        assert!(waiting);
+        assert!(stepped == (0..=100).map(|k| shown(&mut played, k)).collect::<Vec<_>>());
     }
 
     // Variable-frame-rate footage should show the frame a plain export shows: the clip starts on the

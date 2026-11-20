@@ -15,6 +15,7 @@ What changed in each version of Origami. The launch screen shows the version you
 - The first picture after opening a script with DJI footage shows about a quarter sooner (about 0.12 s instead of 0.16 s): Origami now reads the full-size file and its `.LRF` at the same time, and reads the `.LRF` twice as fast.
 - Scrubbing DJI footage is smoother: while dragging slowly each picture takes about a sixth less time, and a fast drag that jumps more than 20 frames now starts reading the `.LRF` at the new spot instead of reading through every frame in between, so the picture updates about a quarter more often.
 - Zooming a clip without turning it uses about a fifth less processor time per frame, and such exports finish a little sooner.
+- Stepping backwards through 4K footage pauses about half as long (about 0.23 s instead of 0.45 s) each time Origami has to read the frames before the ones it has kept: it now starts reading them while you are still stepping through the kept ones.
 
 ### Nov 15
 
