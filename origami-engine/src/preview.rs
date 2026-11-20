@@ -944,13 +944,13 @@ impl Preview {
                 self.decoder(&key, first, first, rate);
             }
         }
-        let fps = tl.fps as f64;
-        let gone = |c: &&Clip| self.back && c.kind == Kind::Video && c.scale.max() > 0. && c.end <= t + 1e-6 && t - 1. < c.end;
+        let (fps, back) = (tl.fps as f64, self.back);
+        let gone = |c: &&Clip| back && c.kind == Kind::Video && c.video && c.scale.max() > 0. && c.end <= t + 1e-6 && t - 1. < c.end;
         let last = tl.clips.iter().filter(gone).map(|c| c.end).fold(f64::MIN, f64::max);
-        for c in tl.clips.iter().filter(gone).filter(|c| c.end == last).cloned().collect::<Vec<_>>() {
-            let (tw, th, ..) = place(&c, (pw as f64, ph as f64), k);
+        for c in tl.clips.iter().filter(gone).filter(|c| c.end == last) {
+            let (tw, th, ..) = place(c, (pw as f64, ph as f64), k);
             let at = (((c.end - 1e-6) * fps).ceil() - 1.) / fps;
-            let (key, end, rate) = Self::cell(&c, at, tl.fps, (tw as usize, th as usize), false);
+            let (key, end, rate) = Self::cell(c, at, tl.fps, (tw as usize, th as usize), false);
             self.ahead(&key, end + 1, rate);
         }
         self.spare.clear();
