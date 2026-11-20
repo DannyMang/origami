@@ -6,11 +6,11 @@ use crate::{
     text::{self, Glyph},
 };
 use lru::LruCache;
-use origami_lang::{Clip, Kind, Part, Timeline, Val, ffmpeg, ffprobe, output, watch};
+use origami_lang::{Clip, Kind, Part, Timeline, Val, ffmpeg, ffprobe, output, start, watch};
 use std::{
     collections::HashMap,
     fs,
-    io::Read,
+    io::{BufReader, Read},
     num::NonZeroUsize,
     path::Path,
     process::{Child, Command, Stdio},
@@ -191,13 +191,25 @@ pub fn thumb(path: &str, t: f64, w: usize, h: usize) -> Option<Vec<u8>> {
     raw(&[lead, &fast, &["-vf", &format!("{down}scale={w}:{h}")]].concat(), w * h * 4)
 }
 
+const DAY: &str = if cfg!(test) { "60" } else { "86400" };
+
 pub fn peaks(path: &str) -> Vec<f32> {
-    let args = ["-v", "error", "-i", path, "-ac", "1", "-ar", "4000", "-f", "u8", "-"];
-    let pcm = output(ffmpeg().args(args)).map(|o| o.stdout).unwrap_or_default();
-    let peaks: Vec<f32> = pcm
-        .chunks(200)
-        .map(|c| c.iter().map(|&s| (s as f32 - 128.).abs()).fold(0., f32::max))
-        .collect();
+    let args = ["-v", "error", "-i", path, "-t", DAY, "-ac", "1", "-ar", "4000", "-f", "u8", "-"];
+    let made = start(
+        ffmpeg()
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null()),
+    );
+    let Ok(mut ff) = made else { return vec![] };
+    let (seen, mut pcm, mut chunk, mut peaks) = (watch(ff.id()), BufReader::new(ff.stdout.take().unwrap()), vec![], vec![]);
+    while let Ok(1..) = pcm.by_ref().take(200).read_to_end(&mut chunk) {
+        seen.beat();
+        peaks.push(chunk.drain(..).map(|s| (s as f32 - 128.).abs()).fold(0., f32::max));
+    }
+    drop((seen, pcm));
+    let _ = ff.wait();
     let top = peaks.iter().fold(1., |m: f32, &p| m.max(p));
     peaks.into_iter().map(|p| p / top).collect()
 }
@@ -1226,6 +1238,14 @@ mod tests {
         assert_eq!(shown(20..31), 10);
         film(&file, "testsrc=s=64x36:r=30:d=3", &[]);
         assert_eq!(shown(31..61), 0);
+    }
+
+    // A sound's waveform covers at most a day of it, however few samples a second it has.
+    #[test]
+    fn waves_stop_after_a_day() {
+        let file = scratch("slow").join("a.wav");
+        film(&file, "aevalsrc=0.5*sin(t):s=1:d=120", &["-c:a", "pcm_u8"]);
+        assert_eq!(peaks(&file.to_string_lossy()).len(), DAY.parse::<usize>().unwrap() * 20);
     }
 
     // A file ffprobe could not read should be asked about again after a few hundred lookups rather
