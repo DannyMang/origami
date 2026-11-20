@@ -26,7 +26,7 @@ Anyways, like all my projects I hope this benefits somebody out there. Would lov
 
 Origami works on your Mac and keeps your scripts, footage and exports there.
 
-- **Update check.** Each time it opens, and when you pick Check for Updates…, Origami downloads one small file from GitHub to see if a newer version is out. It sends nothing about you or your project, but GitHub sees your IP address, as any website does. Start Origami with `ORIGAMI_NO_UPDATE_CHECK=1` set to turn the check off.
+- **Update check.** Each time it opens, and when you pick Check for Updates…, Origami downloads one small file from GitHub to see if a newer version is out. It sends nothing about you or your project, but GitHub sees your IP address, as any website does. Start Origami with `ORIGAMI_NO_UPDATE_CHECK=1` set to turn the check off. A newer version is only offered when its number is plain digits and dots and its link is a page of Origami's own GitHub project.
 - **Usage and crash reports are off until you say yes.** The launch screen asks once: "Help improve Origami? Send anonymous usage and crash reports." Nothing is sent before you click Yes, and nothing is sent after you click No thanks. A copy of Origami built from source without a PostHog key never asks and never sends.
 - **What is sent after a yes.** Reports go to PostHog (`us.i.posthog.com`), one small request each, for these events only:
   - `app opened`: each time Origami opens.

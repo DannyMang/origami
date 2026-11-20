@@ -9,19 +9,24 @@ use boa_engine::{
 };
 pub use error::Error;
 pub use grade::{Curves, Grade, Secondary, Vignette, Wheels};
-use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
+use serde::{
+    Deserialize, Deserializer, Serialize,
+    de::{self, DeserializeSeed, Error as _, SeqAccess, Visitor},
+};
 use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
-    env, fs,
+    env, fmt, fs,
     io::{self, Read, Seek, SeekFrom, Write},
-    mem, panic,
+    mem,
+    os::unix::fs::MetadataExt,
+    panic,
     path::{Path, PathBuf},
     pin::pin,
     process::{Child, ChildStdin, Command, Stdio},
     sync::{
-        Arc, Mutex, PoisonError,
+        Arc, Mutex, OnceLock, PoisonError,
         atomic::{AtomicBool, Ordering::Relaxed},
         mpsc::{self, RecvTimeoutError},
     },
@@ -43,26 +48,76 @@ pub enum Kind {
     Line,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum Val {
     Fixed(f64),
-    Frames(u32, #[serde(deserialize_with = "frames")] Vec<f32>),
+    Frames(u32, Vec<f32>),
 }
 
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum Run {
-    Kept(usize),
-    Given(Vec<f32>),
+struct Shape;
+
+impl<'a> Visitor<'a> for Shape {
+    type Value = Val;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("a number or per-frame numbers")
+    }
+
+    fn visit_u64<E: de::Error>(self, v: u64) -> Result<Val, E> {
+        Ok(Val::Fixed(v as f64))
+    }
+
+    fn visit_i64<E: de::Error>(self, v: i64) -> Result<Val, E> {
+        Ok(Val::Fixed(v as f64))
+    }
+
+    fn visit_f64<E: de::Error>(self, v: f64) -> Result<Val, E> {
+        Ok(Val::Fixed(v))
+    }
+
+    fn visit_seq<A: SeqAccess<'a>>(self, mut s: A) -> Result<Val, A::Error> {
+        match (s.next_element()?, s.next_element_seed(Run)?) {
+            (Some(line), Some(run)) if !run.is_empty() => Ok(Val::Frames(line, run)),
+            _ => Err(A::Error::custom("no such run")),
+        }
+    }
 }
 
-fn frames<'a, D: Deserializer<'a>>(d: D) -> Result<Vec<f32>, D::Error> {
-    let s = match Run::deserialize(d)? {
-        Run::Kept(i) => KEPT.with_borrow_mut(|k| k.get_mut(i).map(mem::take)),
-        Run::Given(s) => Some(s),
-    };
-    s.filter(|s| !s.is_empty()).ok_or_else(|| D::Error::custom("no such run"))
+impl<'a> Deserialize<'a> for Val {
+    fn deserialize<D: Deserializer<'a>>(d: D) -> Result<Val, D::Error> {
+        d.deserialize_any(Shape)
+    }
+}
+
+struct Run;
+
+impl<'a> Visitor<'a> for Run {
+    type Value = Vec<f32>;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("per-frame numbers")
+    }
+
+    fn visit_u64<E: de::Error>(self, i: u64) -> Result<Vec<f32>, E> {
+        Ok(KEPT.with_borrow_mut(|k| k.get_mut(i as usize).map(mem::take)).unwrap_or_default())
+    }
+
+    fn visit_seq<A: SeqAccess<'a>>(self, mut s: A) -> Result<Vec<f32>, A::Error> {
+        let mut out = vec![];
+        while let Some(v) = s.next_element::<f64>()? {
+            out.push(v as f32);
+        }
+        Ok(out)
+    }
+}
+
+impl<'a> DeserializeSeed<'a> for Run {
+    type Value = Vec<f32>;
+
+    fn deserialize<D: Deserializer<'a>>(self, d: D) -> Result<Vec<f32>, D::Error> {
+        d.deserialize_any(self)
+    }
 }
 
 impl Val {
@@ -108,6 +163,7 @@ pub struct Clip {
     pub gain: f64,
     pub fade: (f64, f64),
     pub label: String,
+    #[serde(deserialize_with = "line")]
     pub line: u32,
     #[serde(default)]
     pub home: u32,
@@ -189,6 +245,13 @@ thread_local! {
     static READ: RefCell<Vec<(u32, PathBuf)>> = RefCell::default();
     static COLD: RefCell<(bool, Vec<(String, PathBuf)>, Lock)> = RefCell::default();
     static KEPT: RefCell<Vec<Vec<f32>>> = RefCell::default();
+    static LINE: RefCell<u32> = RefCell::default();
+}
+
+fn line<'a, D: Deserializer<'a>>(d: D) -> Result<u32, D::Error> {
+    let n = u32::deserialize(d)?;
+    LINE.set(n);
+    Ok(n)
 }
 
 fn find(dir: &Path, rel: &str) -> Option<PathBuf> {
@@ -370,9 +433,16 @@ fn probe(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
 
 fn read(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
     host(args, cx, "__read", find, |_, path| {
-        Some(load(path)?)
+        let text = Some(load(path)?)
             .filter(|t| t.lines().count() <= 1 << 18)
-            .ok_or_else(|| anyhow!("the file has over {} lines", 1 << 18))
+            .ok_or_else(|| anyhow!("the file has over {} lines", 1 << 18))?
+            .replace('\r', "");
+        let rows = text.split("\n\n").scan(1, |row, b| {
+            let at = *row;
+            *row += b.matches('\n').count() + 2;
+            Some((at, b))
+        });
+        Ok(serde_json::to_string(&rows.collect::<Vec<_>>())?)
     })
 }
 
@@ -683,6 +753,7 @@ fn frame(r: &mut impl Read) -> Option<Vec<u8>> {
 pub fn serve(measure: Measure) {
     if env::args_os().nth(1).is_none_or(|a| a != HELP) {
         FAR.store(true, Relaxed);
+        BUILT.get_or_init(stamp);
         thread::spawn(|| {
             let mut slot = HELPER.lock().unwrap_or_else(PoisonError::into_inner);
             if slot.is_none() {
@@ -740,8 +811,20 @@ fn hire(cmd: &mut Command) -> io::Result<Helper> {
     Ok((child, stdin, heard))
 }
 
-fn fresh() -> io::Result<Helper> {
-    hire(Command::new(env::current_exe()?).arg(HELP))
+type Stamp = Option<(u64, u64, i64, i64)>;
+static BUILT: OnceLock<Stamp> = OnceLock::new();
+
+fn stamp() -> Stamp {
+    let m = fs::metadata(env::current_exe().ok()?).ok()?;
+    Some((m.dev(), m.ino(), m.mtime(), m.mtime_nsec()))
+}
+
+fn fresh() -> Result<Helper> {
+    if BUILT.get().is_some_and(|b| *b != stamp()) {
+        bail!("Origami was updated: restart it to run scripts");
+    }
+    let made = env::current_exe().and_then(|me| hire(Command::new(me).arg(HELP)));
+    made.map_err(|e| anyhow!("could not start evaluating the script: {e}"))
 }
 
 fn crashed() -> anyhow::Error {
@@ -798,7 +881,7 @@ fn remote(script: &Path, relock: bool, src: Option<&str>, measure: Measure) -> R
     let alive = |mut h: Helper| matches!(h.0.try_wait(), Ok(None)).then_some(h);
     let mut h = match slot.take().and_then(alive) {
         Some(h) => h,
-        None => fresh().map_err(|e| anyhow!("could not start evaluating the script: {e}"))?,
+        None => fresh()?,
     };
     let _ = send(&mut h.1, &job);
     let got = wait(&h);
@@ -933,14 +1016,16 @@ fn half(cx: &mut Context, script: &Path, relock: bool, src: Option<&str>, measur
 
 fn finish(out: &str, kept: Vec<Vec<f32>>, files: Vec<(u32, PathBuf)>, measure: Measure) -> Result<Timeline> {
     KEPT.set(kept);
-    let tl = serde_json::from_str(out).or_else(|_| {
-        let all: serde_json::Value = serde_json::from_str(out)?;
-        for c in all["clips"].as_array().into_iter().flatten() {
-            if let Err(e) = Clip::deserialize(c) {
-                bail!("line {}: {e}", c["line"]);
-            }
+    LINE.take();
+    let tl = serde_json::from_str(out).map_err(|e| {
+        let said = e.to_string();
+        let said = said
+            .strip_suffix(&format!(" at line {} column {}", e.line(), e.column()))
+            .unwrap_or(&said);
+        match LINE.take() {
+            0 => anyhow!("{said}"),
+            n => anyhow!("line {n}: {said}"),
         }
-        Ok::<_, anyhow::Error>(serde_json::from_value(all)?)
     });
     KEPT.take();
     let mut tl: Timeline = tl?;
@@ -1423,13 +1508,15 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
     // A script that reaches past the clip functions to name a web address or a file it never opened, to
     // read a device, a pipe, a huge file (the script itself included) or captions with too many lines,
     // to hand over values that would hang or crash the app or a timeline too big to read safely, or to
-    // replace a function Origami calls after the script, is refused.
+    // replace a function Origami calls after the script, is refused, and a long captions file with a
+    // bad time deep inside is read quickly and names that time's line.
     #[test]
     fn reaching_past_the_functions_is_refused() {
         let dir = scratch("reach");
         status(std::process::Command::new("mkfifo").arg(dir.join("pipe.srt"))).unwrap();
         fs::File::create(dir.join("big.srt")).unwrap().set_len((1 << 24) + 1).unwrap();
         fs::write(dir.join("long.srt"), "\n".repeat((1 << 18) + 1)).unwrap();
+        fs::write(dir.join("many.srt"), (" ".repeat(500) + "\n\n").repeat(8000) + "1\nxx --> yy\nodd").unwrap();
         let away = "Object.assign(v.$, { kind: 'video', src: 'http://127.0.0.1:9/a.mp4' })";
         for (src, says) in [
             (
@@ -1463,6 +1550,10 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
             (
                 "text('a')\ncaptions('long.srt')".into(),
                 "line 2: captions(\"long.srt\"): the file has over 262144 lines",
+            ),
+            (
+                "captions('many.srt')".into(),
+                "line 1: captions(\"many.srt\") line 16002: xx --> yy is not a time range",
             ),
             ("const t = text('a').for(1)\nt.$.opacity = [1, []]\nt".into(), "line 1: "),
             (
@@ -1680,8 +1771,8 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
     }
 
     // A helper that grows past the memory limit is stopped at once, one that dies or answers with a
-    // damaged reply reports a crash instead of panicking, and one that never answers is stopped after
-    // three times the time limit.
+    // damaged reply reports a crash instead of panicking, one that never answers is stopped after three
+    // times the time limit, and no new helper starts from an Origami binary that changed since launch.
     #[test]
     fn stuck_helpers_are_stopped() {
         let run = |sh: &str| {
@@ -1699,6 +1790,8 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         let from = Instant::now();
         assert_eq!(run("exec sleep 60"), "script took too long: stopped after 6 seconds");
         assert!(from.elapsed() < Duration::from_secs(8));
+        BUILT.set(None).unwrap();
+        assert_eq!(fresh().err().unwrap().to_string(), "Origami was updated: restart it to run scripts");
     }
 
     fn media(name: &str) -> PathBuf {

@@ -20,7 +20,10 @@ pub fn newer(tag: &str, have: &str) -> bool {
 pub fn read(feed: &[u8]) -> Option<(String, String)> {
     let found: serde_json::Value = serde_json::from_slice(feed).ok()?;
     let (tag, url) = (found["version"].as_str()?.trim_start_matches('v'), found["url"].as_str()?);
-    (newer(tag, VERSION) && url.starts_with(HOME)).then(|| (tag.to_string(), url.to_string()))
+    let word = |p: &str| !matches!(p, "." | "..") && p.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
+    let page = url.strip_prefix(HOME)?.split('/').all(word);
+    let plain = tag.len() <= 16 && tag.chars().all(|c| c.is_ascii_digit() || c == '.');
+    (newer(tag, VERSION) && page && plain).then(|| (tag.to_string(), url.to_string()))
 }
 
 pub fn latest() -> Option<(String, String)> {
@@ -59,8 +62,8 @@ mod tests {
         assert!(!newer("junk", "0.1.0"));
     }
 
-    // The feed names the newest version and a page of this project on GitHub to get it from; anything
-    // else, a lookalike address included, means no update.
+    // The feed names the newest version as plain numbers and a page of this project on GitHub to get it
+    // from; anything else, a lookalike or climbing address or a version with words in it, means no update.
     #[test]
     fn reads() {
         let feed = |s: &str| read(s.as_bytes());
@@ -71,8 +74,14 @@ mod tests {
             "https://example.com/get",
             "https://github.com/DannyMang/origami.evil.com/",
             "https://github.com@evil.com/DannyMang/origami/",
+            "https://github.com/DannyMang/origami/../../other/repo",
+            "https://github.com/DannyMang/origami/%2e%2e/%2e%2e/other/repo",
+            "https://github.com/DannyMang/origami/releases?to=https://evil.com",
         ] {
             assert_eq!(feed(&format!(r#"{{ "version": "99.0.0", "url": "{far}" }}"#)), None);
+        }
+        for odd in ["99.0.0 from evil.com", "99.0.0-beta", "9999999999999999.0"] {
+            assert_eq!(feed(&format!(r#"{{ "version": "{odd}", "url": "{get}" }}"#)), None);
         }
         assert_eq!(
             feed(&format!(r#"{{ "version": "{VERSION}", "url": "https://example.com" }}"#)),

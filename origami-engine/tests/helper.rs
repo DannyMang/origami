@@ -3,7 +3,7 @@ use std::{env, fs, process::Command};
 // The origami command evaluates a script in its helper process, reading media it has not seen before,
 // and prints exactly the timeline or the error that evaluating it in-process gives, and a script that
 // fills memory or hands back a timeline too big to read is stopped with a plain error instead of taking
-// the Mac's memory.
+// the Mac's memory, and reading a large timeline with a bad clip stays small in the app.
 #[test]
 fn scripts_run_in_a_helper() {
     let dir = env::temp_dir().join("origami-engine-helper");
@@ -51,5 +51,26 @@ stack(cat(t, rect(300, 80, { radius: 9 }).for(1).loop(2)), tag, line(0, 0, 1, 1)
         big.starts_with("Error: the timeline is over 16 MB as text"),
         "{}",
         big.lines().next().unwrap_or_default()
+    );
+    fs::write(
+        &script,
+        "const a = text('a').for(1)\na.$.opacity = [1, new Array(3e6).fill(0)]\nconst b = text('b').for(1)\nb.$.kind = 'bogus'\ncat(a, b)",
+    )
+    .unwrap();
+    let out = Command::new("/usr/bin/time")
+        .arg("-l")
+        .arg(env!("CARGO_BIN_EXE_origami"))
+        .arg("ir")
+        .arg(&script)
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&out.stderr);
+    let peak: u64 = said
+        .lines()
+        .find_map(|l| l.strip_suffix("peak memory footprint")?.trim().parse().ok())
+        .unwrap();
+    assert!(
+        said.starts_with("Error: line 3: unknown variant `bogus`") && peak < 128 << 20,
+        "{said}"
     );
 }
