@@ -9,6 +9,7 @@ use origami_lang::Kind;
 use std::{sync::Arc, time::Duration};
 
 const RED: u32 = 0xd07277;
+const MOST: usize = 500;
 
 #[derive(Clone)]
 pub struct Issue {
@@ -19,15 +20,22 @@ pub struct Issue {
 
 impl Origami {
     fn flags(&self, row: usize, line: &str) -> Vec<Issue> {
-        let mut out = vec![];
-        let cols = |b: usize| line[..b].chars().count();
-        let mut flag = |a: usize, b: usize, text: String| {
-            out.push(Issue {
-                row,
-                span: (cols(a), cols(b)),
-                text,
-            })
+        let (mut out, mut at) = (vec![], (0, 0));
+        let mut cols = |b: usize| {
+            at = match b >= at.0 {
+                true => (b, at.1 + line[at.0..b].chars().count()),
+                false => (b, at.1 - line[b..at.0].chars().count()),
+            };
+            at.1
         };
+        let mut flag = |a: usize, b: usize, text: String| {
+            if out.len() < MOST {
+                let span = (cols(a), cols(b));
+                out.push(Issue { row, span, text })
+            }
+        };
+        let media = |c: &&origami_lang::Clip| c.line as usize == row + 1 && matches!(c.kind, Kind::Video | Kind::Sound);
+        let total = self.tl.clips.iter().find(media).map_or(0., |c| c.total);
         for (call, name, end, found) in calls(line) {
             for k in found.iter().filter(|k| k.label != "#") {
                 let what = if k.label.parse::<usize>().is_ok() { &call } else { &k.label };
@@ -39,8 +47,6 @@ impl Origami {
                     _ => {}
                 }
             }
-            let media = |c: &&origami_lang::Clip| c.line as usize == row + 1 && matches!(c.kind, Kind::Video | Kind::Sound);
-            let total = self.tl.clips.iter().find(media).map_or(0., |c| c.total);
             match (call.as_str(), &found[..]) {
                 ("trim", [a, b]) if b.value <= a.value => flag(name, end + 1, "trim start must be before its end".into()),
                 ("trim", [.., b]) if total > 0. && b.value > total + 0.05 => {
@@ -63,44 +69,44 @@ impl Origami {
             if seen != line || *at != key {
                 (*seen, *at, *found) = (line.clone(), key, self.flags(row, line));
             }
-            out.extend(found.iter().cloned());
+            out.extend(found.iter().take(MOST - out.len()).cloned());
         }
-        let mut open: Vec<(usize, usize, char)> = vec![];
+        let (mut open, mut seat): (Vec<char>, Vec<(usize, usize, usize)>) = (vec![], vec![]);
         for (row, line) in self.lines.iter().enumerate() {
-            let (mut quote, mut last) = (None, ' ');
+            let (mut quote, mut last, mut name) = (None, ' ', 0);
             for (col, c) in line.chars().enumerate() {
                 match (quote, c) {
                     (Some(q), _) if c == q && last != '\\' => quote = None,
                     (Some(_), _) => {}
                     (_, '"' | '\'' | '`') => quote = Some(c),
                     (_, '/') if last == '/' => break,
-                    (_, '(' | '[' | '{') => open.push((row, col, c)),
+                    (_, '(' | '[' | '{') => {
+                        if open.len() < MOST {
+                            seat.push((row, col - name, col));
+                        }
+                        open.push(c);
+                    }
                     (_, ')' | ']' | '}') => match open.last() {
-                        Some(o) if "([{".find(o.2) == ")]}".find(c) => drop(open.pop()),
-                        _ => out.push(Issue {
+                        Some(o) if "([{".find(*o) == ")]}".find(c) => {
+                            open.pop();
+                            seat.truncate(open.len());
+                        }
+                        _ if out.len() < MOST => out.push(Issue {
                             row,
                             span: (col, col + 1),
                             text: format!("nothing opens this {c}"),
                         }),
+                        _ => {}
                     },
                     _ => {}
                 }
-                last = c;
+                (last, name) = (c, if c.is_alphanumeric() || c == '_' { name + 1 } else { 0 });
             }
         }
-        for (row, col, c) in open {
-            let word = |c: &char| c.is_alphanumeric() || *c == '_';
-            let name = self.lines[row]
-                .chars()
-                .take(col)
-                .collect::<Vec<_>>()
-                .iter()
-                .rev()
-                .take_while(|c| word(c))
-                .count();
+        for (&(row, from, col), c) in seat.iter().zip(&open).take(MOST - out.len()) {
             out.push(Issue {
                 row,
-                span: (col - name, col + 1),
+                span: (from, col + 1),
                 text: format!("this {c} is never closed"),
             });
         }
@@ -195,5 +201,44 @@ impl Origami {
                 .child(text.clone()),
             text,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MOST;
+
+    // Warnings on lines of tens of thousands of brackets should take moments and stop at the first
+    // few hundred, still naming each unclosed call, counting columns past wide letters and keeping
+    // the script's error.
+    #[gpui::test]
+    fn huge_lines_lint_quickly(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            let lines = [
+                format!("  ab({}", "a(".repeat(50_000)),
+                "(\\\"".repeat(50_000),
+                "(/*".repeat(50_000),
+            ];
+            (app.lines, app.bad, app.err) = (lines.into(), 1, "wrong".into());
+            app
+        });
+        view.update(cx, |o, _| {
+            let start = std::time::Instant::now();
+            let found = o.issues();
+            let spans: Vec<_> = found[..2].iter().map(|i| (i.row, i.span, i.text.as_str())).collect();
+            assert_eq!(
+                spans,
+                [(0, (2, 5), "this ( is never closed"), (0, (5, 7), "this ( is never closed")]
+            );
+            assert_eq!((found.len(), found[MOST].text.as_str()), (MOST + 1, "wrong"));
+            o.lines = vec!["\u{e9}.opacity(3)".repeat(20_000)];
+            let found = o.issues();
+            assert_eq!(
+                (found.len(), found[1].span, found[1].text.as_str()),
+                (MOST + 1, (22, 23), "opacity takes 0 to 1")
+            );
+            assert!(start.elapsed().as_secs() < 2);
+        });
     }
 }

@@ -18,6 +18,7 @@ What changed in each version of Origami. The launch screen shows the version you
 - An export at a size larger than the timeline that would draw a clip over 16384 pixels on a side, such as very large text on a small timeline exported at 4K, now stops with an error naming the clip's line instead of crashing Origami.
 - Recovered unsaved code and remembered export choices are only offered for the exact script they were kept for, never for another script that happens to share their file name in Origami's folder. Export choices and unsaved code kept by earlier builds are not offered again.
 - Saved versions written while quitting are flushed to disk before Origami exits.
+- The code pane shows at most 500 warnings at a time, plus the script's error. A line of tens of thousands of brackets no longer freezes Origami for seconds on opening and after every keystroke, and the Graph tab no longer freezes on a script of about a thousand clips that follow one another. Autocomplete, search and folding also stay quick on scripts with tens of thousands of names, matches or brackets.
 
 ### Nov 15
 

@@ -143,7 +143,7 @@ fn scan(line: &str, call: &str, from: usize, end: usize) -> Vec<Knob> {
         let from = i;
         let mut found = None;
         match c {
-            b'(' => i = close(s, i).unwrap_or(end),
+            b'(' => i = close(&s[..end], i).unwrap_or(end),
             b'[' => square += 1,
             b']' => square -= 1,
             b',' if square == 0 && key.is_empty() => arg += 1,
@@ -203,24 +203,24 @@ fn scan(line: &str, call: &str, from: usize, end: usize) -> Vec<Knob> {
     out
 }
 
-pub fn calls(line: &str) -> Vec<(String, usize, usize, Vec<Knob>)> {
-    let s = line.as_bytes();
+pub fn calls(line: &str) -> impl Iterator<Item = (String, usize, usize, Vec<Knob>)> + '_ {
+    let (s, mut fuel) = (line.as_bytes(), 16 * line.len());
     let word = |c: &u8| c.is_ascii_alphanumeric() || *c == b'_';
-    let found = (0..s.len()).filter(|i| s[*i] == b'(').filter_map(|open| {
-        let name = open - s[..open].iter().rev().take_while(|c| word(c)).count();
-        let end = close(s, open)?;
+    (0..s.len()).filter(move |i| s[*i] == b'(').filter_map(move |open| {
+        let end = (fuel > 0).then(|| close(s, open)).flatten();
+        fuel = fuel.saturating_sub(end.unwrap_or(s.len()) - open);
+        let (end, name) = (end?, open - s[..open].iter().rev().take_while(|c| word(c)).count());
         Some((
             line[name..open].to_string(),
             name,
             end,
             scan(line, &line[name..open], open + 1, end),
         ))
-    });
-    found.collect()
+    })
 }
 
 pub fn knobs(line: &str, at: usize) -> Option<(String, usize, usize, Vec<Knob>)> {
-    let on = calls(line).into_iter().filter(|c| c.1 <= at && at <= c.2 && live(&c.0, &c.3));
+    let on = calls(line).filter(|c| c.1 <= at && at <= c.2 && live(&c.0, &c.3));
     let from = line.len() - line.trim_start().len();
     let loose = || (String::new(), from, line.len().saturating_sub(1), scan(line, "", from, line.len()));
     let (call, name, end, mut found) = on.max_by_key(|c| c.1).unwrap_or_else(loose);
@@ -648,7 +648,7 @@ mod tests {
     #[test]
     fn finds() {
         let tied = "  .pos(title.pos.x, add(title2.pos.y, -0.06)).opacity(mul(title.opacity, 2)).scale(a1.scale)";
-        assert!(calls(tied).iter().all(|c| c.3.is_empty()));
+        assert!(calls(tied).all(|c| c.3.is_empty()));
         assert_eq!(labels("  clip.temperature(-10),", 12), [("0".into(), -10.)]);
         assert_eq!(labels("a.trim(\"0:10\", 30).speed(1.5)", 4), [("0".into(), 10.), ("1".into(), 30.)]);
         assert_eq!(labels("a.trim(\"0:10\", 30).speed(1.5)", 22), [("0".into(), 1.5)]);
