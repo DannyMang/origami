@@ -54,7 +54,7 @@ pub fn spare(script: &Path) -> PathBuf {
 fn stash(script: &Path, text: &str) {
     let spare = spare(script);
     let _ = spare.parent().map(fs::create_dir_all);
-    let _ = origami_lang::save(&spare, text);
+    let _ = origami_lang::save(&spare, format!("{}\0{text}", script.to_string_lossy()));
 }
 
 impl Origami {
@@ -63,7 +63,7 @@ impl Origami {
             stash(&self.script, &self.text());
         }
         if let Some(s) = &self.shelf {
-            s.drain(false, Duration::from_millis(240));
+            s.drain(true, Duration::from_millis(240));
         }
         ready(())
     }
@@ -120,7 +120,8 @@ mod tests {
     // A crash with unsaved changes should keep the code on screen in Origami's own folder under a name
     // made from the script's path, replacing a link there instead of writing through it, and log the
     // panic; opening the script again should bring that code back with the keep mine / use disk bar,
-    // while a link there or a .recovered file shipped beside the script is never read.
+    // while a link there, code kept for another script under the same name or a .recovered file
+    // shipped beside the script is never read.
     #[gpui::test]
     fn crash_keeps_unsaved(cx: &mut TestAppContext) {
         let dir = env::temp_dir().join("origami-crash-test");
@@ -135,7 +136,10 @@ mod tests {
         *UNSAVED.lock().unwrap() = Some((script.clone(), "text(\"b\")\n".into()));
         rescue("panicked at here:\nboom", "here\tboom", &log);
         *UNSAVED.lock().unwrap() = None;
-        assert_eq!(fs::read_to_string(spare(&script)).unwrap(), "text(\"b\")\n");
+        assert_eq!(
+            fs::read_to_string(spare(&script)).unwrap(),
+            format!("{}\0text(\"b\")\n", script.display())
+        );
         assert_eq!(fs::read_to_string(dir.join("other")).unwrap(), "precious");
         let logged = fs::read_to_string(&log).unwrap();
         assert!(logged.contains("panicked at here:\nboom\n") && logged.ends_with("\u{1e}here\tboom\n"));
@@ -157,6 +161,9 @@ mod tests {
         fs::write(dir.join("edit.js.recovered"), "text(\"c\")\n").unwrap();
         view.update(cx, |o, cx| o.open(script.clone(), cx));
         assert!(!view.update(cx, |o, _| o.dirty));
+        fs::write(spare(&script), format!("{}\0text(\"d\")\n", dir.join("other.js").display())).unwrap();
+        view.update(cx, |o, cx| o.open(script.clone(), cx));
+        assert!(!view.update(cx, |o, _| o.dirty) && spare(&script).exists());
     }
 
     // Quitting while another program holds the script's history lock gives up within a quarter of a

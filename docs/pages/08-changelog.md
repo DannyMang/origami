@@ -4,6 +4,15 @@ What changed in each version of Origami. The launch screen shows the version you
 
 ## 0.1.0 (not yet released)
 
+### Nov 19
+
+- **Scripts run in a helper process.** A script that runs for more than 30 seconds, or uses more than 2 GB of memory, is stopped and its error shows like any other, even when one call never returns (a runaway regular expression, a huge array). Before, such a script kept running in the background and could take all of the Mac's memory and close Origami. While a script is still reading new media files it gets more time, up to 5 minutes.
+- A force-quit or crash during an export no longer leaves a hidden half-written file beside the destination.
+- A project can no longer run the Mac out of memory by naming one font or colour table through many spellings of its path (`./a.ttf`, `././a.ttf`, …): each file is read and kept once.
+- An export at a size larger than the timeline that would draw a clip over 16384 pixels on a side, such as very large text on a small timeline exported at 4K, now stops with an error naming the clip's line instead of crashing Origami.
+- Recovered unsaved code and remembered export choices are only offered for the exact script they were kept for, never for another script that happens to share their file name in Origami's folder. Export choices and unsaved code kept by earlier builds are not offered again.
+- Saved versions written while quitting are flushed to disk before Origami exits.
+
 ### Nov 15
 
 - **History.** Every save keeps a version of the script on your Mac. The ↺ button in the code pane, cmd+y, File › History… or `:history` lists them by day with what changed; click one to compare it with the code on screen and restore it as a new save, which cmd+z undoes. Versions stay in `~/Library/Application Support/Origami/history`, never in the project folder: everything from the last week, then one an hour for a month and one a day for a year, up to about 50 MB per script.

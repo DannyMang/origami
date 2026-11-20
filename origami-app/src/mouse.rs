@@ -102,9 +102,10 @@ impl Origami {
         }
         let stamp = |p: &Path| fs::metadata(p).and_then(|m| m.modified()).ok();
         let spare = crash::spare(&self.script);
+        let mine = |t: String| Some(t.strip_prefix(&*self.script.to_string_lossy())?.strip_prefix('\0')?.to_string());
         if fs::symlink_metadata(&spare).is_ok_and(|m| m.is_file())
             && stamp(&spare) > stamp(&self.script)
-            && let Ok(text) = origami_lang::load(&spare)
+            && let Some(text) = origami_lang::load(&spare).ok().and_then(mine)
         {
             let _ = fs::remove_file(&spare);
             if origami_lang::load(&self.script).unwrap_or_default().lines().ne(text.lines()) {

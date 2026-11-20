@@ -262,8 +262,9 @@ mod tests {
         assert!(run(r#"{"fadedFilm":50}"#, [0.; 3])[0] > 0. && run(r#"{"fadedFilm":50}"#, [1.; 3])[0] < 1.);
     }
 
-    // A colour table saved as a .cube file should read back the same, a size so large that its cube
-    // overflows is refused, a look at strength 0 should change nothing, and at 100 should apply in full.
+    // A colour table saved as a .cube file should read back the same and is read once however its path
+    // is spelled, a size so large that its cube overflows is refused, a look at strength 0 should change
+    // nothing, and at 100 should apply in full.
     #[test]
     fn cube_round_trips_and_look_blends() {
         let lut = Lut::bake(5, |[r, g, b]| [b, r * 0.5, g * g]);
@@ -274,6 +275,11 @@ mod tests {
         assert_eq!(Lut::parse("LUT_3D_SIZE 4194304\n"), None);
         let file = crate::tests::scratch("cube").join("look.cube");
         std::fs::write(&file, lut.text()).unwrap();
+        let spelled = file.parent().unwrap().join(".//look.cube");
+        assert!(Arc::ptr_eq(
+            &Lut::read(&file.to_string_lossy()).unwrap(),
+            &Lut::read(&spelled.to_string_lossy()).unwrap()
+        ));
         let look = |k: f64| Grade {
             look: Some((file.to_string_lossy().into(), k)),
             ..Grade::default()

@@ -641,7 +641,7 @@ impl Preview {
     fn moved(&mut self, out: &mut [u8], c: &Clip, t: f64, fps: u32, (pw, ph): (usize, usize), k: f64, i: usize, a: f64) {
         let ((w, h), q, turn) = ((pw as f64, ph as f64), c.scale.at(i) / c.scale.max(), c.rotate.at(i));
         let mid = |tw, th| seat(c, (w, h), (tw as f64, th as f64), i);
-        if c.parts.is_empty() && c.shown == Val::Fixed(1.) {
+        if c.kind != Kind::Text || c.parts.is_empty() && c.shown == Val::Fixed(1.) {
             if let Some((px, (sw, sh), _)) = self.layer(c, t, fps, (pw, ph), k) {
                 blit(out, (pw, ph), &px, (sw, sh), q, turn, mid(sw, sh), a);
             }
@@ -1136,6 +1136,27 @@ mod tests {
         assert_eq!([at(&far, 0, 0), at(&far, 2, 1), at(&far, 3, 2)], [110, 220, 220]);
         let tiny = nudge(&px, 4, (0.5, 0.25));
         assert_eq!([at(&tiny, 0, 0), at(&tiny, 3, 2)], [30, 220]);
+    }
+
+    // A clip that is not text is drawn as itself even when its internals carry text-only motion and a
+    // huge text size, instead of being laid out as text.
+    #[test]
+    fn only_text_is_laid_out() {
+        let c = Clip {
+            src: "#ff0000".into(),
+            size: 4e9,
+            shown: Val::Fixed(0.5),
+            ..clip("color", "")
+        };
+        let tl = Timeline {
+            fps: 30,
+            size: (64, 36),
+            duration: 1.,
+            clips: vec![c],
+            ..Default::default()
+        };
+        let mid = (18 * 64 + 32) * 4;
+        assert_eq!(Preview::default().frame(&tl, 0.5, (64, 36))[mid..mid + 4], [0, 0, 255, 255]);
     }
 
     // Auto quality renders at the on-screen size in eighths of the timeline and at most 1920 across while

@@ -3,6 +3,7 @@ use origami_engine::{Preview, footprint};
 use std::{env, io::Write, process::Stdio};
 
 fn main() -> Result<()> {
+    origami_lang::serve(footprint);
     let args: Vec<String> = env::args().skip(1).collect();
     let flag = |f: &str| args.iter().any(|a| a == f);
     let pos: Vec<&str> = args.iter().map(String::as_str).filter(|a| !a.starts_with("--")).collect();

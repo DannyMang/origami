@@ -14,15 +14,16 @@ use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
-    fs,
-    io::{self, Read, Seek, SeekFrom},
-    mem,
+    env, fs,
+    io::{self, Read, Seek, SeekFrom, Write},
+    mem, panic,
     path::{Path, PathBuf},
     pin::pin,
+    process::{Child, ChildStdin, Command, Stdio},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, PoisonError,
         atomic::{AtomicBool, Ordering::Relaxed},
-        mpsc,
+        mpsc::{self, RecvTimeoutError},
     },
     task::{self, Poll, Waker},
     thread,
@@ -267,6 +268,9 @@ fn stat(path: &Path) -> Result<(u64, u64)> {
 fn scan(path: &Path, prev: Option<&Media>, relock: bool, rel: &str) -> Result<Media> {
     let ((size, mtime), mut hash, mut file) = (stat(path)?, Sha256::new(), fs::File::open(path)?);
     BUSY.store(true, Relaxed);
+    if SERVING.load(Relaxed) {
+        let _ = send(&mut io::stdout().lock(), &[]);
+    }
     hash.update(size.to_le_bytes());
     for at in [0, size.saturating_sub(1 << 20)] {
         file.seek(SeekFrom::Start(at))?;
@@ -630,7 +634,179 @@ fn boot() -> Context {
     cx
 }
 
+const HELP: &str = "--origami-evaluate";
+const HEAVY: u64 = if cfg!(test) { 1 << 28 } else { 2 << 30 };
+static FAR: AtomicBool = AtomicBool::new(false);
+static SERVING: AtomicBool = AtomicBool::new(false);
+type Helper = (Child, ChildStdin, mpsc::Receiver<Vec<u8>>);
+static HELPER: Mutex<Option<Helper>> = Mutex::new(None);
+
+unsafe extern "C" {
+    fn proc_pid_rusage(pid: i32, flavor: i32, info: *mut [u64; 12]) -> i32;
+    fn _exit(code: i32) -> !;
+}
+
+fn heft(pid: u32) -> u64 {
+    let mut info = [0; 12];
+    match unsafe { proc_pid_rusage(pid as i32, 0, &mut info) } {
+        0 => info[9],
+        _ => 0,
+    }
+}
+
+fn send(w: &mut impl Write, data: &[u8]) -> io::Result<()> {
+    w.write_all(&(data.len() as u64).to_le_bytes())?;
+    w.write_all(data)?;
+    w.flush()
+}
+
+fn frame(r: &mut impl Read) -> Option<Vec<u8>> {
+    let mut n = [0; 8];
+    r.read_exact(&mut n).ok()?;
+    let n = Some(u64::from_le_bytes(n)).filter(|n| *n <= 1 << 28)?;
+    let mut v = vec![];
+    r.take(n).read_to_end(&mut v).ok()?;
+    (v.len() as u64 == n).then_some(v)
+}
+
+pub fn serve(measure: Measure) {
+    if env::args_os().nth(1).is_none_or(|a| a != HELP) {
+        FAR.store(true, Relaxed);
+        thread::spawn(|| {
+            let mut slot = HELPER.lock().unwrap_or_else(PoisonError::into_inner);
+            if slot.is_none() {
+                *slot = fresh().ok();
+            }
+        });
+        return;
+    }
+    SERVING.store(true, Relaxed);
+    let hook = panic::take_hook();
+    panic::set_hook(Box::new(move |p| {
+        hook(p);
+        unsafe { _exit(101) }
+    }));
+    let vm = spawn();
+    while let Some(job) = frame(&mut io::stdin().lock()) {
+        let _ = vm.send(Box::new(move |cx: &mut Context| {
+            let reply = answer(cx, &job, measure);
+            if send(&mut io::stdout().lock(), &reply).is_err() {
+                unsafe { _exit(0) }
+            }
+        }));
+    }
+    unsafe { _exit(0) }
+}
+
+type Head = (Result<(usize, Vec<usize>, Vec<(u32, PathBuf)>), Vec<String>>, Option<Error>);
+
+fn answer(cx: &mut Context, job: &[u8], measure: Measure) -> Vec<u8> {
+    let (script, relock, src): (PathBuf, bool, Option<String>) = serde_json::from_slice(job).unwrap_or_default();
+    BUSY.store(false, Relaxed);
+    let got = half(cx, &script, relock, src.as_deref(), measure);
+    let fail = FAIL.take().filter(|_| src.is_none());
+    let (head, out, kept): (Head, _, _) = match got {
+        Ok((out, kept, files)) => ((Ok((out.len(), kept.iter().map(Vec::len).collect(), files)), fail), out, kept),
+        Err(e) => ((Err(e.chain().map(|c| c.to_string()).collect()), fail), String::new(), vec![]),
+    };
+    let head = serde_json::to_vec(&head).unwrap_or_default();
+    let mut reply = [&(head.len() as u64).to_le_bytes()[..], &head, out.as_bytes()].concat();
+    reply.extend(kept.iter().flatten().flat_map(|f| f.to_le_bytes()));
+    reply
+}
+
+fn hire(cmd: &mut Command) -> io::Result<Helper> {
+    let mut child = start(cmd.stdin(Stdio::piped()).stdout(Stdio::piped()))?;
+    let (stdin, mut stdout) = child.stdin.take().zip(child.stdout.take()).ok_or(io::ErrorKind::BrokenPipe)?;
+    let (tell, heard) = mpsc::channel();
+    thread::spawn(move || {
+        while let Some(f) = frame(&mut stdout) {
+            if tell.send(f).is_err() {
+                break;
+            }
+        }
+    });
+    Ok((child, stdin, heard))
+}
+
+fn fresh() -> io::Result<Helper> {
+    hire(Command::new(env::current_exe()?).arg(HELP))
+}
+
+fn crashed() -> anyhow::Error {
+    anyhow!("script evaluation crashed: edit the script and try again")
+}
+
+fn wait(h: &Helper) -> Result<Vec<u8>> {
+    let (from, mut since, mut busy) = (Instant::now(), Instant::now(), false);
+    loop {
+        match h.2.recv_timeout(Duration::from_millis(100)) {
+            Ok(f) if !f.is_empty() => return Ok(f),
+            Ok(_) => busy = true,
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return Err(crashed()),
+        }
+        if heft(h.0.id()) > HEAVY {
+            bail!("script used too much memory: stopped at {} MB", HEAVY >> 20)
+        }
+        let over = since.elapsed() > LIMIT * 3;
+        if over && !mem::take(&mut busy) || from.elapsed() > LIMIT * 30 {
+            bail!("script took too long: stopped after {} seconds", from.elapsed().as_secs())
+        }
+        if over {
+            since = Instant::now();
+        }
+    }
+}
+
+fn open(f: &[u8], measure: Measure) -> Result<Timeline> {
+    let (n, rest) = f.split_first_chunk::<8>().ok_or_else(crashed)?;
+    let (head, rest) = rest.split_at_checked(u64::from_le_bytes(*n) as usize).ok_or_else(crashed)?;
+    let (got, fail): Head = serde_json::from_slice(head).map_err(|_| crashed())?;
+    let fall = |e: anyhow::Error| fail.map_or(e, Into::into);
+    match got {
+        Err(chain) => {
+            let e = chain.into_iter().rev().fold(None, |e: Option<anyhow::Error>, m| match e {
+                Some(e) => Some(e.context(m)),
+                None => Some(anyhow!(m)),
+            });
+            Err(fall(e.unwrap_or_else(crashed)))
+        }
+        Ok((n, lens, files)) => {
+            let (out, rest) = rest.split_at_checked(n).ok_or_else(crashed)?;
+            let mut floats = rest.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+            let kept = lens.iter().map(|n| floats.by_ref().take(*n).collect()).collect();
+            finish(std::str::from_utf8(out)?, kept, files, measure).map_err(fall)
+        }
+    }
+}
+
+fn remote(script: &Path, relock: bool, src: Option<&str>, measure: Measure) -> Result<Timeline> {
+    let job = serde_json::to_vec(&(script, relock, src))?;
+    let mut slot = HELPER.lock().unwrap_or_else(PoisonError::into_inner);
+    let alive = |mut h: Helper| matches!(h.0.try_wait(), Ok(None)).then_some(h);
+    let mut h = match slot.take().and_then(alive) {
+        Some(h) => h,
+        None => fresh().map_err(|e| anyhow!("could not start evaluating the script: {e}"))?,
+    };
+    let _ = send(&mut h.1, &job);
+    let got = wait(&h);
+    *slot = match got {
+        Ok(_) => Some(h),
+        Err(_) => {
+            let _ = h.0.kill();
+            let _ = h.0.wait();
+            fresh().ok()
+        }
+    };
+    drop(slot);
+    open(&got?, measure)
+}
+
 fn ask(script: &Path, relock: bool, src: Option<&str>, measure: Measure) -> Result<Timeline> {
+    if FAR.load(Relaxed) {
+        return remote(script, relock, src, measure);
+    }
     let (script, src, (back, got)) = (script.to_path_buf(), src.map(String::from), mpsc::channel());
     let job = move |cx: &mut Context| {
         let tl = build(cx, &script, relock, src.as_deref(), measure);
@@ -663,6 +839,13 @@ pub fn peek(script: &Path, src: &str, measure: Measure) -> Result<Timeline> {
 }
 
 fn build(cx: &mut Context, script: &Path, relock: bool, src: Option<&str>, measure: Measure) -> Result<Timeline> {
+    let (out, kept, files) = half(cx, script, relock, src, measure)?;
+    finish(&out, kept, files, measure)
+}
+
+type Half = (String, Vec<Vec<f32>>, Vec<(u32, PathBuf)>);
+
+fn half(cx: &mut Context, script: &Path, relock: bool, src: Option<&str>, measure: Measure) -> Result<Half> {
     let script = script
         .canonicalize()
         .with_context(|| format!("missing script: {}", script.display()))?;
@@ -731,15 +914,22 @@ fn build(cx: &mut Context, script: &Path, relock: bool, src: Option<&str>, measu
     if new != old && src.is_none() {
         let _ = save(&lock, serde_json::to_string_pretty(&new)?);
     }
-    let mut tl: Timeline = serde_json::from_str(&out).or_else(|_| {
-        let all: serde_json::Value = serde_json::from_str(&out)?;
+    Ok((out, KEPT.take(), READ.take()))
+}
+
+fn finish(out: &str, kept: Vec<Vec<f32>>, files: Vec<(u32, PathBuf)>, measure: Measure) -> Result<Timeline> {
+    KEPT.set(kept);
+    let tl = serde_json::from_str(out).or_else(|_| {
+        let all: serde_json::Value = serde_json::from_str(out)?;
         for c in all["clips"].as_array().into_iter().flatten() {
             if let Err(e) = Clip::deserialize(c) {
                 bail!("line {}: {e}", c["line"]);
             }
         }
         Ok::<_, anyhow::Error>(serde_json::from_value(all)?)
-    })?;
+    });
+    KEPT.take();
+    let mut tl: Timeline = tl?;
     const DAY: f64 = 86400.;
     let fair = |v: u32, top: u32| (1..=top).contains(&v);
     if !(fair(tl.fps, 240) && fair(tl.size.0, 16384) && fair(tl.size.1, 16384) && tl.duration <= DAY) {
@@ -752,7 +942,6 @@ fn build(cx: &mut Context, script: &Path, relock: bool, src: Option<&str>, measu
     {
         bail!("line {}: {} has a time or speed out of range", c.line, c.label);
     }
-    let files = READ.take();
     let opened: BTreeSet<&Path> = files.iter().map(|(_, f)| f.as_path()).collect();
     if let Some(e) = tl.clips.iter().find_map(|c| stray(c, |f| opened.contains(Path::new(f)))) {
         bail!("{e}");
@@ -1458,6 +1647,28 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         let e = eval(&dir.join("edit.js"), false, boom).unwrap_err().to_string();
         assert_eq!(e, "script evaluation crashed: edit the script and try again");
         assert_eq!(tl("text('a').for(4)").duration, 4.);
+    }
+
+    // A helper that grows past the memory limit is stopped at once, one that dies or answers with a
+    // damaged reply reports a crash instead of panicking, and one that never answers is stopped after
+    // three times the time limit.
+    #[test]
+    fn stuck_helpers_are_stopped() {
+        let run = |sh: &str| {
+            let mut h = hire(Command::new("/bin/sh").args(["-c", sh])).unwrap();
+            let got = wait(&h).and_then(|f| open(&f, size));
+            let _ = h.0.kill();
+            let _ = h.0.wait();
+            got.unwrap_err().to_string()
+        };
+        let fat = "exec /usr/bin/perl -e '$x = \"a\" x 4e8; sleep 60'";
+        assert_eq!(run(fat), "script used too much memory: stopped at 256 MB");
+        assert_eq!(run("exit 3"), crashed().to_string());
+        let lie = "printf '\\012\\0\\0\\0\\0\\0\\0\\0\\377\\0\\0\\0\\0\\0\\0\\0{}'; exec sleep 60";
+        assert_eq!(run(lie), crashed().to_string());
+        let from = Instant::now();
+        assert_eq!(run("exec sleep 60"), "script took too long: stopped after 6 seconds");
+        assert!(from.elapsed() < Duration::from_secs(8));
     }
 
     fn media(name: &str) -> PathBuf {

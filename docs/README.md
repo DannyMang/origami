@@ -42,8 +42,10 @@ An `origami` fence is shown as code, rendered with the CLI, and its video is pla
 
 Renders are cached in `dist/video/` by a hash of the script, everything in `media/` and the CLI binary. A failed render fails the build.
 
+An example runs on the Mac that builds the site and can read any file there, and whatever it shows ends up in the published video. Review changes to `pages/` like code before building and deploying.
+
 ## Add a video
 
-Image syntax with a video path, relative to `docs/`. The file is copied into `dist/`.
+Image syntax with a video path under `media/`, relative to `docs/`. The file is copied into `dist/`; any other path fails the build.
 
     ![caption](media/clips/intro.mp4)

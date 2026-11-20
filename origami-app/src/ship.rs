@@ -148,9 +148,9 @@ impl Origami {
         let dir = self.script.parent().unwrap_or(Path::new(".")).to_path_buf();
         let name = dir.file_name().map_or("out".into(), |n| n.to_string_lossy().to_string());
         let kept = origami_lang::load(&self.kept()).ok();
-        let kept: Option<(PathBuf, u32, usize, u8, bool)> = kept.and_then(|s| serde_json::from_str(&s).ok());
+        let kept: Option<(PathBuf, PathBuf, u32, usize, u8, bool)> = kept.and_then(|s| serde_json::from_str(&s).ok());
         self.ship = Some(match kept {
-            Some((path, height, codec, quality, audio)) if path.is_absolute() => Ship {
+            Some((script, path, height, codec, quality, audio)) if script == self.script && path.is_absolute() => Ship {
                 path,
                 opts: Opts {
                     height: if SIZES.iter().any(|s| s.0 == height) { height } else { 0 },
@@ -202,7 +202,7 @@ impl Origami {
     fn ship_out(&mut self, out: Option<PathBuf>, cx: &mut Context<Self>) {
         let Some(mut s) = self.ship.take() else { return };
         let codec = CODECS.iter().position(|c| c.0 == s.opts.codec).unwrap_or(0);
-        let kept = (&s.path, s.opts.height, codec, s.opts.quality, s.opts.audio);
+        let kept = (&self.script, &s.path, s.opts.height, codec, s.opts.quality, s.opts.audio);
         let _ = self.kept().parent().map(fs::create_dir_all);
         let _ = origami_lang::save(&self.kept(), serde_json::to_string(&kept).unwrap_or_default());
         s.opts.range = self.opened().filter(|_| s.clip).map(|c| (c.start, c.end));
@@ -527,8 +527,9 @@ pub mod tests {
     }
 
     // A remembered destination shipped inside a downloaded project, such as a web address in its
-    // .origami folder, is ignored and the dialog offers the file next to the script, and a remembered
-    // size or quality the dialog does not offer opens on the default one instead.
+    // .origami folder, or choices remembered for another script under the same name, are ignored and
+    // the dialog offers the file next to the script, and a remembered size or quality the dialog does
+    // not offer opens on the default one instead.
     #[gpui::test]
     fn ignores_a_remembered_web_address(cx: &mut gpui::TestAppContext) {
         let dir = env::temp_dir().join("origami-ship-test").join("far");
@@ -552,13 +553,18 @@ pub mod tests {
             })
         };
         let want = |path: &Path, height, codec, quality| Some((path.to_path_buf(), height, codec, quality));
+        let (me, other) = (dir.join("edit.js"), dir.join("other.js"));
         let rows = [
             (
-                r#"["http://127.0.0.1:9/a.ts",720,0,50,true]"#.to_string(),
+                format!("[{me:?},\"http://127.0.0.1:9/a.ts\",720,0,50,true]"),
                 want(&dir.join("far.mp4"), 0, Codec::H264, 80),
             ),
-            (format!("[{far:?},100000,2,7,true]"), want(&far, 0, Codec::ProRes, 80)),
-            (format!("[{far:?},720,2,50,true]"), want(&far, 720, Codec::ProRes, 50)),
+            (format!("[{me:?},{far:?},100000,2,7,true]"), want(&far, 0, Codec::ProRes, 80)),
+            (format!("[{me:?},{far:?},720,2,50,true]"), want(&far, 720, Codec::ProRes, 50)),
+            (
+                format!("[{other:?},{far:?},720,2,50,true]"),
+                want(&dir.join("far.mp4"), 0, Codec::H264, 80),
+            ),
         ];
         for (row, want) in rows {
             assert_eq!(shown(cx, row.clone()), want, "{row}");

@@ -2,12 +2,13 @@ use std::{
     array,
     collections::HashMap,
     fs,
+    os::unix::fs::MetadataExt,
     sync::{Arc, LazyLock, Mutex},
     thread,
     time::SystemTime,
 };
 
-type Files = HashMap<(String, Option<SystemTime>), Option<Arc<Lut>>>;
+type Files = HashMap<(u64, u64, Option<SystemTime>), Option<Arc<Lut>>>;
 
 static FILES: LazyLock<Mutex<Files>> = LazyLock::new(Mutex::default);
 
@@ -71,7 +72,8 @@ impl Lut {
     }
 
     pub fn read(path: &str) -> Option<Arc<Self>> {
-        let key = (path.to_string(), fs::metadata(path).and_then(|m| m.modified()).ok());
+        let m = fs::metadata(path).ok()?;
+        let key = (m.dev(), m.ino(), m.modified().ok());
         let load = || Self::parse(&origami_lang::load(path.as_ref()).ok()?).map(Arc::new);
         FILES.lock().unwrap().entry(key).or_insert_with(load).clone()
     }

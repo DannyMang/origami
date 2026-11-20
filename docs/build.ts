@@ -59,6 +59,7 @@ marked.use({
       return lang === "origami" ? pre + player("video/" + render(text)) + "\n" : pre
     },
     image({ href, text }) {
+      if (!href.startsWith("media/") || href.split("/").includes("..")) throw new Error(`images must be under media/: ${href}`)
       mkdirSync(dirname(join(dist, href)), { recursive: true })
       cpSync(join(root, href), join(dist, href))
       return /\.(mp4|webm|mov)$/.test(href) ? player(href, text) : false

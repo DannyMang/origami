@@ -73,10 +73,10 @@ pub fn halt() {
     live.into_iter().for_each(kill);
 }
 
-fn tether(pid: u32) -> Option<Child> {
+fn tether(pid: u32, part: &str) -> Option<Child> {
     start(
         Command::new("/bin/sh")
-            .args(["-c", &format!("read x; kill -9 {pid}")])
+            .args(["-c", "read x; kill -9 \"$0\"; /bin/rm -f -- \"$1\"", &pid.to_string(), part])
             .stdin(Stdio::piped())
             .stderr(Stdio::null()),
     )
@@ -394,6 +394,17 @@ pub fn render(tl: &Timeline, out: &str, o: &Opts, mut progress: impl FnMut(f64))
             bail!("line {}: {file} is not a .cube file with a 0 to 1 domain", c.line);
         }
     }
+    let (k, size) = sized(tl, o);
+    if let Some(c) = tl.clips.iter().find(|c| {
+        let (w, h, ..) = place(c, (size.0 as f64, size.1 as f64), k);
+        w.max(h) > 16384.
+    }) {
+        bail!(
+            "line {}: {} would be drawn over 16384 pixels on a side at this export size: export at a smaller size or lower its size or scale",
+            c.line,
+            c.label
+        );
+    }
     let id = |p: &Path| fs::metadata(p).map(|m| (m.dev(), m.ino())).ok();
     if let Some((line, file)) = id(out.as_ref()).and_then(|o| tl.files.iter().find(|(_, f)| id(f) == Some(o))) {
         bail!(
@@ -417,12 +428,12 @@ pub fn render(tl: &Timeline, out: &str, o: &Opts, mut progress: impl FnMut(f64))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped()),
     )?;
-    let (pipe, size, pid, stuck) = (child.stdin.take(), sized(tl, o).1, child.id(), &AtomicBool::new(false));
+    let (pipe, pid, stuck) = (child.stdin.take(), child.id(), &AtomicBool::new(false));
     LIVE.lock().unwrap().push(pid);
     thread::scope(|s| {
         let (beat, pulse) = mpsc::channel();
         s.spawn(move || {
-            let tie = tether(pid);
+            let tie = tether(pid, part);
             if iter::repeat_with(|| pulse.recv_timeout(STALL)).find_map(Result::err) == Some(RecvTimeoutError::Timeout) {
                 stuck.store(true, Relaxed);
                 kill(pid);
@@ -554,8 +565,8 @@ mod tests {
     }
 
     // Export options should change only what they say: a range starts on its first frame and keeps its
-    // length, a size scales the whole frame but never past 16384 on a side, audio can be left out, and each
-    // format writes its codec.
+    // length, a size scales the whole frame but never past 16384 on a side and refuses, naming its line, a
+    // clip it would draw past that, audio can be left out, and each format writes its codec.
     #[test]
     fn exports_with_options() {
         let _tidy = TIDY.read();
@@ -611,6 +622,10 @@ mod tests {
             &pro,
         ]));
         assert!(String::from_utf8_lossy(&codec.unwrap().stdout).starts_with("prores"));
+        fs::write(dir.join("huge.js"), "settings({ size: [64, 36] })\ntext('A', { size: 9000 })").unwrap();
+        let huge = origami_lang::eval(&dir.join("huge.js"), false, footprint).unwrap();
+        let e = render(&huge, &big, &Opts { height: 2160, ..opts }, |_| {}).unwrap_err().to_string();
+        assert!(e.starts_with("line 2: A would be drawn over 16384 pixels on a side"), "{e}");
     }
 
     // A clip that starts on a timeline frame after lengths such as 0.1 + 0.2, which add up to a hair
@@ -730,16 +745,18 @@ mod tests {
         assert_eq!(e, format!("export of {out} stopped: ffmpeg made no progress for 5 seconds"));
     }
 
-    // An export's ffmpeg should be killed soon after its tie to the program is cut, which the system does
-    // when the program dies, even by force quit.
+    // An export's ffmpeg should be killed, and the hidden file it was writing removed, soon after its tie
+    // to the program is cut, which the system does when the program dies, even by force quit.
     #[test]
     fn dies_with_the_program() {
+        let part = scratch("tether").join(".00ff.it's \"$HOME\" $(x).mp4");
+        fs::write(&part, "half").unwrap();
         let args = ["-v", "error", "-re", "-f", "lavfi", "-i", "color=d=60", "-f", "null", "-"];
         let mut ff = start(ffmpeg().args(args)).unwrap();
-        drop(tether(ff.id()));
+        drop(tether(ff.id(), &part.to_string_lossy()));
         let gone = (0..500).any(|_| {
             thread::sleep(Duration::from_millis(10));
-            ff.try_wait().unwrap().is_some()
+            ff.try_wait().unwrap().is_some() && !part.exists()
         });
         let _ = ff.kill();
         assert!(gone);
