@@ -527,7 +527,7 @@ impl Preview {
 
     fn cell(c: &Clip, t: f64, fps: u32, (tw, th): (usize, usize), fast: bool) -> (Key, i64, (f64, f64)) {
         let (lrf, fps) = (Path::new(&c.src).with_extension("LRF"), fps as f64);
-        let src = if fast && lrf.exists() {
+        let src = if fast && lrf.is_file() {
             lrf.to_string_lossy().into()
         } else {
             c.src.clone()
@@ -1134,12 +1134,12 @@ mod tests {
         assert_eq!(refused.iter().sum::<usize>(), 76);
     }
 
-    // While scrubbing, a sidecar that cannot be read, is a playlist, or ends before the full file does
-    // should give way to the full file instead of leaving the clip out of the picture.
+    // While scrubbing, a sidecar that cannot be read, is a playlist or a named pipe, or ends before the
+    // full file does should give way to the full file at once instead of leaving the clip out.
     #[test]
     fn broken_sidecars_fall_back() {
         let dir = scratch("sidecar");
-        for name in ["text", "short", "list"] {
+        for name in ["text", "short", "list", "pipe"] {
             film(&dir.join(format!("{name}.mp4")), "color=red:s=64x36:r=30:d=4", &[]);
         }
         film(&dir.join("a.ts"), "color=blue:s=64x36:r=30:d=1", &[]);
@@ -1147,6 +1147,8 @@ mod tests {
         fs::write(dir.join("text.LRF"), "not a video").unwrap();
         fs::write(dir.join("list.LRF"), "ffconcat version 1.0\nfile live.m3u8\n").unwrap();
         film(&dir.join("short.LRF"), "color=blue:s=64x36:r=30:d=1", &["-f", "mp4"]);
+        let made = origami_lang::status(Command::new("mkfifo").arg(dir.join("pipe.LRF")));
+        assert!(made.unwrap().success());
         let seen = |name: &str, t: f64| {
             let c = Clip {
                 src: dir.join(format!("{name}.mp4")).to_string_lossy().into(),
@@ -1170,7 +1172,7 @@ mod tests {
             (px[(18 * 64 + 32) * 4 + 2] > 128, px[(18 * 64 + 32) * 4] > 128)
         };
         let from = std::time::Instant::now();
-        assert!(seen("list", 2.) == (true, false) && from.elapsed().as_secs() < 2);
+        assert!([seen("list", 2.), seen("pipe", 2.)] == [(true, false); 2] && from.elapsed().as_secs() < 2);
         assert_eq!(
             [seen("text", 2.), seen("short", 0.5), seen("short", 2.)],
             [(true, false), (false, true), (true, false)]
