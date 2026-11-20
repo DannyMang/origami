@@ -281,12 +281,14 @@ impl Origami {
         if self.web {
             return self.roam = (self.roam.0 - f32::from(d.x), self.roam.1 - f32::from(d.y));
         }
-        if t < self.pan {
-            let lift = if self.motion { &mut self.lift } else { &mut self.climb };
-            return *lift -= f32::from(d.y);
+        if self.motion && t < self.pan {
+            return self.lift -= f32::from(d.y);
         }
         let k = (t - self.pan) / self.span();
-        self.zoom = deep(self.zoom * (f64::from(d.y) / 200.).exp(), self.tl.duration, self.fps());
+        match !self.motion && !e.modifiers.platform && self.climb.1 > 0. {
+            true => self.climb.0 -= f32::from(d.y),
+            false => self.zoom = deep(self.zoom * (f64::from(d.y) / 200.).exp(), self.tl.duration, self.fps()),
+        }
         self.pan = within(t - k * self.span() - f64::from(d.x) * per, self.tl.duration, self.span());
     }
 }
@@ -373,8 +375,8 @@ mod tests {
         assert_eq!(wheel(cx, -400.), 1.);
     }
 
-    // A timeline with more lanes than fit keeps each lane tall enough to read, and scrolling over the
-    // lane names moves through the lanes, never past the first or the last.
+    // A timeline with more lanes than fit keeps each lane tall enough to read, and scrolling up or down
+    // moves through the lanes, never past the first or the last, while scrolling with cmd held zooms.
     #[gpui::test]
     fn many_lanes_scroll(cx: &mut gpui::TestAppContext) {
         let src = format!("stack(\n{})", "  color(\"#203040\").for(4),\n".repeat(40));
@@ -390,17 +392,25 @@ mod tests {
             cx.simulate_mouse_up(at, gpui::MouseButton::Left, Default::default());
             view.update(cx, |o, _| o.sel)
         };
-        let wheel = |cx: &mut gpui::VisualTestContext, y: f32| {
+        let turn = |cx: &mut gpui::VisualTestContext, y: f32, platform: bool| {
             cx.simulate_event(ScrollWheelEvent {
-                position: gpui::point(px(10.), px(top + 40.)),
+                position: gpui::point(px(x), px(top + 40.)),
                 delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(y))),
+                modifiers: gpui::Modifiers {
+                    platform,
+                    ..Default::default()
+                },
                 ..Default::default()
             });
             cx.run_until_parked();
-            view.update(cx, |o, _| o.climb)
+            view.update(cx, |o, _| (o.climb.0, o.zoom))
         };
+        let wheel = |cx: &mut gpui::VisualTestContext, y: f32| turn(cx, y, false).0;
         assert_eq!((pick(cx, top + 14.), pick(cx, top + 42.)), (Some(39), Some(38)));
-        assert_eq!(wheel(cx, -28.), 28.);
+        assert_eq!(turn(cx, -28., false), (28., 1.));
+        let (at, zoom) = turn(cx, 200., true);
+        assert!(at == 28. && zoom > 2.);
+        turn(cx, -400., true);
         assert_eq!(pick(cx, top + 14.), Some(38));
         let dock = view.update(cx, |o, _| o.dock);
         assert_eq!(wheel(cx, -1e6), 40. * 28. - (dock - 30.));
