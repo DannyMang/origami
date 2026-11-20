@@ -369,7 +369,11 @@ fn probe(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
 }
 
 fn read(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
-    host(args, cx, "__read", find, |_, path| Ok(load(path)?))
+    host(args, cx, "__read", find, |_, path| {
+        Some(load(path)?)
+            .filter(|t| t.lines().count() <= 1 << 18)
+            .ok_or_else(|| anyhow!("the file has over {} lines", 1 << 18))
+    })
 }
 
 fn lut(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
@@ -540,6 +544,8 @@ fn single(v: f64) -> f32 {
     serde_json::from_str(&text).unwrap_or(f)
 }
 
+const MANY: usize = if cfg!(test) { 1 << 16 } else { 1 << 20 };
+
 fn keep(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
     let Some(all) = list(args.get_or_undefined(0)) else {
         return Ok(JsValue::undefined());
@@ -553,6 +559,11 @@ fn keep(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
     }
     if s.iter().all(|v| *v == s[0]) {
         return Ok(false.into());
+    }
+    if KEPT.with_borrow(Vec::len) >= MANY {
+        return Err(JsNativeError::error()
+            .with_message(format!("the script has over {MANY} animated values"))
+            .into());
     }
     Ok(KEPT
         .with_borrow_mut(|k| {
@@ -913,6 +924,9 @@ fn half(cx: &mut Context, script: &Path, relock: bool, src: Option<&str>, measur
     let new = ST.take().2;
     if new != old && src.is_none() {
         let _ = save(&lock, serde_json::to_string_pretty(&new)?);
+    }
+    if out.len() > 1 << 24 {
+        bail!("the timeline is over 16 MB as text: use fewer clips or shorter texts");
     }
     Ok((out, KEPT.take(), READ.take()))
 }
@@ -1407,13 +1421,15 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
     }
 
     // A script that reaches past the clip functions to name a web address or a file it never opened, to
-    // read a device, a pipe or a huge file (the script itself included), to hand over values that would
-    // hang or crash the app, or to replace a function Origami calls after the script, is refused.
+    // read a device, a pipe, a huge file (the script itself included) or captions with too many lines,
+    // to hand over values that would hang or crash the app or a timeline too big to read safely, or to
+    // replace a function Origami calls after the script, is refused.
     #[test]
     fn reaching_past_the_functions_is_refused() {
         let dir = scratch("reach");
         status(std::process::Command::new("mkfifo").arg(dir.join("pipe.srt"))).unwrap();
         fs::File::create(dir.join("big.srt")).unwrap().set_len((1 << 24) + 1).unwrap();
+        fs::write(dir.join("long.srt"), "\n".repeat((1 << 18) + 1)).unwrap();
         let away = "Object.assign(v.$, { kind: 'video', src: 'http://127.0.0.1:9/a.mp4' })";
         for (src, says) in [
             (
@@ -1444,7 +1460,15 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
                 "captions('big.srt')".into(),
                 "line 1: captions(\"big.srt\"): the file is over 16 MB",
             ),
+            (
+                "text('a')\ncaptions('long.srt')".into(),
+                "line 2: captions(\"long.srt\"): the file has over 262144 lines",
+            ),
             ("const t = text('a').for(1)\nt.$.opacity = [1, []]\nt".into(), "line 1: "),
+            (
+                "const t = text('a')\nt.$.label = 'a'.repeat(1 << 12).repeat(1 << 12)\nt".into(),
+                "the timeline is over 16 MB as text",
+            ),
             (
                 "text('a').for(1).speed(1e-200).speed(1e-200)".into(),
                 "line 1: a has a time or speed out of range",
@@ -1581,9 +1605,10 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         assert_eq!((t.fps, t.preview.as_str(), t.proxy), (24, "auto", true));
     }
 
-    // Origami's own functions called straight from a script with missing, odd or huge arguments fail
-    // with a plain message on the script's line or not at all, never with a JSON position, a JavaScript
-    // type error or line 0, and a followed clip holding a value out of range names its own line.
+    // Origami's own functions called straight from a script with missing, odd or huge arguments, or too
+    // many times, fail with a plain message on the script's line or not at all, never with a JSON
+    // position, a JavaScript type error or line 0, and a followed clip holding a value out of range
+    // names its own line.
     #[test]
     fn natives_fail_plainly() {
         let dir = scratch("natives");
@@ -1607,6 +1632,11 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
                 "a has a value out of range",
             ),
             ("const r = rect(5e9, 10)\ntext('b').pos(r.pos)", 2, "r has a value out of range"),
+            (
+                "const s = [0, 1]\nArray.from({ length: 65537 }, () => __keep(s))",
+                3,
+                "the script has over 65536 animated values",
+            ),
         ] {
             let e = fails(&dir, &format!("text('z')\n{call}"));
             assert!(e.starts_with(&format!("line {line}: {says}")), "{call}: {e}");

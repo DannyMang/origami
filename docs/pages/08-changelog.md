@@ -7,6 +7,8 @@ What changed in each version of Origami. The launch screen shows the version you
 ### Nov 19
 
 - **Scripts run in a helper process.** A script that runs for more than 30 seconds, or uses more than 2 GB of memory, is stopped and its error shows like any other, even when one call never returns (a runaway regular expression, a huge array). Before, such a script kept running in the background and could take all of the Mac's memory and close Origami. While a script is still reading new media files it gets more time, up to 5 minutes.
+- A script whose timeline is over 16 MB as text (tens of thousands of clips, or one huge value), or that animates more than 1,048,576 values, is stopped with an error. Before, reading such a timeline back could take several gigabytes of Origami's own memory.
+- A captions file with more than 262,144 lines is refused with an error naming the line. Before, a file of many blank lines kept the script busy until it was stopped after 30 seconds.
 - A force-quit or crash during an export no longer leaves a hidden half-written file beside the destination.
 - A project can no longer run the Mac out of memory by naming one font or colour table through many spellings of its path (`./a.ttf`, `././a.ttf`, …): each file is read and kept once.
 - An export at a size larger than the timeline that would draw a clip over 16384 pixels on a side, such as very large text on a small timeline exported at 4K, now stops with an error naming the clip's line instead of crashing Origami.

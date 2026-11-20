@@ -67,7 +67,7 @@ stack(
 
 ## captions
 
-Loads every caption from an .srt file.
+Loads every caption from an .srt file. The file can be up to 16 MB and 262,144 lines.
 
 ```origami
 stack(
