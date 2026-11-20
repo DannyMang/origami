@@ -368,6 +368,7 @@ fn scan(path: &Path, prev: Option<&Media>, relock: bool, rel: &str) -> Result<Me
 }
 
 fn media(path: &Path, old: &Lock, new: &mut Lock, relock: bool, rel: &str) -> Result<String> {
+    tool::playable(path)?;
     let (size, mtime) = stat(path)?;
     let same = |m: &Media| m.size == size && m.mtime == mtime;
     let m = match old.get(rel) {
@@ -1840,6 +1841,30 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
             fails(&dir, src.replace("i.png", "none.png").as_str()),
             "line 4: image(\"none.png\") points to a file that does not exist"
         );
+    }
+
+    // A playlist used as media is refused on its line at once, before any program reads it, even when a
+    // shipped origami.lock already lists it.
+    #[test]
+    fn playlists_are_refused_at_once() {
+        let dir = scratch("lists");
+        fs::write(dir.join("a.ts"), "").unwrap();
+        fs::write(dir.join("live.m3u8"), "#EXTM3U\n#EXT-X-TARGETDURATION:100000\n#EXTINF:1,\na.ts\n").unwrap();
+        fs::write(dir.join("nest.mp4"), "ffconcat version 1.0\nfile live.m3u8\n").unwrap();
+        let (size, mtime) = stat(&dir.join("nest.mp4")).unwrap();
+        let entry =
+            serde_json::json!({ "size": size, "mtime": mtime, "sha": "", "dur": 5, "w": 64, "h": 36, "video": true, "audio": false });
+        fs::write(dir.join("origami.lock"), serde_json::json!({ "nest.mp4": entry }).to_string()).unwrap();
+        for (src, says) in [
+            ("video('live')", "line 1: video(\"live\")"),
+            ("text('a')\nvideo('nest.mp4')", "line 2: video(\"nest.mp4\")"),
+            ("sound('live.m3u8')", "line 1: sound(\"live.m3u8\")"),
+        ] {
+            assert_eq!(
+                fails(&dir, src),
+                format!("{says}: playlist files are not supported: use a video or sound file")
+            );
+        }
     }
 
     // A file that is not what the script says it is (a broken film, a film used as a picture, a

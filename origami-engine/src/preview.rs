@@ -1134,15 +1134,18 @@ mod tests {
         assert_eq!(refused.iter().sum::<usize>(), 76);
     }
 
-    // While scrubbing, a sidecar that cannot be read, or that ends before the full file does, should
-    // give way to the full file instead of leaving the clip out of the picture.
+    // While scrubbing, a sidecar that cannot be read, is a playlist, or ends before the full file does
+    // should give way to the full file instead of leaving the clip out of the picture.
     #[test]
     fn broken_sidecars_fall_back() {
         let dir = scratch("sidecar");
-        for name in ["text", "short"] {
+        for name in ["text", "short", "list"] {
             film(&dir.join(format!("{name}.mp4")), "color=red:s=64x36:r=30:d=4", &[]);
         }
+        film(&dir.join("a.ts"), "color=blue:s=64x36:r=30:d=1", &[]);
+        fs::write(dir.join("live.m3u8"), "#EXTM3U\n#EXT-X-TARGETDURATION:100000\n#EXTINF:1,\na.ts\n").unwrap();
         fs::write(dir.join("text.LRF"), "not a video").unwrap();
+        fs::write(dir.join("list.LRF"), "ffconcat version 1.0\nfile live.m3u8\n").unwrap();
         film(&dir.join("short.LRF"), "color=blue:s=64x36:r=30:d=1", &["-f", "mp4"]);
         let seen = |name: &str, t: f64| {
             let c = Clip {
@@ -1166,6 +1169,8 @@ mod tests {
             let px = pv.frame(&tl, t, (64, 36));
             (px[(18 * 64 + 32) * 4 + 2] > 128, px[(18 * 64 + 32) * 4] > 128)
         };
+        let from = std::time::Instant::now();
+        assert!(seen("list", 2.) == (true, false) && from.elapsed().as_secs() < 2);
         assert_eq!(
             [seen("text", 2.), seen("short", 0.5), seen("short", 2.)],
             [(true, false), (false, true), (true, false)]

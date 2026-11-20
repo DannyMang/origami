@@ -6,6 +6,7 @@ What changed in each version of Origami. The launch screen shows the version you
 
 ### Nov 20
 
+- Playlist files are refused: `video`, `sound` or `image` on an HLS playlist (a `.m3u8` or `.m3u` file, or any file starting with `#EXTM3U`) or an ffmpeg concat list (a file starting with `ffconcat`) now gives the error "playlist files are not supported: use a video or sound file" on its line at once, even when `origami.lock` lists the file. The preview, thumbnails, waveforms and exports never hand such a file to ffmpeg either, and a `.LRF` proxy that is a playlist is skipped in favour of the clip itself. Before, a playlist that keeps waiting for its next part could stall them for 20 seconds or more each time.
 - Clicking in the code no longer selects a letter by accident when the pointer slips a pixel during the click. Before, that hidden one-letter selection made the next backspace remove it, which could be the letter after the caret. Dragging more than 3 pixels still selects.
 - The caret in the search field sits right after the last letter instead of a gap away, and in front of the greyed "Search…" hint while the field is empty.
 - A media file that never ends, such as a live HLS playlist (`.m3u8`) that keeps waiting for its next part, no longer freezes the preview, an export or the timeline's thumbnails until Origami restarts. An ffmpeg or ffprobe that sends nothing for 20 seconds is now stopped: the clip shows black where it could not be read, and a file the script is still reading gives an error on its line.

@@ -97,7 +97,27 @@ pub fn missing() -> Option<String> {
     TOOLS.iter().filter(|t| !t.is_file()).find_map(|t| absent(t.as_os_str()))
 }
 
+pub fn playable(path: &Path) -> io::Result<()> {
+    let named = path
+        .extension()
+        .is_some_and(|e| ["m3u8", "m3u"].iter().any(|x| e.eq_ignore_ascii_case(x)));
+    let head = fs::metadata(path).ok().filter(|m| m.is_file()).map(|_| {
+        let mut head = vec![];
+        let _ = fs::File::open(path).and_then(|f| f.take(8).read_to_end(&mut head));
+        head
+    });
+    match head {
+        Some(h) if named || h.starts_with(b"#EXTM3U") || h.starts_with(b"ffconcat") => {
+            Err(io::Error::other("playlist files are not supported: use a video or sound file"))
+        }
+        _ => Ok(()),
+    }
+}
+
 pub fn start(cmd: &mut Command) -> io::Result<Child> {
+    if absent(cmd.get_program()).is_some() {
+        cmd.get_args().try_for_each(|a| playable(Path::new(a)))?;
+    }
     let _one = SPAWN.lock().unwrap_or_else(PoisonError::into_inner);
     let made = cmd.spawn();
     made.map_err(|e| {
@@ -192,6 +212,40 @@ mod tests {
             })
         };
         assert!((0..12).all(round));
+    }
+
+    // A playlist, known by its name or its first bytes, is refused before ffmpeg or ffprobe starts, while
+    // films, files not made yet and named pipes are passed on unread.
+    #[test]
+    fn playlists_never_reach_ffmpeg() {
+        let dir = env::temp_dir().join("origami-lang-lists");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let film = dir.join("a.mp4");
+        assert!(
+            status(ffmpeg().args(["-v", "error", "-f", "lavfi", "-i", "color=s=16x16:d=1"]).arg(&film))
+                .unwrap()
+                .success()
+        );
+        let lists = [
+            ("live.M3U8", "a.mp4"),
+            ("a.m3u", ""),
+            ("hls.mp4", "#EXTM3U\n"),
+            ("cat.mov", "ffconcat version 1.0\nfile a.mp4\n"),
+        ];
+        for (name, text) in lists {
+            fs::write(dir.join(name), text).unwrap();
+            for cmd in [
+                ffprobe().arg(dir.join(name)),
+                ffmpeg().arg("-i").arg(dir.join(name)).args(["-f", "null", "-"]),
+            ] {
+                let said = output(cmd).unwrap_err().to_string();
+                assert_eq!(said, "playlist files are not supported: use a video or sound file");
+            }
+        }
+        assert!(output(ffprobe().arg(&film)).unwrap().status.success());
+        assert!(status(Command::new("mkfifo").arg(dir.join("pipe.m3u8"))).unwrap().success());
+        assert!(playable(&dir.join("pipe.m3u8")).is_ok() && playable(&dir.join("new.m3u8")).is_ok());
     }
 
     // A missing ffmpeg or ffprobe should say in plain words how to install it, and any other missing
