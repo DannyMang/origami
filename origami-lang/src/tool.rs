@@ -79,7 +79,7 @@ pub fn ffmpeg() -> Command {
 
 pub fn ffprobe() -> Command {
     let mut cmd = Command::new(&TOOLS[1]);
-    cmd.args(["-protocol_whitelist", "file"]);
+    cmd.args(["-protocol_whitelist", "file", "-max_alloc", "268435456"]);
     cmd
 }
 

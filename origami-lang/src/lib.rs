@@ -992,7 +992,7 @@ fn half(cx: &mut Context, script: &Path, relock: bool, src: Option<&str>, measur
         };
         let probed = thread::scope(|s| {
             let jobs: Vec<_> = missed
-                .chunks(missed.len().div_ceil(32))
+                .chunks(missed.len().div_ceil(8))
                 .map(|part| s.spawn(move || probe(part)))
                 .collect();
             jobs.into_iter().flat_map(|j| j.join().unwrap_or_default()).collect()

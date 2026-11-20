@@ -6,6 +6,7 @@ What changed in each version of Origami. The launch screen shows the version you
 
 ### Nov 20
 
+- Reading media takes far less memory for huge pictures: a 1 MB, 16000×16000 PNG made each read of it take about 1 GB, and now takes about 6 MB, because ffprobe no longer decodes the picture just to learn its size. A project opened for the first time reads at most 8 new media files at once instead of 32. The sizes, lengths and kinds Origami learns from each file are unchanged.
 - Playlist files are refused: `video`, `sound` or `image` on an HLS playlist (a `.m3u8` or `.m3u` file, or any file starting with `#EXTM3U`) or an ffmpeg concat list (a file starting with `ffconcat`) now gives the error "playlist files are not supported: use a video or sound file" on its line at once, even when `origami.lock` lists the file. The preview, thumbnails, waveforms and exports never hand such a file to ffmpeg either, and a `.LRF` proxy that is a playlist is skipped in favour of the clip itself. Before, a playlist that keeps waiting for its next part could stall them for 20 seconds or more each time.
 - Clicking in the code no longer selects a letter by accident when the pointer slips a pixel during the click. Before, that hidden one-letter selection made the next backspace remove it, which could be the letter after the caret. Dragging more than 3 pixels still selects.
 - The caret in the search field sits right after the last letter instead of a gap away, and in front of the greyed "Search…" hint while the field is empty.
