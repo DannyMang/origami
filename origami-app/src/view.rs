@@ -655,7 +655,7 @@ impl Origami {
                         }
                         this.blink(cx);
                         this.place(e.position, window);
-                        (this.anchor, this.picking) = (this.cursor, e.click_count == 1);
+                        (this.anchor, this.picking) = (this.cursor, Some(e.position).filter(|_| e.click_count == 1));
                         this.widen(e.click_count);
                         if e.click_count == 3 {
                             this.glance(i, cx);
@@ -1206,7 +1206,10 @@ impl Render for Origami {
                     this.slide(e.position);
                     this.watch(cx);
                     cx.notify();
-                } else if this.picking {
+                } else if this
+                    .picking
+                    .is_some_and(|p| this.chosen().is_some() || (e.position - p).magnitude() > 3.)
+                {
                     this.place(e.position, window);
                     cx.notify();
                 } else if this.full && this.scrubbing {

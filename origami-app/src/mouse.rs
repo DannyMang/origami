@@ -246,7 +246,7 @@ impl Origami {
         if self.turning.is_some() && self.past.last() == Some(&self.lines) {
             self.past.pop();
         }
-        (self.scrubbing, self.pull, self.picking, self.turning, self.held, self.push) = (false, None, false, None, None, None);
+        (self.scrubbing, self.pull, self.picking, self.turning, self.held, self.push) = (false, None, None, None, None, None);
         if self.slip.take().is_some() && self.lines != self.base {
             self.past.push(mem::take(&mut self.base));
             self.future.clear();
@@ -418,6 +418,29 @@ mod tests {
         assert_eq!(wheel(cx, 1e6), 0.);
     }
 
+    // A click whose pointer slips a pixel still only places the caret, so backspace removes the letter
+    // behind it, while a longer drag selects.
+    #[gpui::test]
+    fn shaky_clicks_place_the_caret(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = window(cx, "shaky", "stack(\n  color(\"#203040\").for(4),\n)");
+        cx.run_until_parked();
+        let (x, y, glyph) = view.update_in(cx, |o, window, _| {
+            let w = f32::from(window.viewport_size().width);
+            (w - o.side + o.inset() + 3.45 * o.glyph(), o.head() + o.row() / 2., o.glyph())
+        });
+        let drag = |cx: &mut gpui::VisualTestContext, by: f32| {
+            let (a, b) = (gpui::point(px(x), px(y)), gpui::point(px(x + by), px(y)));
+            cx.simulate_mouse_down(a, gpui::MouseButton::Left, Default::default());
+            cx.simulate_mouse_move(b, Some(gpui::MouseButton::Left), Default::default());
+            cx.simulate_mouse_up(b, gpui::MouseButton::Left, Default::default());
+            view.update(cx, |o, _| o.chosen())
+        };
+        assert_eq!(drag(cx, 1.), None);
+        cx.simulate_keystrokes("backspace");
+        assert_eq!(view.update(cx, |o, _| o.lines[0].clone()), "stck(");
+        assert_eq!(drag(cx, 2. * glyph), Some(((0, 3), (0, 5))));
+    }
+
     fn window<'a>(cx: &'a mut gpui::TestAppContext, name: &str, src: &str) -> (gpui::Entity<Origami>, &'a mut gpui::VisualTestContext) {
         let path = env::temp_dir().join(format!("origami-{name}-test.js"));
         fs::write(&path, src).unwrap();
@@ -499,11 +522,11 @@ mod tests {
         assert_eq!(state(cx), (moved.0.clone(), false, 1, t));
         view.update(cx, |o, _| {
             o.seize(point(px(x), px(lane)), [0.; 3], crate::motion::Pull::Zoom(1.));
-            (o.pull, o.eyeing, o.picking, o.turning) = (Some(true), true, true, Some(crate::knob::Turn::Wheel));
+            (o.pull, o.eyeing, o.picking, o.turning) = (Some(true), true, Some(Default::default()), Some(crate::knob::Turn::Wheel));
         });
         cx.simulate_mouse_up(point(px(-30.), px(-30.)), Left, m);
         let gone = view.update(cx, |o, _| {
-            o.pull.is_none() && !o.eyeing && !o.picking && o.turning.is_none() && o.slip.is_none()
+            o.pull.is_none() && !o.eyeing && o.picking.is_none() && o.turning.is_none() && o.slip.is_none()
         });
         assert!(gone);
     }
