@@ -26,6 +26,8 @@ What changed in each version of Origami. The launch screen shows the version you
 - Scrubbing DJI footage is smoother: while dragging slowly each picture takes about a sixth less time, and a fast drag that jumps more than 20 frames now starts reading the `.LRF` at the new spot instead of reading through every frame in between, so the picture updates about a quarter more often.
 - Zooming a clip without turning it uses about a fifth less processor time per frame, and such exports finish a little sooner.
 - Stepping backwards through 4K footage pauses about half as long (about 0.23 s instead of 0.45 s) each time Origami has to read the frames before the ones it has kept: it now starts reading them while you are still stepping through the kept ones.
+- When macOS stops one of the ffmpeg processes the preview reads video from, for example because memory is short, the preview starts a new one straight away instead of showing that clip black for up to a second.
+- A media file Origami could not read once, for example while it was still being copied or while the Mac was short of memory, is read again after a few seconds of playback instead of staying misread until it changes or Origami restarts.
 
 ### Nov 15
 

@@ -36,7 +36,7 @@ type Info = (
     bool,
 );
 
-static KNOWN: LazyLock<Mutex<HashMap<String, Info>>> = LazyLock::new(Mutex::default);
+static KNOWN: LazyLock<Mutex<HashMap<String, (Info, u32)>>> = LazyLock::new(Mutex::default);
 static LANDS: LazyLock<Mutex<HashMap<(String, u64), f64>>> = LazyLock::new(Mutex::default);
 static RAM: LazyLock<u64> = LazyLock::new(|| {
     let told = output(Command::new("/usr/sbin/sysctl").args(["-n", "hw.memsize"])).map(|o| o.stdout);
@@ -114,11 +114,18 @@ fn probe(path: &str) -> Info {
         };
         let start = first.parse().map_or(0., |f: f64| f - zero);
         let stamps = if ts { vec![] } else { stamps };
-        (lead, down, n, d, num(dur), tb, late, start, stamps.into(), ts)
+        let info = (lead, down, n, d, num(dur), tb, late, start, stamps.into(), ts);
+        (info, if text.is_empty() { 300 } else { u32::MAX })
     };
-    let known = KNOWN.lock().unwrap().get(path).cloned();
-    let info = known.unwrap_or_else(make);
-    KNOWN.lock().unwrap().entry(path.into()).or_insert(info).clone()
+    let known = KNOWN.lock().unwrap().get_mut(path).and_then(|(info, left)| {
+        *left = left.checked_sub(1)?;
+        Some(info.clone())
+    });
+    known.unwrap_or_else(|| {
+        let made = make();
+        KNOWN.lock().unwrap().insert(path.into(), made.clone());
+        made.0
+    })
 }
 
 fn lands(src: &str, at: f64, start: f64) -> f64 {
@@ -633,7 +640,7 @@ impl Preview {
         let (len, lap) = (key.1 * key.2 * 4, self.lap(&key, k));
         self.decoder(&key, k, (k - lap).max(0), rate)?;
         let (_, mut d) = self.decoders.pop()?;
-        let low = d.next;
+        let (low, mut again) = (d.next, true);
         while d.next <= k {
             while self.held + len > self.room
                 && let Some(old) = self.frames.pop_lru()
@@ -643,6 +650,11 @@ impl Preview {
             }
             let mut px = reuse(&mut self.spare, len);
             if d.child.as_mut().and_then(|c| c.stdout.as_mut()?.read_exact(&mut px).ok()).is_none() {
+                let died = d.child.take().is_some_and(|mut c| c.wait().is_ok_and(|s| !s.success()));
+                if died && again && self.decoder(&key, k, d.next, rate).is_some() {
+                    (again, d) = (false, self.decoders.pop()?.1);
+                    continue;
+                }
                 break;
             }
             self.held += len;
@@ -782,7 +794,7 @@ impl Preview {
         let (primed, size) = std::mem::take(&mut self.primed);
         if self.fast || size != (pw, ph) {
             self.decoders
-                .retain(|(_, d)| d.child.as_ref().is_some_and(|c| !primed.contains(&c.id())));
+                .retain(|(_, d)| d.child.as_ref().is_none_or(|c| !primed.contains(&c.id())));
         }
         let mut out = [0, 0, 0, 255].repeat(pw * ph);
         (self.rough, self.at) = (false, t);
@@ -1156,6 +1168,61 @@ mod tests {
         stepped.reverse();
         assert!(waiting);
         assert!(stepped == (0..=100).map(|k| shown(&mut played, k)).collect::<Vec<_>>());
+    }
+
+    // A decoder whose ffmpeg dies while playing should be replaced at once, so the frames after it show
+    // the same pictures as an undisturbed run.
+    #[test]
+    fn dead_decoders_are_replaced() {
+        let file = scratch("dead").join("a.mp4");
+        film(&file, "testsrc=s=64x36:r=30:d=4", &[]);
+        let tl = Timeline {
+            fps: 30,
+            size: (64, 36),
+            duration: 4.,
+            clips: vec![Clip {
+                src: file.to_string_lossy().into(),
+                w: 64,
+                h: 36,
+                end: 4.,
+                ..clip("video", "")
+            }],
+            ..Default::default()
+        };
+        let (mut cut, mut played) = (Preview::default(), Preview::default());
+        let shown = |pv: &mut Preview, k: i64| pv.frame(&tl, k as f64 / 30., (64, 36));
+        let mut seen: Vec<_> = (0..40).map(|k| shown(&mut cut, k)).collect();
+        for c in cut.decoders.iter_mut().flat_map(|(_, d)| d.child.as_mut()) {
+            c.kill().unwrap();
+        }
+        seen.extend((40..90).map(|k| shown(&mut cut, k)));
+        assert!(seen == (0..90).map(|k| shown(&mut played, k)).collect::<Vec<_>>());
+    }
+
+    // Frames past the end of a file should be left to the decoder that reached it, without starting a
+    // new ffmpeg for each one (a new one would read the longer file now under that name).
+    #[test]
+    fn file_ends_start_no_decoders() {
+        let file = scratch("end").join("a.mp4");
+        film(&file, "testsrc=s=64x36:r=30:d=1", &[]);
+        let (mut pv, key) = (Preview::default(), (file.to_string_lossy().into_owned(), 64, 36));
+        let mut shown = |ks: std::ops::Range<i64>| ks.filter(|k| pv.video(key.clone(), *k, (30., 1.)).is_some()).count();
+        assert_eq!(shown(20..31), 10);
+        film(&file, "testsrc=s=64x36:r=30:d=3", &[]);
+        assert_eq!(shown(31..61), 0);
+    }
+
+    // A file ffprobe could not read should be asked about again after a few hundred lookups rather
+    // than on every one, so it is described properly once it can be read.
+    #[test]
+    fn failed_probes_are_asked_again() {
+        let file = scratch("unread").join("a.mp4");
+        fs::write(&file, "not a film").unwrap();
+        let path = file.to_string_lossy();
+        assert_eq!(probe(&path).2, 0.);
+        film(&file, "testsrc=s=64x36:r=30:d=1", &[]);
+        let rates: Vec<f64> = (0..301).map(|_| probe(&path).2).collect();
+        assert!(rates[..300].iter().all(|n| *n == 0.) && rates[300] == 30.);
     }
 
     // Variable-frame-rate footage should show the frame a plain export shows: the clip starts on the
