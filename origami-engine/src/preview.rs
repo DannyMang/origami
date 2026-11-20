@@ -14,7 +14,10 @@ use std::{
     num::NonZeroUsize,
     path::Path,
     process::{Child, Command, Stdio},
-    sync::{Arc, LazyLock, Mutex},
+    sync::{
+        Arc, LazyLock, Mutex,
+        mpsc::{self, Receiver, TryRecvError},
+    },
     thread,
     time::SystemTime,
 };
@@ -439,6 +442,7 @@ fn rate(src: &str, fps: f64) -> (f64, f64, f64) {
 struct Decoder {
     child: Option<Child>,
     next: i64,
+    feed: Option<Receiver<Vec<u8>>>,
 }
 
 impl Drop for Decoder {
@@ -460,6 +464,7 @@ pub struct Preview {
     spare: Vec<Vec<u8>>,
     stamps: HashMap<String, (Option<(u64, SystemTime)>, Option<bool>)>,
     at: f64,
+    back: bool,
     primed: (Vec<u32>, (usize, usize)),
     pub(crate) room: usize,
     most: usize,
@@ -480,6 +485,7 @@ impl Default for Preview {
             spare: vec![],
             stamps: HashMap::new(),
             at: -1.,
+            back: false,
             primed: Default::default(),
             room,
             most,
@@ -582,13 +588,13 @@ impl Preview {
         self.primed = (ids.filter(|n| !old.contains(n)).collect(), size);
     }
 
+    fn block(&self, key: &Key) -> i64 {
+        (self.room / 4 / (key.1 * key.2 * 4).max(1)).min(45) as i64
+    }
+
     fn lap(&self, key: &Key, k: i64) -> i64 {
         let back = self.decoders.iter().any(|(o, d)| o == key && k < d.next && d.next <= k + 60);
-        if back {
-            (self.room / 4 / (key.1 * key.2 * 4).max(1)).min(45) as i64
-        } else {
-            0
-        }
+        if back { self.block(key) } else { 0 }
     }
 
     fn decoder(&mut self, key: &Key, k: i64, from: i64, (n, d): (f64, f64)) -> Option<()> {
@@ -637,6 +643,7 @@ impl Preview {
                     Decoder {
                         child: Some(child),
                         next: from,
+                        feed: None,
                     },
                 )
             }
@@ -645,39 +652,106 @@ impl Preview {
         Some(())
     }
 
-    fn video(&mut self, key: Key, k: i64, rate: (f64, f64)) -> Option<Px> {
-        if let Some(px) = self.frames.get(&(key.clone(), k)) {
-            return Some(px.clone());
+    fn evict(&mut self, len: usize) {
+        while self.held + len > self.room
+            && let Some(old) = self.frames.pop_lru()
+        {
+            self.held -= old.1.len();
+            self.spare.extend(Arc::try_unwrap(old.1));
         }
-        let (len, lap) = (key.1 * key.2 * 4, self.lap(&key, k));
-        self.decoder(&key, k, (k - lap).max(0), rate)?;
-        let (_, mut d) = self.decoders.pop()?;
-        let (low, mut again) = (d.next, true);
-        while d.next <= k {
-            while self.held + len > self.room
-                && let Some(old) = self.frames.pop_lru()
+    }
+
+    fn keep(&mut self, at: (Key, i64), px: Vec<u8>) {
+        self.held += px.len();
+        self.held -= self.frames.push(at, Arc::new(px)).map_or(0, |f| f.1.len());
+    }
+
+    fn drain(&mut self, key: &Key) {
+        for i in (0..self.decoders.len()).rev() {
+            while self.decoders[i].0 == *key
+                && let Some(feed) = &self.decoders[i].1.feed
             {
-                self.held -= old.1.len();
-                self.spare.extend(Arc::try_unwrap(old.1));
+                match feed.try_recv() {
+                    Ok(px) => {
+                        self.evict(px.len());
+                        self.keep((key.clone(), self.decoders[i].1.next), px);
+                        self.decoders[i].1.next += 1;
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        self.decoders.remove(i);
+                        break;
+                    }
+                }
             }
-            let mut px = reuse(&mut self.spare, len);
-            if d.child.as_mut().and_then(|c| c.stdout.as_mut()?.read_exact(&mut px).ok()).is_none() {
+        }
+    }
+
+    fn ahead(&mut self, key: &Key, k: i64, rate: (f64, f64)) {
+        let (block, len, mut low) = (self.block(key), key.1 * key.2 * 4, k);
+        while low > 0 && k - low < block && self.frames.contains(&(key.clone(), low - 1)) {
+            low -= 1;
+        }
+        if low == 0 || self.frames.contains(&(key.clone(), low - 1)) || self.near(key, low - 1).is_some() {
+            return;
+        }
+        let from = (low - reach(&key.0).min(block)).max(0);
+        if self.decoder(key, low - 1, from, rate).is_some()
+            && self.back
+            && let Some((_, d)) = self.decoders.last_mut()
+            && let Some(mut out) = d.child.as_mut().and_then(|c| c.stdout.take())
+        {
+            let (send, feed) = mpsc::sync_channel(2);
+            thread::spawn(move || {
+                (from..low).try_for_each(|_| {
+                    let mut px = vec![0; len];
+                    out.read_exact(&mut px).ok()?;
+                    send.send(px).ok()
+                })
+            });
+            d.feed = Some(feed);
+        }
+    }
+
+    fn video(&mut self, key: Key, k: i64, rate: (f64, f64)) -> Option<Px> {
+        self.drain(&key);
+        let (hit, lap) = (self.frames.get(&(key.clone(), k)).cloned(), self.lap(&key, k));
+        let missed = hit.is_none();
+        let px = hit.or_else(|| self.read(&key, k, lap, rate));
+        if self.back || missed && lap > 0 {
+            self.ahead(&key, k, rate);
+        }
+        px
+    }
+
+    fn read(&mut self, key: &Key, k: i64, lap: i64, rate: (f64, f64)) -> Option<Px> {
+        let len = key.1 * key.2 * 4;
+        self.decoder(key, k, (k - lap).max(0), rate)?;
+        let (_, mut d) = self.decoders.pop()?;
+        let mut again = true;
+        while d.next <= k {
+            self.evict(len);
+            let px = match &d.feed {
+                Some(feed) => feed.recv().ok(),
+                None => {
+                    let mut px = reuse(&mut self.spare, len);
+                    let read = d.child.as_mut().and_then(|c| c.stdout.as_mut()?.read_exact(&mut px).ok());
+                    read.map(|_| px)
+                }
+            };
+            let Some(px) = px else {
                 let died = d.child.take().is_some_and(|mut c| c.wait().is_ok_and(|s| !s.success()));
-                if died && again && self.decoder(&key, k, d.next, rate).is_some() {
+                if died && again && self.decoder(key, k, d.next, rate).is_some() {
                     (again, d) = (false, self.decoders.pop()?.1);
                     continue;
                 }
                 break;
-            }
-            self.held += len;
-            self.held -= self.frames.push((key.clone(), d.next), Arc::new(px)).map_or(0, |f| f.1.len());
+            };
+            self.keep((key.clone(), d.next), px);
             d.next += 1;
         }
         self.decoders.push((key.clone(), d));
-        if lap > 0 && low > 0 {
-            self.decoder(&key, low - 1, (low - reach(&key.0)).max(0), rate);
-        }
-        self.frames.get(&(key, k)).cloned()
+        self.frames.get(&(key.clone(), k)).cloned()
     }
 
     fn layer(&mut self, c: &Clip, t: f64, fps: u32, size: (usize, usize), k: f64) -> Option<(Px, (usize, usize), (i64, i64))> {
@@ -809,7 +883,8 @@ impl Preview {
                 .retain(|(_, d)| d.child.as_ref().is_none_or(|c| !primed.contains(&c.id())));
         }
         let mut out = [0, 0, 0, 255].repeat(pw * ph);
-        (self.rough, self.at) = (false, t);
+        (self.rough, self.back) = (false, !self.fast && t < self.at && self.at - t < 5. / tl.fps as f64);
+        self.at = t;
         let was = std::mem::replace(&mut self.was, (std::mem::take(&mut self.stills), std::mem::take(&mut self.texts)));
         self.spare
             .extend(was.0.into_values().flatten().filter_map(|px| Arc::try_unwrap(px).ok()));
@@ -1153,8 +1228,8 @@ mod tests {
         assert!(wrong.is_empty(), "{wrong:?}");
     }
 
-    // Stepping backwards should start the decoder for the frames before the kept ones while those are
-    // shown, and show the same pictures as playing forwards.
+    // Stepping backwards should read the frames before the kept ones in the background while those are
+    // shown, so they are kept before a step reaches them, and show the same pictures as playing forwards.
     #[test]
     fn stepping_back_reads_ahead() {
         let file = scratch("back").join("a.mp4");
@@ -1175,13 +1250,15 @@ mod tests {
         let (mut back, mut played) = (Preview::default(), Preview::default());
         let shown = |pv: &mut Preview, k: i64| pv.frame(&tl, k as f64 / 30., (64, 36));
         let mut stepped: Vec<_> = (60..=100).rev().map(|k| shown(&mut back, k)).collect();
-        let waiting = back
-            .decoders
-            .iter()
-            .any(|(key, d)| d.next < 60 && !back.frames.contains(&(key.clone(), d.next)));
+        let key = (file.to_string_lossy().into_owned(), 64, 36);
+        let kept = (0..500).any(|_| {
+            thread::sleep(std::time::Duration::from_millis(10));
+            shown(&mut back, 60);
+            (30..60).all(|k| back.frames.contains(&(key.clone(), k)))
+        });
         stepped.extend((0..60).rev().map(|k| shown(&mut back, k)));
         stepped.reverse();
-        assert!(waiting);
+        assert!(kept);
         assert!(stepped == (0..=100).map(|k| shown(&mut played, k)).collect::<Vec<_>>());
     }
 
