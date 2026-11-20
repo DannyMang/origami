@@ -1,11 +1,14 @@
 use crate::{
-    Origami,
+    Origami, bitmap,
     view::{BLUE, BORDER, DIM, PANEL},
 };
-use gpui::{Context, Div, MouseButton, MouseDownEvent, Pixels, Point, Window, div, img, prelude::*, px, rgb, rgba};
+use gpui::{Context, Div, MouseButton, MouseDownEvent, Pixels, Point, RenderImage, Window, div, img, prelude::*, px, rgb, rgba};
 use origami_engine::tone;
 use origami_lang::Clip;
-use std::borrow::Cow;
+use std::{
+    borrow::Cow,
+    sync::{Arc, LazyLock},
+};
 
 pub struct Knob {
     pub label: String,
@@ -21,6 +24,9 @@ pub enum Turn {
     Wheel,
     Point(usize),
 }
+
+static DISC: LazyLock<Arc<RenderImage>> = LazyLock::new(|| bitmap(disc(), 300, 300));
+static STRIPS: LazyLock<[Arc<RenderImage>; 3]> = LazyLock::new(|| [0, 1, 2].map(|kind| bitmap(strip(kind), 150, 150)));
 
 const PAD: f32 = 200.;
 pub const TRACK: f32 = 160.;
@@ -62,7 +68,7 @@ fn paint(hue: f32, vivid: f32, light: f32) -> [u8; 3] {
     })
 }
 
-pub fn disc() -> Vec<u8> {
+fn disc() -> Vec<u8> {
     let mut px = vec![0; 300 * 300 * 4];
     for (i, p) in px.chunks_exact_mut(4).enumerate() {
         let (dx, dy) = ((i % 300) as f32 - 149.5, 149.5 - (i / 300) as f32);
@@ -73,7 +79,7 @@ pub fn disc() -> Vec<u8> {
     px
 }
 
-pub fn strip(kind: usize) -> Vec<u8> {
+fn strip(kind: usize) -> Vec<u8> {
     let mut px = vec![0; 150 * 150 * 4];
     for (i, p) in px.chunks_exact_mut(4).enumerate() {
         let x = (i % 150) as f32 / 149.;
@@ -488,7 +494,7 @@ impl Origami {
                     div()
                         .absolute()
                         .inset_0()
-                        .child(img(self.strips[i.saturating_sub(2)].clone()).size_full())
+                        .child(img(STRIPS[i.saturating_sub(2)].clone()).size_full())
                 });
                 let handle = |p: &(f32, f32)| dot(p.0, p.1, 14.).bg(rgb(ink)).border_2().border_color(rgb(0x1b1f25));
                 let handles: Vec<Div> = points.iter().map(handle).collect();
@@ -515,7 +521,7 @@ impl Origami {
                     None => (spot("hue").map_or(0., |k| k.value as f32), spot("amount").map_or(0., part)),
                 };
                 let (fx, fy) = (hue.to_radians().cos() * far * 0.5 + 0.5, hue.to_radians().sin() * far * 0.5 + 0.5);
-                let wheel = div().absolute().inset_0().child(img(self.disc.clone()).size_full());
+                let wheel = div().absolute().inset_0().child(img(DISC.clone()).size_full());
                 vec![wheel, dot(fx, fy, 12.).border_2().border_color(rgb(0x1b1f25)).bg(rgb(0xffffff))]
             }
         };

@@ -49,7 +49,7 @@ pub const RULER: f32 = 22.;
 const HELP: &str =
     "mouse: drag the ruler to move the playhead, click a clip to select, drag to move, drag edges to trim, delete removes it, cmd+z undo, cmd+shift+z redo, f full screen
 right-click (two-finger click) a clip for a menu: s splits it at the playhead, cmd+x cut, cmd+c copy, cmd+v paste at the playhead, cmd+d duplicate
-click the script to type in it, cmd+s saves and applies, esc leaves     scroll zooms the timeline     drag pane edges to resize     cmd+ cmd-  code size     cmd+0  reset layout     cmd+f  search
+click the script to type in it, cmd+s saves and applies, esc leaves     scroll zooms the timeline, or with cmd when its lanes scroll     drag pane edges to resize     cmd+ cmd-  code size     cmd+0  reset layout     cmd+f  search
 the red dot records a voiceover from the playhead while it plays: space or the stop square keeps it, esc discards it; the microphone picks the input
 Motion tab: click a clip to open its properties, drag a number sideways to change it, click a diamond to add or remove a key at the playhead
 click a key for its time, value and ease, drag it to move it, delete removes it     Graph Editor: drag keys and curve handles
@@ -421,7 +421,9 @@ impl Origami {
         let tall = |video: bool| if video { 56. } else { 46. };
         let live = self.growing();
         let room = rows.iter().map(|r| tall(r.0)).sum::<f32>() + live.iter().map(|_| tall(false)).sum::<f32>();
-        let fit = ((self.dock - 30.) / room).min(1.);
+        let fit = ((self.dock - 30.) / room).clamp(0.5, 1.);
+        self.climb.1 = (room * fit - self.dock + 30.).max(0.);
+        self.climb.0 = self.climb.0.clamp(0., self.climb.1);
         let step = [1., 2., 5., 10., 15., 30., 60., 120., 300., 600.]
             .into_iter()
             .find(|s| d / s <= 10.)
@@ -540,7 +542,8 @@ impl Origami {
             .children(select)
             .child(div().absolute().top_0().bottom_0().left(x(self.t)).w(px(1.)).bg(rgb(ink)));
         let flag = div().absolute().top_0().left(px(self.lead())).right_3().children(head);
-        [ruler].into_iter().chain(rows).chain([line, flag]).collect()
+        let rows = div().mt(px(-self.climb.0)).flex().flex_col().children(rows);
+        vec![ruler, div().flex_1().overflow_hidden().child(rows), line, flag]
     }
 
     fn timeline(&mut self, tl: &Timeline, focus: Option<&Clip>, per: f64, wide: f32, cx: &mut Context<Self>) -> Div {

@@ -6,6 +6,7 @@ What changed in each version of Origami. The launch screen shows the version you
 
 ### Nov 19
 
+- A timeline with more lanes than fit, such as 55 stacked layers, keeps every lane at least half its usual height instead of squeezing them into a few pixels each. Scrolling up or down then moves through the lanes, and cmd+scroll zooms; when every lane fits, scrolling zooms as before.
 - **Scripts run in a helper process.** A script that runs for more than 30 seconds, or uses more than 2 GB of memory, is stopped and its error shows like any other, even when one call never returns (a runaway regular expression, a huge array). Before, such a script kept running in the background and could take all of the Mac's memory and close Origami. While a script is still reading new media files it gets more time, up to 5 minutes.
 - A script whose timeline is over 16 MB as text (tens of thousands of clips, or one huge value), or that animates more than 1,048,576 values, is stopped with an error. Before, reading such a timeline back could take several gigabytes of Origami's own memory.
 - A captions file with more than 262,144 lines is refused with an error naming the line. Before, a file of many blank lines kept the script busy until it was stopped after 30 seconds.
@@ -21,6 +22,10 @@ What changed in each version of Origami. The launch screen shows the version you
 - The code pane shows at most 500 warnings at a time, plus the script's error. A line of tens of thousands of brackets no longer freezes Origami for seconds on opening and after every keystroke, and the Graph tab no longer freezes on a script of about a thousand clips that follow one another. Autocomplete, search and folding also stay quick on scripts with tens of thousands of names, matches or brackets.
 - A line of hundreds of thousands of characters no longer slows the code pane or fills the Mac's memory: its error squiggle, search highlights and colours are only drawn for the part on screen. Scrolled more than about 4,000 characters into such a line, colouring starts 4,096 characters before the visible part, so a string that began further left can show in code colours.
 - The Graph tab, the follow menu and "go to source" stay quick on scripts of many thousands of clips: with 20,000 clips each took over 2 seconds, and now takes a fraction of a second.
+- The first picture after opening a script with DJI footage shows about a quarter sooner (about 0.12 s instead of 0.16 s): Origami now reads the full-size file and its `.LRF` at the same time, and reads the `.LRF` twice as fast.
+- Scrubbing DJI footage is smoother: while dragging slowly each picture takes about a sixth less time, and a fast drag that jumps more than 20 frames now starts reading the `.LRF` at the new spot instead of reading through every frame in between, so the picture updates about a quarter more often.
+- Zooming a clip without turning it uses about a fifth less processor time per frame, and such exports finish a little sooner.
+- Stepping backwards through 4K footage pauses about half as long (about 0.23 s instead of 0.45 s) each time Origami has to read the frames before the ones it has kept: it now starts reading them while you are still stepping through the kept ones.
 
 ### Nov 15
 
@@ -44,6 +49,11 @@ What changed in each version of Origami. The launch screen shows the version you
 - Exports with text, motion or grades finish about a fifth sooner.
 - Undo history uses far less memory: each step keeps only the lines that changed.
 - Typing in very long scripts is up to three times faster.
+- Colour backgrounds, see-through overlays, pictures with transparency and fades draw about two and a half times faster in the preview and in exports: blending now uses every core.
+- Big shapes and vignettes appear sooner: a large rounded rectangle or a vignette is drawn in under half the time, so dragging their sliders responds faster.
+- Playing graded footage takes about a tenth less time per frame and holds about 100 MB less memory, because the preview reuses its frame memory instead of asking for new memory every frame. Exports finish 5 to 15% sooner for the same reason.
+- Crossing a cut while playing or scrubbing no longer waits about 10 ms for the previous clip's decoder to close.
+- The first press of play after opening a project no longer freezes the window while Origami reads each media file one after another (about 0.2 s on a 10-file project): the files are now read in parallel in the background as soon as the script loads, and exports start about 0.15 s sooner.
 - Fixed a rare freeze where the preview, thumbnails or an export could wait forever on an ffmpeg that had already finished.
 - **Menu bar.** Origami, File, Edit, View, Window and Help menus, with every existing shortcut on its item. New: ⌘N new file, ⌘O open, ⇧⌘E export, ⌘W close, ⌘M minimize, ⌘H hide.
 - **Open….** A button on the launch screen and ⌘O open any script, and double-clicking a `.js` file in Finder (or Open With › Origami) opens it. Opening another script or quitting asks before losing unsaved changes, and quitting asks before stopping a running export.

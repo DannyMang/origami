@@ -50,10 +50,17 @@ fn fit(ram: u64) -> (usize, usize) {
     ((ram / 8).clamp(1 << 28, 1 << 30) as usize, if ram > 8 << 30 { 6 } else { 4 })
 }
 
+fn lean(path: &str) -> &'static [&'static str] {
+    match path.ends_with(".LRF") {
+        true => &["-probesize", "32768", "-analyzeduration", "0"],
+        false => &[],
+    }
+}
+
 fn ask(path: &str, show: &str) -> String {
     let args = ["-v", "error", "-select_streams", "v:0", "-show_entries", show, "-of", "csv=p=0"];
-    let out = output(ffprobe().args(args).arg(path)).map(|o| o.stdout).unwrap_or_default();
-    String::from_utf8_lossy(&out).into()
+    let out = output(ffprobe().args(lean(path)).args(args).arg(path)).map(|o| o.stdout);
+    String::from_utf8_lossy(&out.unwrap_or_default()).into()
 }
 
 fn probe(path: &str) -> Info {
@@ -131,6 +138,23 @@ fn lands(src: &str, at: f64, start: f64) -> f64 {
     *LANDS.lock().unwrap().entry(key).or_insert(found)
 }
 
+pub fn learn(tl: &Timeline, from: f64) {
+    let used = tl
+        .clips
+        .iter()
+        .filter(|c| c.end > from && matches!(c.kind, Kind::Video | Kind::Sound));
+    study(used.map(|c| c.src.clone()).collect());
+}
+
+fn study(mut new: Vec<String>) {
+    new.retain(|f| !KNOWN.lock().unwrap().contains_key(f) && Path::new(f).is_file());
+    new.sort();
+    new.dedup();
+    if new.len() > 1 {
+        spread(&mut new, 1, |_, part| part.iter().for_each(|f| drop(probe(f))));
+    }
+}
+
 pub fn lead(src: &str) -> f64 {
     match Path::new(src).is_file().then(|| probe(src)) {
         Some((_, _, n, d, .., late, _, _, true)) if n > 0. => late as f64 * d / n,
@@ -180,11 +204,20 @@ fn blit(out: &mut [u8], (pw, ph): (usize, usize), src: &[u8], (sw, sh): (usize, 
     );
     let span = |c: f64, r: f64, n: usize| ((c - r).clamp(0., n as f64) as usize, (c + r).ceil().clamp(0., n as f64) as usize);
     let ((x0, x1), (y0, y1)) = (span(cx, rx, pw), span(cy, ry, ph));
+    let uv = |dx: f64, dy: f64| ((dx * cos + dy * sin) / k + hw - 0.5, (dy * cos - dx * sin) / k + hh - 0.5);
+    let cols: Vec<f64> = match sin == 0. {
+        true => (x0..x1).map(|x| uv(x as f64 + 0.5 - cx, 0.).0).collect(),
+        false => vec![],
+    };
     let paint = |from: usize, rows: &mut [u8]| {
         for (y, row) in (y0 + from / (pw * 4)..).zip(rows.chunks_exact_mut(pw * 4)) {
+            let dy = y as f64 + 0.5 - cy;
+            let flat = uv(0., dy).1;
             for (x, d) in (x0..x1).zip(row[x0 * 4..].chunks_exact_mut(4)) {
-                let (dx, dy) = (x as f64 + 0.5 - cx, y as f64 + 0.5 - cy);
-                let (u, v) = ((dx * cos + dy * sin) / k + hw - 0.5, (dy * cos - dx * sin) / k + hh - 0.5);
+                let (u, v) = match cols.get(x - x0) {
+                    Some(&u) => (u, flat),
+                    None => uv(x as f64 + 0.5 - cx, dy),
+                };
                 let ((ux, vy), mut sum) = ((u.floor(), v.floor()), [0.; 4]);
                 let (fx, fy) = (u - ux, v - vy);
                 for (ox, oy, w) in [
@@ -224,18 +257,25 @@ fn nudge(px: &[u8], w: usize, (fx, fy): (f64, f64)) -> Vec<u8> {
     if kx + ky == 0 && a + b == 0 {
         return out;
     }
+    let mix = |t: u8, u: u8, l: u8, v: u8| {
+        let (top, low) = (t as u32 * (256 - a) + u as u32 * a, l as u32 * (256 - a) + v as u32 * a);
+        ((top * (256 - b) + low * b) >> 16) as u8
+    };
     let band = h.div_ceil(thread::available_parallelism().map_or(1, usize::from)).max(1) * n;
     thread::scope(|s| {
         for (j, rows) in out.chunks_mut(band).enumerate() {
             s.spawn(move || {
                 for (y, row) in rows.chunks_exact_mut(n).enumerate() {
                     let [top, low] = [0, 1].map(|d| &px[(j * band / n + y + ky + d).min(h - 1) * n..][..n]);
-                    for (x, p) in row.chunks_exact_mut(4).enumerate() {
+                    let m = (w - 1).saturating_sub(kx) * 4;
+                    let ((head, tail), (i, k)) = (row.split_at_mut(m), (n - 4 - m, n - m));
+                    for ((((p, t), u), l), v) in head.iter_mut().zip(&top[i..]).zip(&top[k..]).zip(&low[i..]).zip(&low[k..]) {
+                        *p = mix(*t, *u, *l, *v);
+                    }
+                    for (x, p) in (m / 4..).zip(tail.chunks_exact_mut(4)) {
                         let (i, k) = ((x + kx).min(w - 1) * 4, (x + kx + 1).min(w - 1) * 4);
                         for c in 0..4 {
-                            let l = top[i + c] as u32 * (256 - a) + top[k + c] as u32 * a;
-                            let r = low[i + c] as u32 * (256 - a) + low[k + c] as u32 * a;
-                            p[c] = ((l * (256 - b) + r * b) >> 16) as u8;
+                            p[c] = mix(top[i + c], top[k + c], low[i + c], low[k + c]);
                         }
                     }
                 }
@@ -243,6 +283,17 @@ fn nudge(px: &[u8], w: usize, (fx, fy): (f64, f64)) -> Vec<u8> {
         }
     });
     out
+}
+
+fn reach(src: &str) -> i64 {
+    if src.ends_with(".LRF") { 20 } else { 30 }
+}
+
+fn reuse(spare: &mut Vec<Vec<u8>>, len: usize) -> Vec<u8> {
+    match spare.iter().position(|v| v.len() == len) {
+        Some(i) => spare.swap_remove(i),
+        None => vec![0; len],
+    }
 }
 
 fn kept<V: Clone>(now: &mut HashMap<String, V>, was: &mut HashMap<String, V>, key: String, make: impl FnOnce() -> V) -> V {
@@ -372,14 +423,16 @@ fn rate(src: &str, fps: f64) -> (f64, f64, f64) {
 }
 
 struct Decoder {
-    child: Child,
+    child: Option<Child>,
     next: i64,
 }
 
 impl Drop for Decoder {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            thread::spawn(move || child.wait());
+        }
     }
 }
 
@@ -390,6 +443,7 @@ pub struct Preview {
     stills: HashMap<String, Option<Px>>,
     texts: HashMap<String, Laid>,
     was: (HashMap<String, Option<Px>>, HashMap<String, Laid>),
+    spare: Vec<Vec<u8>>,
     stamps: HashMap<String, Option<(u64, SystemTime)>>,
     at: f64,
     primed: (Vec<u32>, (usize, usize)),
@@ -409,6 +463,7 @@ impl Default for Preview {
             stills: HashMap::new(),
             texts: HashMap::new(),
             was: Default::default(),
+            spare: vec![],
             stamps: HashMap::new(),
             at: -1.,
             primed: Default::default(),
@@ -475,13 +530,17 @@ impl Preview {
     }
 
     fn near(&self, key: &Key, k: i64) -> Option<usize> {
-        self.decoders.iter().position(|(o, d)| o == key && d.next <= k && k <= d.next + 30)
+        self.decoders
+            .iter()
+            .position(|(o, d)| o == key && d.next <= k && k <= d.next + reach(&key.0))
     }
 
     pub fn ready(&mut self, tl: &Timeline, t: f64, (pw, ph): (usize, usize)) -> bool {
         let (k, shown) = (pw as f64 / tl.size.0 as f64, |c: &&Clip| {
             c.kind == Kind::Video && c.video && live(c, t)
         });
+        let lrf = |c: &Clip| Path::new(&c.src).with_extension("LRF").to_string_lossy().into_owned();
+        study(tl.clips.iter().filter(shown).flat_map(|c| [c.src.clone(), lrf(c)]).collect());
         let mut all = true;
         for c in tl.clips.iter().filter(shown) {
             let (tw, th, ..) = place(c, (pw as f64, ph as f64), k);
@@ -497,10 +556,10 @@ impl Preview {
     }
 
     pub fn prime(&mut self, tl: &Timeline, t: f64, size: (usize, usize)) {
-        let old: Vec<u32> = self.decoders.iter().map(|(_, d)| d.child.id()).collect();
+        let old: Vec<u32> = self.decoders.iter().flat_map(|(_, d)| d.child.as_ref().map(Child::id)).collect();
         self.at = f64::NAN;
         self.ready(tl, t, size);
-        let ids = self.decoders.iter().map(|(_, d)| d.child.id());
+        let ids = self.decoders.iter().flat_map(|(_, d)| d.child.as_ref().map(Child::id));
         self.primed = (ids.filter(|n| !old.contains(n)).collect(), size);
     }
 
@@ -541,15 +600,11 @@ impl Preview {
                     "bgra",
                     "-",
                 ];
-                let lrf: &[&str] = match key.0.ends_with(".LRF") {
-                    true => &["-probesize", "32768", "-analyzeduration", "0"],
-                    false => &[],
-                };
                 let child = origami_lang::start(
                     ffmpeg()
                         .args(["-v", "error"])
                         .args(lead)
-                        .args(lrf)
+                        .args(lean(&key.0))
                         .args(args)
                         .args(out)
                         .stdin(Stdio::null())
@@ -558,7 +613,13 @@ impl Preview {
                 )
                 .ok()?;
                 self.decoders.drain(..self.decoders.len().saturating_sub(self.most - 1));
-                (key.clone(), Decoder { child, next: from })
+                (
+                    key.clone(),
+                    Decoder {
+                        child: Some(child),
+                        next: from,
+                    },
+                )
             }
         };
         self.decoders.push(found);
@@ -569,24 +630,29 @@ impl Preview {
         if let Some(px) = self.frames.get(&(key.clone(), k)) {
             return Some(px.clone());
         }
-        let len = key.1 * key.2 * 4;
-        self.decoder(&key, k, (k - self.lap(&key, k)).max(0), rate)?;
+        let (len, lap) = (key.1 * key.2 * 4, self.lap(&key, k));
+        self.decoder(&key, k, (k - lap).max(0), rate)?;
         let (_, mut d) = self.decoders.pop()?;
+        let low = d.next;
         while d.next <= k {
-            let mut px = vec![0; len];
-            if d.child.stdout.as_mut().and_then(|o| o.read_exact(&mut px).ok()).is_none() {
-                break;
-            }
             while self.held + len > self.room
                 && let Some(old) = self.frames.pop_lru()
             {
                 self.held -= old.1.len();
+                self.spare.extend(Arc::try_unwrap(old.1));
+            }
+            let mut px = reuse(&mut self.spare, len);
+            if d.child.as_mut().and_then(|c| c.stdout.as_mut()?.read_exact(&mut px).ok()).is_none() {
+                break;
             }
             self.held += len;
             self.held -= self.frames.push((key.clone(), d.next), Arc::new(px)).map_or(0, |f| f.1.len());
             d.next += 1;
         }
         self.decoders.push((key.clone(), d));
+        if lap > 0 && low > 0 {
+            self.decoder(&key, low - 1, (low - reach(&key.0)).max(0), rate);
+        }
         self.frames.get(&(key, k)).cloned()
     }
 
@@ -631,7 +697,7 @@ impl Preview {
         };
         let px = match &c.grade {
             Some(g) => kept(&mut self.stills, &mut self.was.0, format!("{base}|{g:?}"), || {
-                Some(grade::paint(g, px, (tw, th)))
+                Some(grade::paint(g, px, (tw, th), reuse(&mut self.spare, tw * th * 4)))
             })?,
             None => px,
         };
@@ -658,7 +724,7 @@ impl Preview {
             c.grade
         );
         let tint = |mut g: Glyph| {
-            g.px = c.grade.as_ref().map_or(g.px.clone(), |x| grade::paint(x, g.px, (g.w, g.h)));
+            g.px = c.grade.as_ref().map_or(g.px.clone(), |x| grade::paint(x, g.px, (g.w, g.h), vec![]));
             g
         };
         let laid = || {
@@ -677,7 +743,10 @@ impl Preview {
         };
         if !c.background.is_empty() {
             let plate = Arc::new(text::flat(&c.background, tw * th));
-            let plate = c.grade.as_ref().map_or(plate.clone(), |g| grade::paint(g, plate, (*tw, *th)));
+            let plate = c
+                .grade
+                .as_ref()
+                .map_or(plate.clone(), |g| grade::paint(g, plate, (*tw, *th), vec![]));
             blit(out, (pw, ph), &plate, (*tw, *th), q, turn, mid, a);
         }
         for g in glyphs.iter().filter(|g| g.i < n && g.w > 0) {
@@ -712,11 +781,14 @@ impl Preview {
         });
         let (primed, size) = std::mem::take(&mut self.primed);
         if self.fast || size != (pw, ph) {
-            self.decoders.retain(|(_, d)| !primed.contains(&d.child.id()));
+            self.decoders
+                .retain(|(_, d)| d.child.as_ref().is_some_and(|c| !primed.contains(&c.id())));
         }
         let mut out = [0, 0, 0, 255].repeat(pw * ph);
         (self.rough, self.at) = (false, t);
-        self.was = (std::mem::take(&mut self.stills), std::mem::take(&mut self.texts));
+        let was = std::mem::replace(&mut self.was, (std::mem::take(&mut self.stills), std::mem::take(&mut self.texts)));
+        self.spare
+            .extend(was.0.into_values().flatten().filter_map(|px| Arc::try_unwrap(px).ok()));
         for c in tl.clips.iter().filter(|c| c.video && live(c, t)).filter(drawn) {
             let i = ((t - c.start) * tl.fps as f64).round() as usize;
             let (a, solid) = ((alpha(c, t) * c.opacity.at(i)).clamp(0., 1.), c.kind == Kind::Video);
@@ -728,19 +800,27 @@ impl Preview {
                 continue;
             };
             let (x0, x1) = ((-x).max(0) as usize, (pw as i64 - x).clamp(0, sw as i64) as usize);
-            for sy in (0..sh).filter(|sy| x0 < x1 && (0..ph as i64).contains(&(y + *sy as i64))) {
-                let dst = &mut out[((y + sy as i64) as usize * pw + (x + x0 as i64) as usize) * 4..][..(x1 - x0) * 4];
-                let src = &px[(sy * sw + x0) * 4..][..dst.len()];
-                if solid && a >= 1. {
-                    dst.copy_from_slice(src);
-                    continue;
-                }
-                for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
-                    let sa = a * if solid { 1. } else { s[3] as f64 / 255. };
-                    for i in 0..3 {
-                        d[i] = (s[i] as f64 * sa + d[i] as f64 * (1. - sa)) as u8;
+            let (y0, y1) = (y.clamp(0, ph as i64) as usize, (y + sh as i64).clamp(0, ph as i64) as usize);
+            let paint = |from: usize, rows: &mut [u8]| {
+                for (sy, row) in ((y0 + from / (pw * 4)) as i64 - y..).zip(rows.chunks_exact_mut(pw * 4)) {
+                    let dst = &mut row[(x + x0 as i64) as usize * 4..][..(x1 - x0) * 4];
+                    let src = &px[(sy as usize * sw + x0) * 4..][..dst.len()];
+                    if solid && a >= 1. {
+                        dst.copy_from_slice(src);
+                        continue;
+                    }
+                    for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
+                        let sa = a * if solid { 1. } else { s[3] as f64 / 255. };
+                        for i in 0..3 {
+                            d[i] = (s[i] as f64 * sa + d[i] as f64 * (1. - sa)) as u8;
+                        }
                     }
                 }
+            };
+            match x1.saturating_sub(x0) * (y1 - y0) {
+                0 => {}
+                n if n < 1 << 16 || solid && a >= 1. => paint(0, &mut out[y0 * pw * 4..y1 * pw * 4]),
+                _ => spread(&mut out[y0 * pw * 4..y1 * pw * 4], pw * 4, paint),
             }
         }
         let soon = |c: &&Clip| c.kind == Kind::Video && t < c.start && c.start < t + 1.;
@@ -752,6 +832,7 @@ impl Preview {
                 self.decoder(&key, first, first, rate);
             }
         }
+        self.spare.clear();
         out
     }
 }
@@ -1043,6 +1124,38 @@ mod tests {
             .filter(|k| played.frame(&tl, *k as f64 / 30., (64, 36)) != Preview::default().frame(&tl, *k as f64 / 30., (64, 36)))
             .collect();
         assert!(wrong.is_empty(), "{wrong:?}");
+    }
+
+    // Stepping backwards should start the decoder for the frames before the kept ones while those are
+    // shown, and show the same pictures as playing forwards.
+    #[test]
+    fn stepping_back_reads_ahead() {
+        let file = scratch("back").join("a.mp4");
+        film(&file, "testsrc=s=64x36:r=30:d=4", &[]);
+        let tl = Timeline {
+            fps: 30,
+            size: (64, 36),
+            duration: 4.,
+            clips: vec![Clip {
+                src: file.to_string_lossy().into(),
+                w: 64,
+                h: 36,
+                end: 4.,
+                ..clip("video", "")
+            }],
+            ..Default::default()
+        };
+        let (mut back, mut played) = (Preview::default(), Preview::default());
+        let shown = |pv: &mut Preview, k: i64| pv.frame(&tl, k as f64 / 30., (64, 36));
+        let mut stepped: Vec<_> = (60..=100).rev().map(|k| shown(&mut back, k)).collect();
+        let waiting = back
+            .decoders
+            .iter()
+            .any(|(key, d)| d.next < 60 && !back.frames.contains(&(key.clone(), d.next)));
+        stepped.extend((0..60).rev().map(|k| shown(&mut back, k)));
+        stepped.reverse();
+        assert!(waiting);
+        assert!(stepped == (0..=100).map(|k| shown(&mut played, k)).collect::<Vec<_>>());
     }
 
     // Variable-frame-rate footage should show the frame a plain export shows: the clip starts on the
