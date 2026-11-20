@@ -864,12 +864,15 @@ impl Origami {
                     .bg(rgb(PANEL))
                     .border_b_1()
                     .border_color(rgb(BORDER))
-                    .child(if q.is_empty() {
-                        div().text_color(rgb(DIM)).child("Search\u{2026}")
-                    } else {
-                        div().when(bad, |d| d.text_color(rgb(RED))).child(q.clone())
-                    })
-                    .child(div().w(px(1.)).h(px(14.)).bg(rgb(BLUE)))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .when(q.is_empty(), |d| d.flex_row_reverse().text_color(rgb(DIM)))
+                            .when(bad, |d| d.text_color(rgb(RED)))
+                            .child(if q.is_empty() { "Search\u{2026}".into() } else { q.clone() })
+                            .child(div().w(px(1.)).h(px(14.)).bg(rgb(BLUE))),
+                    )
                     .child(div().flex_1())
                     .child(mode("Aa", 0))
                     .child(mode("wd", 1))

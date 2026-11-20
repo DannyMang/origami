@@ -6,6 +6,7 @@ What changed in each version of Origami. The launch screen shows the version you
 
 ### Nov 20
 
+- The caret in the search field sits right after the last letter instead of a gap away, and in front of the greyed "Search…" hint while the field is empty.
 - A media file that never ends, such as a live HLS playlist (`.m3u8`) that keeps waiting for its next part, no longer freezes the preview, an export or the timeline's thumbnails until Origami restarts. An ffmpeg or ffprobe that sends nothing for 20 seconds is now stopped: the clip shows black where it could not be read, and a file the script is still reading gives an error on its line.
 - A sound's waveform in the timeline covers at most the first day of the file, and is worked out without keeping the whole decoded sound in memory. Before, a tiny sound file with one sample a second could take gigabytes of Origami's memory.
 - Exports use less memory: a 1080p export keeps only the video frames its layers need, so its peak memory fell from about 105 MB to about 65 MB (about 88 to 52 MB with two or three video layers). A 4K export with three or more overlapping video layers, one of them slowed down, no longer restarts a decoder for every repeated frame, so it finishes several times sooner (about 6 s instead of 35 to 60 s for a 4-second example).
