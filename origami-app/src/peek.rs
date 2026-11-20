@@ -145,7 +145,7 @@ impl Origami {
             Some(_) => None,
             None => {
                 self.player = None;
-                Some((Instant::now(), p.t, Player::new(&p.tl, p.t, 1.).ok()))
+                Some((Instant::now(), p.t, Player::plan(&p.tl, p.t, 1.).and_then(Player::new).ok()))
             }
         };
     }

@@ -25,18 +25,25 @@ pub struct Player {
     speed: f64,
 }
 
+pub struct Plan(cpal::Device, cpal::SampleRate, Vec<String>, f64, f64);
+
 impl Player {
     pub fn warm() {
         let _ = cpal::default_host().default_output_device().map(|d| d.default_output_config());
     }
 
-    pub fn new(tl: &Timeline, t: f64, speed: f64) -> Result<Self> {
+    pub fn plan(tl: &Timeline, t: f64, speed: f64) -> Result<Plan> {
         let dev = cpal::default_host().default_output_device().context("no audio device")?;
         let rate = dev.default_output_config()?.sample_rate();
+        let args = audio_args(tl, t, rate.0, speed);
+        Ok(Plan(dev, rate, args, t, speed))
+    }
+
+    pub fn new(Plan(dev, rate, args, t, speed): Plan) -> Result<Self> {
         let mut child = start(
             ffmpeg()
                 .args(["-v", "error"])
-                .args(audio_args(tl, t, rate.0, speed))
+                .args(args)
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null()),

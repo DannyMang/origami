@@ -153,6 +153,8 @@ struct Origami {
     reading: bool,
     clash: bool,
     player: Option<(Instant, f64, Option<Player>)>,
+    cued: bool,
+    planning: bool,
     assets: HashMap<String, Option<Asset>>,
     stamps: HashMap<String, Option<(u64, SystemTime)>>,
     jobs: Vec<(String, String, Option<f64>)>,
@@ -225,12 +227,31 @@ impl Origami {
     }
 
     fn play(&mut self) {
-        self.player = None;
         if self.t >= self.end() {
             self.t = 0.;
         }
-        let player = Player::new(&self.tl, self.t, self.rate).map_err(|e| self.note = e.to_string()).ok();
-        self.player = Some((Instant::now(), self.t, player));
+        (self.player, self.cued) = (Some((Instant::now(), self.t, None)), true);
+    }
+
+    fn cue(&mut self, cx: &mut Context<Self>) {
+        let Some(&(_, t, _)) = self.player.as_ref().filter(|_| self.cued && !self.planning && !self.scrubbing) else {
+            return;
+        };
+        let (tl, job, rate) = (self.tl.clone(), self.tl.clone(), self.rate);
+        self.planning = true;
+        cx.spawn(async move |this, cx| {
+            let plan = cx.background_executor().spawn(async move { Player::plan(&job, t, rate) }).await;
+            this.update(cx, |this, cx| {
+                this.planning = false;
+                let same = this.player.as_ref().is_some_and(|p| p.1 == t) && Arc::ptr_eq(&this.tl, &tl) && this.rate == rate;
+                if this.cued && !this.scrubbing && same {
+                    let player = plan.and_then(Player::new).map_err(|e| this.note = e.to_string()).ok();
+                    (this.player, this.cued) = (Some((Instant::now(), t, player)), false);
+                    cx.notify();
+                }
+            })
+        })
+        .detach();
     }
 
     fn load(&mut self, cx: &mut Context<Self>) {
@@ -399,7 +420,7 @@ impl Origami {
             cx.notify();
         }
         let was = (self.t, self.player.is_some());
-        if let Some((since, t0, player)) = self.player.as_ref().filter(|_| !self.scrubbing) {
+        if let Some((since, t0, player)) = self.player.as_ref().filter(|_| !self.scrubbing && !self.cued) {
             let t = player.as_ref().map_or(t0 + since.elapsed().as_secs_f64() * self.rate, Player::time);
             let mark = |m| self.marks.get(&m).copied();
             let (a, b) = mark('a').zip(mark('b')).filter(|_| self.looping).unwrap_or((0., self.tl.duration));
@@ -414,6 +435,7 @@ impl Origami {
                 self.t = self.end();
             }
         }
+        self.cue(cx);
         if let Some(job) = self.export.clone() {
             let (note, done) = mem::take(&mut *job.lock().unwrap());
             if !note.is_empty() {
@@ -543,6 +565,8 @@ fn fresh(focus: FocusHandle, recent: Vec<PathBuf>) -> Origami {
         reading: false,
         clash: false,
         player: None,
+        cued: false,
+        planning: false,
         assets: HashMap::new(),
         stamps: HashMap::new(),
         jobs: vec![],

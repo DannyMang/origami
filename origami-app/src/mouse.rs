@@ -597,4 +597,62 @@ mod tests {
             assert!(o.used(c, "duplicate").is_none());
         });
     }
+
+    // Play shows at once and holds the playhead while the player is built in the background, and pausing,
+    // seeking or editing the script meanwhile leaves nothing playing or a player for the new spot and script.
+    #[gpui::test]
+    fn play_builds_the_player_aside(cx: &mut gpui::TestAppContext) {
+        let media = env::temp_dir().join("origami-play-test.mp4");
+        let args = [
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=red:s=64x36:r=30:d=2",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc",
+        ];
+        let made = origami_lang::status(origami_lang::ffmpeg().args(args).args(["-t", "2"]).arg(&media));
+        assert!(made.unwrap().success());
+        let (view, cx) = window(cx, "play", "stack(video(\"origami-play-test.mp4\"))");
+        let tick = |cx: &mut gpui::VisualTestContext| view.update_in(cx, |o, window, cx| o.tick(window, cx));
+        let state = |cx: &mut gpui::VisualTestContext| {
+            view.update(cx, |o, _| {
+                let built = o.player.as_ref().map(|p| (p.1, p.2.is_some() || !o.note.is_empty()));
+                (o.t, built, o.cued)
+            })
+        };
+        tick(cx);
+        cx.run_until_parked();
+        view.update(cx, |o, _| o.toggle());
+        assert_eq!(state(cx), (0., Some((0., false)), true));
+        view.update(cx, |o, _| o.toggle());
+        tick(cx);
+        cx.run_until_parked();
+        tick(cx);
+        cx.run_until_parked();
+        assert_eq!(state(cx).1, None);
+        view.update(cx, |o, _| o.toggle());
+        tick(cx);
+        view.update(cx, |o, _| o.seek(1.5));
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(100));
+        tick(cx);
+        assert_eq!(state(cx), (1.5, Some((1.5, false)), true));
+        cx.run_until_parked();
+        assert_eq!(state(cx), (1.5, Some((1.5, true)), false));
+        view.update(cx, |o, _| o.seek(1.8));
+        tick(cx);
+        let path = view.update(cx, |o, _| o.script.clone());
+        fs::write(&path, "stack(video(\"origami-play-test.mp4\").trim(0, 1))").unwrap();
+        view.update(cx, |o, cx| o.watch(cx));
+        cx.run_until_parked();
+        tick(cx);
+        cx.run_until_parked();
+        assert_eq!(state(cx), (0., Some((0., true)), false));
+    }
 }
