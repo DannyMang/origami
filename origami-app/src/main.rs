@@ -37,7 +37,7 @@ use origami_engine::{Player, Preview, footprint, halt, learn, peaks, thumb};
 use origami_lang::{Clip, Kind, Timeline};
 use std::{
     cell::RefCell,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env, fs, mem,
     path::{Path, PathBuf},
     process::Command,
@@ -359,13 +359,12 @@ impl Origami {
     }
 
     fn watch(&mut self, cx: &mut Context<Self>) {
-        for c in self
-            .tl
-            .clone()
+        let (tl, mut seen) = (self.tl.clone(), HashSet::new());
+        let media = tl
             .clips
             .iter()
-            .filter(|c| matches!(c.kind, Kind::Video | Kind::Sound | Kind::Image))
-        {
+            .filter(|c| matches!(c.kind, Kind::Video | Kind::Sound | Kind::Image));
+        for c in media.filter(|c| seen.insert(&c.src)) {
             let now = fs::metadata(&c.src).and_then(|m| Ok((m.len(), m.modified()?))).ok();
             if self.stamps.insert(c.src.clone(), now).is_some_and(|was| was != now) {
                 self.assets.retain(|k, _| !k.starts_with(&c.src));
