@@ -75,11 +75,11 @@ fn tab(label: impl IntoElement) -> Div {
         .child(label)
 }
 
-pub fn tokens(s: &str) -> Vec<(Range<usize>, HighlightStyle)> {
-    let (mut out, mut i) = (vec![], 0);
-    while i < s.len() {
+pub fn tokens(s: &str) -> impl Iterator<Item = (Range<usize>, HighlightStyle)> + '_ {
+    let mut i = 0;
+    std::iter::from_fn(move || {
         let rest = &s[i..];
-        let c = rest.chars().next().unwrap();
+        let c = rest.chars().next()?;
         let until = |f: fn(char) -> bool| rest.find(f).unwrap_or(rest.len());
         let (n, color) = match c {
             _ if rest.starts_with("//") => (rest.len(), COMMENT),
@@ -101,10 +101,18 @@ pub fn tokens(s: &str) -> Vec<(Range<usize>, HighlightStyle)> {
             }
             _ => (until(|c| c.is_alphanumeric() || "\"'_/".contains(c)).max(c.len_utf8()), CODE),
         };
-        out.push((i..i + n, rgb(color).into()));
         i += n;
-    }
-    out
+        Some((i - n..i, rgb(color).into()))
+    })
+}
+
+fn shown(s: &str, cols: Range<usize>) -> (usize, StyledText) {
+    let edge = |c: usize| s.char_indices().nth(c).map_or(s.len(), |x| x.0);
+    let (lead, a, b) = (edge(cols.start.saturating_sub(1 << 12)), edge(cols.start), edge(cols.end));
+    let marks = tokens(&s[lead..]).map(|(r, h)| (r.start + lead..r.end + lead, h));
+    let marks = marks.skip_while(|t| t.0.end <= a).take_while(|t| t.0.start < b);
+    let marks = marks.map(|(r, h)| (r.start.max(a) - a..r.end.min(b) - a, h));
+    (s[..a].chars().count(), StyledText::new(s[a..b].to_string()).with_highlights(marks))
 }
 
 pub fn wave(bars: Vec<f32>, ink: u32) -> Div {
@@ -599,7 +607,10 @@ impl Origami {
         let name = self.script.file_name().unwrap_or_default().to_string_lossy().to_string();
         let scans = self.scans();
         let (regions, hidden, issues, found) = &*scans;
+        let seen = (self.left / self.glyph()) as usize;
+        let seen = seen.saturating_sub(64)..seen + (self.side / self.glyph()) as usize + 64;
         let row = |(i, s): (usize, &String)| {
+            let (from, text) = shown(s, seen.clone());
             let on = i + 1 == active;
             let region = regions.iter().find(|r| r.start == i);
             let shut = region.is_some() && self.folded.contains(s);
@@ -655,9 +666,9 @@ impl Origami {
                     }),
                 )
                 .children(
-                    found[found.partition_point(|h| h.0 < i)..]
+                    found[found.partition_point(|h| (h.0, h.1 + h.2) <= (i, seen.start))..]
                         .iter()
-                        .take_while(|h| h.0 == i)
+                        .take_while(|h| h.0 == i && h.1 < seen.end)
                         .map(|h| {
                             div()
                                 .absolute()
@@ -684,7 +695,8 @@ impl Origami {
                         self.inset() + x.span.0 as f32 * self.glyph(),
                         (x.span.1 - x.span.0) as f32 * self.glyph(),
                     );
-                    (0..(wide / 3.) as usize).map(move |n| {
+                    let shown = ((self.side - from) / 3. + 1.) as usize;
+                    ((-from / 3.).max(0.) as usize..((wide / 3.) as usize).min(shown)).map(move |n| {
                         div()
                             .absolute()
                             .bottom(px(if n % 2 == 0 { 1. } else { 3. }))
@@ -709,12 +721,7 @@ impl Origami {
                         cx.notify();
                     }
                 }))
-                .child(
-                    div()
-                        .ml(px(self.inset()))
-                        .flex_none()
-                        .child(StyledText::new(s.clone()).with_highlights(tokens(s))),
-                )
+                .child(div().ml(px(self.inset() + from as f32 * self.glyph())).flex_none().child(text))
                 .children(region.filter(|_| shut).map(|r| {
                     let note = div().px_3().flex().items_center().text_color(rgb(DIM)).child(r.note.clone());
                     note.when(r.run, |n| n.absolute().top_0().bottom_0().right_0().bg(rgb(BG)))
@@ -1343,6 +1350,36 @@ mod tests {
             assert_eq!(check(o), 1);
             (o.tl, o.rev) = (std::sync::Arc::new(tl), o.rev + 1);
             assert_eq!(check(o), 2);
+        });
+    }
+
+    // The code pane should build a frame quickly, at the start and scrolled sideways, for a huge
+    // line with an error, a search match in every other column or a token in every column.
+    #[gpui::test]
+    fn huge_lines_draw_quickly(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = cx.add_window_view(|_, cx| crate::fresh(cx.focus_handle(), vec![]));
+        view.update(cx, |o, cx| {
+            let mut took = |o: &mut crate::Origami, line: &str, n: usize| {
+                o.lines = vec![line.repeat(n)];
+                o.scans();
+                let at = std::time::Instant::now();
+                o.script(None, 40, cx);
+                at.elapsed().as_secs_f32()
+            };
+            for left in [0., 100_000.] {
+                o.left = left * o.glyph();
+                (o.bad, o.err, o.finding) = (1, "wrong".into(), None);
+                o.aim();
+                let a = took(o, "x ", 200_000);
+                (o.bad, o.finding) = (0, Some("x".into()));
+                o.aim();
+                let b = took(o, "x ", 500_000);
+                o.finding = None;
+                o.aim();
+                let c = took(o, "a(", 3_000_000);
+                let most = if cfg!(debug_assertions) { 0.2 } else { 0.04 };
+                assert!([a, b, c].iter().all(|&t| t < most), "{left} {a} {b} {c}");
+            }
         });
     }
 }

@@ -68,13 +68,10 @@ impl Origami {
     }
 
     pub fn web(&mut self, room: (f32, f32), cx: &mut Context<Self>) -> Div {
-        let (tl, text) = (self.tl.clone(), self.lines.join("\n"));
-        let names = tl.clips.iter().map(|c| Some(name(&text, self.offset(c)?, c.kind)?.to_string()));
+        let (tl, (text, at)) = (self.tl.clone(), self.sites());
+        let names = tl.clips.iter().zip(&at).map(|(c, f)| Some(name(&text, (*f)?, c.kind)?.to_string()));
         let names: Vec<Option<String>> = names.collect();
-        let tied = tl
-            .clips
-            .iter()
-            .map(|c| self.offset(c).map_or(vec![], |from| ties(&text, from, c.kind)));
+        let tied = tl.clips.iter().zip(&at).map(|(c, f)| f.map_or(vec![], |f| ties(&text, f, c.kind)));
         let tied: Vec<Vec<(&'static str, Link)>> = tied.collect();
         let find = firsts(&names);
         let source = |l: &Link| find.get(l.clip.as_str()).copied();
@@ -91,7 +88,7 @@ impl Origami {
                 };
                 Some((r.name, text, matches!(r.form, Form::Keyed(_) | Form::Linked(_))))
             };
-            self.rows(c).iter().filter_map(shown).collect::<Vec<_>>()
+            self.rows_at(c, &text, at[i]).iter().filter_map(shown).collect::<Vec<_>>()
         });
         let listed: Vec<Vec<(&'static str, String, bool)>> = listed.collect();
         let tall: Vec<f32> = listed.iter().map(|l| HEAD + l.len().max(1) as f32 * ROW).collect();
@@ -307,5 +304,40 @@ stack(shot, title, text(\"loose\").scale(title.scale), tag, dot)";
         let start = std::time::Instant::now();
         assert_eq!(depths(&names, &chain), (0..2000).rev().collect::<Vec<_>>());
         assert!(start.elapsed().as_secs() < 1);
+    }
+
+    // The Graph tab, the follow menu and going to a followed clip's source should take time that
+    // grows with the clips, not with clips times script, on 20,000 clips that each follow the one
+    // above.
+    #[gpui::test]
+    fn many_clips_graph_quickly(cx: &mut gpui::TestAppContext) {
+        let path = std::env::temp_dir().join("origami-graph-test.js");
+        std::fs::write(&path, "text('t')").unwrap();
+        let mut tl = origami_lang::eval(&path, false, origami_engine::footprint).unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| crate::fresh(cx.focus_handle(), vec![]));
+        cx.update(|window, cx| {
+            view.update(cx, |o, cx| {
+                o.lines = (0..20000)
+                    .map(|i| format!("const c{} = text('t').opacity(c{i}.opacity)", i + 1))
+                    .collect();
+                let each = |home| origami_lang::Clip {
+                    home,
+                    z: home,
+                    ..tl.clips[0].clone()
+                };
+                tl.clips = (1..=20000).map(each).collect();
+                (o.tl, o.tie, o.motion, o.menu) = (std::sync::Arc::new(tl), Some((20000, "opacity")), true, "follow");
+                let start = std::time::Instant::now();
+                o.web((800., 600.), cx);
+                let graph = start.elapsed().as_secs_f32();
+                assert!(o.wires(window, cx).is_some());
+                let menu = start.elapsed().as_secs_f32() - graph;
+                o.trace((20000, "opacity"));
+                let source = start.elapsed().as_secs_f32() - graph - menu;
+                assert_eq!(o.sel, Some(19999));
+                let most = if cfg!(debug_assertions) { 10. } else { 1. };
+                assert!([graph, menu, source].iter().all(|&t| t < most), "{graph} {menu} {source}");
+            })
+        });
     }
 }

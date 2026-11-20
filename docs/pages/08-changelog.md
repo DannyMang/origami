@@ -19,6 +19,8 @@ What changed in each version of Origami. The launch screen shows the version you
 - Recovered unsaved code and remembered export choices are only offered for the exact script they were kept for, never for another script that happens to share their file name in Origami's folder. Export choices and unsaved code kept by earlier builds are not offered again.
 - Saved versions written while quitting are flushed to disk before Origami exits.
 - The code pane shows at most 500 warnings at a time, plus the script's error. A line of tens of thousands of brackets no longer freezes Origami for seconds on opening and after every keystroke, and the Graph tab no longer freezes on a script of about a thousand clips that follow one another. Autocomplete, search and folding also stay quick on scripts with tens of thousands of names, matches or brackets.
+- A line of hundreds of thousands of characters no longer slows the code pane or fills the Mac's memory: its error squiggle, search highlights and colours are only drawn for the part on screen. Scrolled more than about 4,000 characters into such a line, colouring starts 4,096 characters before the visible part, so a string that began further left can show in code colours.
+- The Graph tab, the follow menu and "go to source" stay quick on scripts of many thousands of clips: with 20,000 clips each took over 2 seconds, and now takes a fraction of a second.
 
 ### Nov 15
 

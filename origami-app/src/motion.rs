@@ -521,6 +521,16 @@ impl Origami {
         Some(self.lines[..row].iter().map(|l| l.len() + 1).sum())
     }
 
+    pub fn sites(&self) -> (String, Vec<Option<usize>>) {
+        let starts: Vec<usize> = self
+            .lines
+            .iter()
+            .scan(0, |at, l| Some(mem::replace(at, *at + l.len() + 1)))
+            .collect();
+        let at = self.tl.clips.iter().map(|c| starts.get((c.home as usize).checked_sub(1)?).copied());
+        (self.lines.join("\n"), at.collect())
+    }
+
     pub fn frame(&self, c: &Clip) -> f64 {
         ((self.t - c.start).clamp(0., c.end - c.start) * self.fps()).round()
     }
@@ -532,8 +542,12 @@ impl Origami {
     }
 
     pub fn rows(&self, c: &Clip) -> Vec<Row> {
-        let (text, frame) = (self.lines.join("\n"), self.frame(c) as usize);
-        let text = self.offset(c).and_then(|from| spread(&text, from, c.kind)).unwrap_or(text);
+        self.rows_at(c, &self.lines.join("\n"), self.offset(c))
+    }
+
+    pub fn rows_at(&self, c: &Clip, text: &str, from: Option<usize>) -> Vec<Row> {
+        let (wide, frame) = (from.and_then(|from| spread(text, from, c.kind)), self.frame(c) as usize);
+        let text = wide.as_deref().unwrap_or(text);
         let fits = |a: &&(&str, &str, f64, f64, f64, usize)| match (c.kind, a.0) {
             (Kind::Sound, _) => false,
             (Kind::Text, "shown" | "size") | (Kind::Rect, "width" | "height" | "radius") | (Kind::Line, "width") => true,
@@ -548,7 +562,7 @@ impl Origami {
                 "radius" => c.radius,
                 _ => val.map_or(0., |v| v.at(frame)),
             };
-            let site = self.offset(c).and_then(|from| read(&text, from, c.kind, name));
+            let site = from.and_then(|from| read(text, from, c.kind, name));
             let (form, now) = match site.as_ref().map(|(s, caption)| (text[s.a..s.b].trim(), *caption)) {
                 None => (Form::Code, live),
                 Some(("" | "null", caption)) => match (name, val) {
@@ -615,10 +629,6 @@ impl Origami {
         self.lines = text.split('\n').map(String::from).collect();
     }
 
-    pub fn named(&self, c: &Clip) -> Option<String> {
-        name(&self.lines.join("\n"), self.offset(c)?, c.kind).map(String::from)
-    }
-
     pub fn bound(&self, to: (u32, &'static str), from: (u32, &'static str)) -> Result<String, String> {
         let at = |z: u32| {
             self.tl
@@ -670,8 +680,12 @@ impl Origami {
 
     pub fn trace(&mut self, at: (u32, &'static str)) {
         let Some((_, rows)) = self.tied(at) else { return };
+        let (text, sites) = self.sites();
         let from = rows.iter().find_map(|r| match &r.form {
-            Form::Linked(l) if r.name == at.1 => self.tl.clips.iter().find(|c| self.named(c).as_ref() == Some(&l.clip)),
+            Form::Linked(l) if r.name == at.1 => {
+                let source = |(c, f): &(&Clip, &Option<usize>)| f.and_then(|f| name(&text, f, c.kind)) == Some(l.clip.as_str());
+                self.tl.clips.iter().zip(&sites).find(source).map(|x| x.0)
+            }
             _ => None,
         });
         if let Some(z) = from.map(|c| c.z).filter(|z| self.sel != Some(*z)) {
