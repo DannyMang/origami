@@ -16,7 +16,7 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{
         Arc, LazyLock, Mutex,
-        mpsc::{self, Receiver, TryRecvError},
+        mpsc::{self, Receiver, Sender, TryRecvError},
     },
     thread,
     time::SystemTime,
@@ -313,6 +313,12 @@ fn reuse(spare: &mut Vec<Vec<u8>>, len: usize) -> Vec<u8> {
     }
 }
 
+fn recycle(spare: &mut Vec<Vec<u8>>, give: &Sender<Vec<u8>>, len: usize) {
+    if let Some(i) = spare.iter().position(|v| v.len() == len) {
+        let _ = give.send(spare.swap_remove(i));
+    }
+}
+
 fn kept<V: Clone>(now: &mut HashMap<String, V>, was: &mut HashMap<String, V>, key: String, make: impl FnOnce() -> V) -> V {
     now.entry(key).or_insert_with_key(|k| was.remove(k).unwrap_or_else(make)).clone()
 }
@@ -442,7 +448,7 @@ fn rate(src: &str, fps: f64) -> (f64, f64, f64) {
 struct Decoder {
     child: Option<Child>,
     next: i64,
-    feed: Option<Receiver<Vec<u8>>>,
+    feed: Option<(Receiver<Vec<u8>>, Sender<Vec<u8>>)>,
 }
 
 impl Drop for Decoder {
@@ -653,7 +659,9 @@ impl Preview {
     }
 
     fn evict(&mut self, len: usize) {
-        while self.held + len > self.room
+        let feeds = self.decoders.iter().filter(|(_, d)| d.feed.is_some());
+        let flight: usize = feeds.map(|(k, _)| 3 * k.1 * k.2 * 4).sum();
+        while self.held + flight + len > self.room
             && let Some(old) = self.frames.pop_lru()
         {
             self.held -= old.1.len();
@@ -662,6 +670,7 @@ impl Preview {
     }
 
     fn keep(&mut self, at: (Key, i64), px: Vec<u8>) {
+        self.evict(px.len());
         self.held += px.len();
         self.held -= self.frames.push(at, Arc::new(px)).map_or(0, |f| f.1.len());
     }
@@ -669,12 +678,15 @@ impl Preview {
     fn drain(&mut self, key: &Key) {
         for i in (0..self.decoders.len()).rev() {
             while self.decoders[i].0 == *key
-                && let Some(feed) = &self.decoders[i].1.feed
+                && let Some((feed, _)) = &self.decoders[i].1.feed
             {
                 match feed.try_recv() {
                     Ok(px) => {
-                        self.evict(px.len());
+                        let len = px.len();
                         self.keep((key.clone(), self.decoders[i].1.next), px);
+                        if let Some((_, give)) = &self.decoders[i].1.feed {
+                            recycle(&mut self.spare, give, len);
+                        }
                         self.decoders[i].1.next += 1;
                     }
                     Err(TryRecvError::Empty) => break,
@@ -701,15 +713,15 @@ impl Preview {
             && let Some((_, d)) = self.decoders.last_mut()
             && let Some(mut out) = d.child.as_mut().and_then(|c| c.stdout.take())
         {
-            let (send, feed) = mpsc::sync_channel(2);
+            let ((send, feed), (give, take)) = (mpsc::sync_channel(2), mpsc::channel());
             thread::spawn(move || {
                 (from..low).try_for_each(|_| {
-                    let mut px = vec![0; len];
+                    let mut px = take.try_recv().unwrap_or_else(|_| vec![0; len]);
                     out.read_exact(&mut px).ok()?;
                     send.send(px).ok()
                 })
             });
-            d.feed = Some(feed);
+            d.feed = Some((feed, give));
         }
     }
 
@@ -730,10 +742,13 @@ impl Preview {
         let (_, mut d) = self.decoders.pop()?;
         let mut again = true;
         while d.next <= k {
-            self.evict(len);
+            if let Some((_, give)) = &d.feed {
+                recycle(&mut self.spare, give, len);
+            }
             let px = match &d.feed {
-                Some(feed) => feed.recv().ok(),
+                Some((feed, _)) => feed.recv().ok(),
                 None => {
+                    self.evict(len);
                     let mut px = reuse(&mut self.spare, len);
                     let read = d.child.as_mut().and_then(|c| c.stdout.as_mut()?.read_exact(&mut px).ok());
                     read.map(|_| px)
