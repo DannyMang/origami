@@ -50,10 +50,17 @@ fn fit(ram: u64) -> (usize, usize) {
     ((ram / 8).clamp(1 << 28, 1 << 30) as usize, if ram > 8 << 30 { 6 } else { 4 })
 }
 
+fn lean(path: &str) -> &'static [&'static str] {
+    match path.ends_with(".LRF") {
+        true => &["-probesize", "32768", "-analyzeduration", "0"],
+        false => &[],
+    }
+}
+
 fn ask(path: &str, show: &str) -> String {
     let args = ["-v", "error", "-select_streams", "v:0", "-show_entries", show, "-of", "csv=p=0"];
-    let out = output(ffprobe().args(args).arg(path)).map(|o| o.stdout).unwrap_or_default();
-    String::from_utf8_lossy(&out).into()
+    let out = output(ffprobe().args(lean(path)).args(args).arg(path)).map(|o| o.stdout);
+    String::from_utf8_lossy(&out.unwrap_or_default()).into()
 }
 
 fn probe(path: &str) -> Info {
@@ -136,10 +143,11 @@ pub fn learn(tl: &Timeline, from: f64) {
         .clips
         .iter()
         .filter(|c| c.end > from && matches!(c.kind, Kind::Video | Kind::Sound));
-    let mut new: Vec<&str> = used
-        .map(|c| c.src.as_str())
-        .filter(|f| !KNOWN.lock().unwrap().contains_key(*f) && Path::new(f).is_file())
-        .collect();
+    study(used.map(|c| c.src.clone()).collect());
+}
+
+fn study(mut new: Vec<String>) {
+    new.retain(|f| !KNOWN.lock().unwrap().contains_key(f) && Path::new(f).is_file());
     new.sort();
     new.dedup();
     if new.len() > 1 {
@@ -196,11 +204,20 @@ fn blit(out: &mut [u8], (pw, ph): (usize, usize), src: &[u8], (sw, sh): (usize, 
     );
     let span = |c: f64, r: f64, n: usize| ((c - r).clamp(0., n as f64) as usize, (c + r).ceil().clamp(0., n as f64) as usize);
     let ((x0, x1), (y0, y1)) = (span(cx, rx, pw), span(cy, ry, ph));
+    let uv = |dx: f64, dy: f64| ((dx * cos + dy * sin) / k + hw - 0.5, (dy * cos - dx * sin) / k + hh - 0.5);
+    let cols: Vec<f64> = match sin == 0. {
+        true => (x0..x1).map(|x| uv(x as f64 + 0.5 - cx, 0.).0).collect(),
+        false => vec![],
+    };
     let paint = |from: usize, rows: &mut [u8]| {
         for (y, row) in (y0 + from / (pw * 4)..).zip(rows.chunks_exact_mut(pw * 4)) {
+            let dy = y as f64 + 0.5 - cy;
+            let flat = uv(0., dy).1;
             for (x, d) in (x0..x1).zip(row[x0 * 4..].chunks_exact_mut(4)) {
-                let (dx, dy) = (x as f64 + 0.5 - cx, y as f64 + 0.5 - cy);
-                let (u, v) = ((dx * cos + dy * sin) / k + hw - 0.5, (dy * cos - dx * sin) / k + hh - 0.5);
+                let (u, v) = match cols.get(x - x0) {
+                    Some(&u) => (u, flat),
+                    None => uv(x as f64 + 0.5 - cx, dy),
+                };
                 let ((ux, vy), mut sum) = ((u.floor(), v.floor()), [0.; 4]);
                 let (fx, fy) = (u - ux, v - vy);
                 for (ox, oy, w) in [
@@ -240,18 +257,25 @@ fn nudge(px: &[u8], w: usize, (fx, fy): (f64, f64)) -> Vec<u8> {
     if kx + ky == 0 && a + b == 0 {
         return out;
     }
+    let mix = |t: u8, u: u8, l: u8, v: u8| {
+        let (top, low) = (t as u32 * (256 - a) + u as u32 * a, l as u32 * (256 - a) + v as u32 * a);
+        ((top * (256 - b) + low * b) >> 16) as u8
+    };
     let band = h.div_ceil(thread::available_parallelism().map_or(1, usize::from)).max(1) * n;
     thread::scope(|s| {
         for (j, rows) in out.chunks_mut(band).enumerate() {
             s.spawn(move || {
                 for (y, row) in rows.chunks_exact_mut(n).enumerate() {
                     let [top, low] = [0, 1].map(|d| &px[(j * band / n + y + ky + d).min(h - 1) * n..][..n]);
-                    for (x, p) in row.chunks_exact_mut(4).enumerate() {
+                    let m = (w - 1).saturating_sub(kx) * 4;
+                    let ((head, tail), (i, k)) = (row.split_at_mut(m), (n - 4 - m, n - m));
+                    for ((((p, t), u), l), v) in head.iter_mut().zip(&top[i..]).zip(&top[k..]).zip(&low[i..]).zip(&low[k..]) {
+                        *p = mix(*t, *u, *l, *v);
+                    }
+                    for (x, p) in (m / 4..).zip(tail.chunks_exact_mut(4)) {
                         let (i, k) = ((x + kx).min(w - 1) * 4, (x + kx + 1).min(w - 1) * 4);
                         for c in 0..4 {
-                            let l = top[i + c] as u32 * (256 - a) + top[k + c] as u32 * a;
-                            let r = low[i + c] as u32 * (256 - a) + low[k + c] as u32 * a;
-                            p[c] = ((l * (256 - b) + r * b) >> 16) as u8;
+                            p[c] = mix(top[i + c], top[k + c], low[i + c], low[k + c]);
                         }
                     }
                 }
@@ -502,13 +526,18 @@ impl Preview {
     }
 
     fn near(&self, key: &Key, k: i64) -> Option<usize> {
-        self.decoders.iter().position(|(o, d)| o == key && d.next <= k && k <= d.next + 30)
+        let reach = if key.0.ends_with(".LRF") { 20 } else { 30 };
+        self.decoders
+            .iter()
+            .position(|(o, d)| o == key && d.next <= k && k <= d.next + reach)
     }
 
     pub fn ready(&mut self, tl: &Timeline, t: f64, (pw, ph): (usize, usize)) -> bool {
         let (k, shown) = (pw as f64 / tl.size.0 as f64, |c: &&Clip| {
             c.kind == Kind::Video && c.video && live(c, t)
         });
+        let lrf = |c: &Clip| Path::new(&c.src).with_extension("LRF").to_string_lossy().into_owned();
+        study(tl.clips.iter().filter(shown).flat_map(|c| [c.src.clone(), lrf(c)]).collect());
         let mut all = true;
         for c in tl.clips.iter().filter(shown) {
             let (tw, th, ..) = place(c, (pw as f64, ph as f64), k);
@@ -568,15 +597,11 @@ impl Preview {
                     "bgra",
                     "-",
                 ];
-                let lrf: &[&str] = match key.0.ends_with(".LRF") {
-                    true => &["-probesize", "32768", "-analyzeduration", "0"],
-                    false => &[],
-                };
                 let child = origami_lang::start(
                     ffmpeg()
                         .args(["-v", "error"])
                         .args(lead)
-                        .args(lrf)
+                        .args(lean(&key.0))
                         .args(args)
                         .args(out)
                         .stdin(Stdio::null())

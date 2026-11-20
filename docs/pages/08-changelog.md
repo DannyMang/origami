@@ -12,6 +12,9 @@ What changed in each version of Origami. The launch screen shows the version you
 - An export at a size larger than the timeline that would draw a clip over 16384 pixels on a side, such as very large text on a small timeline exported at 4K, now stops with an error naming the clip's line instead of crashing Origami.
 - Recovered unsaved code and remembered export choices are only offered for the exact script they were kept for, never for another script that happens to share their file name in Origami's folder. Export choices and unsaved code kept by earlier builds are not offered again.
 - Saved versions written while quitting are flushed to disk before Origami exits.
+- The first picture after opening a script with DJI footage shows about a quarter sooner (about 0.12 s instead of 0.16 s): Origami now reads the full-size file and its `.LRF` at the same time, and reads the `.LRF` twice as fast.
+- Scrubbing DJI footage is smoother: while dragging slowly each picture takes about a sixth less time, and a fast drag that jumps more than 20 frames now starts reading the `.LRF` at the new spot instead of reading through every frame in between, so the picture updates about a quarter more often.
+- Zooming a clip without turning it uses about a fifth less processor time per frame, and such exports finish a little sooner.
 
 ### Nov 15
 
