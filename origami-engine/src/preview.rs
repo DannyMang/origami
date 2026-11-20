@@ -14,7 +14,10 @@ use std::{
     num::NonZeroUsize,
     path::Path,
     process::{Child, Command, Stdio},
-    sync::{Arc, LazyLock, Mutex},
+    sync::{
+        Arc, LazyLock, Mutex,
+        mpsc::{self, Receiver, Sender, TryRecvError},
+    },
     thread,
     time::SystemTime,
 };
@@ -322,6 +325,12 @@ fn reuse(spare: &mut Vec<Vec<u8>>, len: usize) -> Vec<u8> {
     }
 }
 
+fn recycle(spare: &mut Vec<Vec<u8>>, give: &Sender<Vec<u8>>, len: usize) {
+    if let Some(i) = spare.iter().position(|v| v.len() == len) {
+        let _ = give.send(spare.swap_remove(i));
+    }
+}
+
 fn kept<V: Clone>(now: &mut HashMap<String, V>, was: &mut HashMap<String, V>, key: String, make: impl FnOnce() -> V) -> V {
     now.entry(key).or_insert_with_key(|k| was.remove(k).unwrap_or_else(make)).clone()
 }
@@ -451,6 +460,7 @@ fn rate(src: &str, fps: f64) -> (f64, f64, f64) {
 struct Decoder {
     child: Option<Child>,
     next: i64,
+    feed: Option<(Receiver<Vec<u8>>, Sender<Vec<u8>>)>,
 }
 
 impl Drop for Decoder {
@@ -472,6 +482,7 @@ pub struct Preview {
     spare: Vec<Vec<u8>>,
     stamps: HashMap<String, (Option<(u64, SystemTime)>, Option<bool>)>,
     at: f64,
+    back: bool,
     primed: (Vec<u32>, (usize, usize)),
     pub(crate) room: usize,
     most: usize,
@@ -492,6 +503,7 @@ impl Default for Preview {
             spare: vec![],
             stamps: HashMap::new(),
             at: -1.,
+            back: false,
             primed: Default::default(),
             room,
             most,
@@ -594,13 +606,13 @@ impl Preview {
         self.primed = (ids.filter(|n| !old.contains(n)).collect(), size);
     }
 
+    fn block(&self, key: &Key) -> i64 {
+        (self.room / 4 / (key.1 * key.2 * 4).max(1)).min(45) as i64
+    }
+
     fn lap(&self, key: &Key, k: i64) -> i64 {
         let back = self.decoders.iter().any(|(o, d)| o == key && k < d.next && d.next <= k + 60);
-        if back {
-            (self.room / 4 / (key.1 * key.2 * 4).max(1)).min(45) as i64
-        } else {
-            0
-        }
+        if back { self.block(key) } else { 0 }
     }
 
     fn decoder(&mut self, key: &Key, k: i64, from: i64, (n, d): (f64, f64)) -> Option<()> {
@@ -649,6 +661,7 @@ impl Preview {
                     Decoder {
                         child: Some(child),
                         next: from,
+                        feed: None,
                     },
                 )
             }
@@ -657,43 +670,118 @@ impl Preview {
         Some(())
     }
 
-    fn video(&mut self, key: Key, k: i64, rate: (f64, f64)) -> Option<Px> {
-        if let Some(px) = self.frames.get(&(key.clone(), k)) {
-            return Some(px.clone());
+    fn evict(&mut self, len: usize) {
+        let feeds = self.decoders.iter().filter(|(_, d)| d.feed.is_some());
+        let flight: usize = feeds.map(|(k, _)| 3 * k.1 * k.2 * 4).sum();
+        while self.held + flight + len > self.room
+            && let Some(old) = self.frames.pop_lru()
+        {
+            self.held -= old.1.len();
+            self.spare.extend(Arc::try_unwrap(old.1));
         }
-        let (len, lap) = (key.1 * key.2 * 4, self.lap(&key, k));
-        self.decoder(&key, k, (k - lap).max(0), rate)?;
-        let (_, mut d) = self.decoders.pop()?;
-        let (low, mut again) = (d.next, true);
-        while d.next <= k {
-            while self.held + len > self.room
-                && let Some(old) = self.frames.pop_lru()
-            {
-                self.held -= old.1.len();
-                self.spare.extend(Arc::try_unwrap(old.1));
+    }
+
+    fn keep(&mut self, at: (Key, i64), px: Vec<u8>) {
+        self.evict(px.len());
+        self.held += px.len();
+        self.held -= self.frames.push(at, Arc::new(px)).map_or(0, |f| f.1.len());
+    }
+
+    fn drain(&mut self) {
+        for i in (0..self.decoders.len()).rev() {
+            while let Some((feed, _)) = &self.decoders[i].1.feed {
+                match feed.try_recv() {
+                    Ok(px) => {
+                        let len = px.len();
+                        self.keep((self.decoders[i].0.clone(), self.decoders[i].1.next), px);
+                        if let Some((_, give)) = &self.decoders[i].1.feed {
+                            recycle(&mut self.spare, give, len);
+                        }
+                        self.decoders[i].1.next += 1;
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        self.decoders.remove(i);
+                        break;
+                    }
+                }
             }
-            let mut px = reuse(&mut self.spare, len);
-            let got = d.child.as_mut().and_then(|c| {
-                let _seen = watch(c.id());
-                c.stdout.as_mut()?.read_exact(&mut px).ok()
+        }
+    }
+
+    fn ahead(&mut self, key: &Key, k: i64, rate: (f64, f64)) {
+        let (block, len, mut low) = (self.block(key), key.1 * key.2 * 4, k);
+        while low > 0 && k - low < block && self.frames.contains(&(key.clone(), low - 1)) {
+            low -= 1;
+        }
+        if low == 0 || self.frames.contains(&(key.clone(), low - 1)) || self.near(key, low - 1).is_some() {
+            return;
+        }
+        let from = (low - reach(&key.0).min(block)).max(0);
+        if self.decoder(key, low - 1, from, rate).is_some()
+            && self.back
+            && let Some((_, d)) = self.decoders.last_mut()
+            && let Some((pid, mut out)) = d.child.as_mut().and_then(|c| Some((c.id(), c.stdout.take()?)))
+        {
+            let ((send, feed), (give, take)) = (mpsc::sync_channel(2), mpsc::channel());
+            thread::spawn(move || {
+                (from..low).try_for_each(|_| {
+                    let mut px = take.try_recv().unwrap_or_else(|_| vec![0; len]);
+                    let seen = watch(pid);
+                    out.read_exact(&mut px).ok()?;
+                    drop(seen);
+                    send.send(px).ok()
+                })
             });
-            if got.is_none() {
-                let died = d.child.take().is_some_and(|mut c| c.wait().is_ok_and(|s| !s.success()));
-                if died && again && self.decoder(&key, k, d.next, rate).is_some() {
+            d.feed = Some((feed, give));
+        }
+    }
+
+    fn video(&mut self, key: Key, k: i64, rate: (f64, f64)) -> Option<Px> {
+        self.drain();
+        let (hit, lap) = (self.frames.get(&(key.clone(), k)).cloned(), self.lap(&key, k));
+        let missed = hit.is_none();
+        let px = hit.or_else(|| self.read(&key, k, lap, rate));
+        if self.back || missed && lap > 0 {
+            self.ahead(&key, k, rate);
+        }
+        px
+    }
+
+    fn read(&mut self, key: &Key, k: i64, lap: i64, rate: (f64, f64)) -> Option<Px> {
+        let len = key.1 * key.2 * 4;
+        self.decoder(key, k, (k - lap).max(0), rate)?;
+        let (_, mut d) = self.decoders.pop()?;
+        let mut again = true;
+        while d.next <= k {
+            if let Some((_, give)) = &d.feed {
+                recycle(&mut self.spare, give, len);
+            }
+            let px = match &d.feed {
+                Some((feed, _)) => feed.recv().ok(),
+                None => {
+                    self.evict(len);
+                    let mut px = reuse(&mut self.spare, len);
+                    let read = d.child.as_mut().and_then(|c| {
+                        let _seen = watch(c.id());
+                        c.stdout.as_mut()?.read_exact(&mut px).ok()
+                    });
+                    read.map(|_| px)
+                }
+            };
+            let Some(px) = px else {
+                let died = d.feed.is_some() || d.child.take().is_some_and(|mut c| c.wait().is_ok_and(|s| !s.success()));
+                if died && again && self.decoder(key, k, d.next, rate).is_some() {
                     (again, d) = (false, self.decoders.pop()?.1);
                     continue;
                 }
                 break;
-            }
-            self.held += len;
-            self.held -= self.frames.push((key.clone(), d.next), Arc::new(px)).map_or(0, |f| f.1.len());
+            };
+            self.keep((key.clone(), d.next), px);
             d.next += 1;
         }
         self.decoders.push((key.clone(), d));
-        if lap > 0 && low > 0 {
-            self.decoder(&key, low - 1, (low - reach(&key.0)).max(0), rate);
-        }
-        self.frames.get(&(key, k)).cloned()
+        self.frames.get(&(key.clone(), k)).cloned()
     }
 
     fn layer(&mut self, c: &Clip, t: f64, fps: u32, size: (usize, usize), k: f64) -> Option<(Px, (usize, usize), (i64, i64))> {
@@ -825,7 +913,8 @@ impl Preview {
                 .retain(|(_, d)| d.child.as_ref().is_none_or(|c| !primed.contains(&c.id())));
         }
         let mut out = [0, 0, 0, 255].repeat(pw * ph);
-        (self.rough, self.at) = (false, t);
+        (self.rough, self.back) = (false, !self.fast && t < self.at && self.at - t < 5. / tl.fps as f64);
+        self.at = t;
         let was = std::mem::replace(&mut self.was, (std::mem::take(&mut self.stills), std::mem::take(&mut self.texts)));
         self.spare
             .extend(was.0.into_values().flatten().filter_map(|px| Arc::try_unwrap(px).ok()));
@@ -872,6 +961,15 @@ impl Preview {
                 self.decoder(&key, first, first, rate);
             }
         }
+        let (fps, back) = (tl.fps as f64, self.back);
+        let gone = |c: &&Clip| back && c.kind == Kind::Video && c.video && c.scale.max() > 0. && c.end <= t + 1e-6 && t - 1. < c.end;
+        let last = tl.clips.iter().filter(gone).map(|c| c.end).fold(f64::MIN, f64::max);
+        for c in tl.clips.iter().filter(gone).filter(|c| c.end == last) {
+            let (tw, th, ..) = place(c, (pw as f64, ph as f64), k);
+            let at = (((c.end - 1e-6) * fps).ceil() - 1.) / fps;
+            let (key, end, rate) = Self::cell(c, at, tl.fps, (tw as usize, th as usize), false);
+            self.ahead(&key, end + 1, rate);
+        }
         self.spare.clear();
         out
     }
@@ -880,7 +978,10 @@ impl Preview {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::{TIDY, clip, film, scratch};
+    use crate::{
+        export::hold,
+        tests::{TIDY, clip, film, scratch},
+    };
 
     // Each timeline frame shows the source frame a plain export shows, for 29.97 fps footage on a 30 fps
     // timeline, faster, slower and trimmed clips, last frames held to the clip's end, and frames landing
@@ -1166,8 +1267,8 @@ mod tests {
         assert!(wrong.is_empty(), "{wrong:?}");
     }
 
-    // Stepping backwards should start the decoder for the frames before the kept ones while those are
-    // shown, and show the same pictures as playing forwards.
+    // Stepping backwards should read the frames before the kept ones in the background while those are
+    // shown, so they are kept before a step reaches them, and show the same pictures as playing forwards.
     #[test]
     fn stepping_back_reads_ahead() {
         let file = scratch("back").join("a.mp4");
@@ -1188,14 +1289,55 @@ mod tests {
         let (mut back, mut played) = (Preview::default(), Preview::default());
         let shown = |pv: &mut Preview, k: i64| pv.frame(&tl, k as f64 / 30., (64, 36));
         let mut stepped: Vec<_> = (60..=100).rev().map(|k| shown(&mut back, k)).collect();
-        let waiting = back
-            .decoders
-            .iter()
-            .any(|(key, d)| d.next < 60 && !back.frames.contains(&(key.clone(), d.next)));
+        let key = (file.to_string_lossy().into_owned(), 64, 36);
+        let kept = (0..500).any(|_| {
+            thread::sleep(std::time::Duration::from_millis(10));
+            shown(&mut back, 60);
+            (30..60).all(|k| back.frames.contains(&(key.clone(), k)))
+        });
         stepped.extend((0..60).rev().map(|k| shown(&mut back, k)));
         stepped.reverse();
-        assert!(waiting);
+        assert!(kept);
         assert!(stepped == (0..=100).map(|k| shown(&mut played, k)).collect::<Vec<_>>());
+    }
+
+    // Stepping backwards toward a cut should read the last frames of the clip before it in the background,
+    // so crossing the cut finds them kept, and show the same pictures as playing forwards.
+    #[test]
+    fn stepping_back_reads_across_cuts() {
+        let dir = scratch("cut");
+        let files = [dir.join("a.mp4"), dir.join("b.mp4")];
+        for f in &files {
+            film(f, "testsrc=s=64x36:r=30:d=2", &[]);
+        }
+        let part = |i: usize| Clip {
+            src: files[i].to_string_lossy().into(),
+            w: 64,
+            h: 36,
+            start: 2. * i as f64,
+            end: 2. * i as f64 + 2.,
+            ..clip("video", "")
+        };
+        let tl = Timeline {
+            fps: 30,
+            size: (64, 36),
+            duration: 4.,
+            clips: vec![part(0), part(1)],
+            ..Default::default()
+        };
+        let (mut back, mut played) = (Preview::default(), Preview::default());
+        let shown = |pv: &mut Preview, k: i64| pv.frame(&tl, k as f64 / 30., (64, 36));
+        let mut stepped: Vec<_> = (70..=80).rev().map(|k| shown(&mut back, k)).collect();
+        let key = (files[0].to_string_lossy().into_owned(), 64, 36);
+        let kept = (0..500).any(|_| {
+            thread::sleep(std::time::Duration::from_millis(10));
+            shown(&mut back, 70);
+            (40..60).all(|k| back.frames.contains(&(key.clone(), k)))
+        });
+        stepped.extend((0..70).rev().map(|k| shown(&mut back, k)));
+        stepped.reverse();
+        assert!(kept);
+        assert!(stepped == (0..=80).map(|k| shown(&mut played, k)).collect::<Vec<_>>());
     }
 
     // A decoder whose ffmpeg dies while playing should be replaced at once, so the frames after it show
@@ -1511,5 +1653,49 @@ mod tests {
             assert_eq!((p.stills.len(), p.was.0.len()), (2, 1));
             assert!(Arc::ptr_eq(&first, &wide(&p)));
         }
+    }
+
+    // An export should keep two frames for one video layer, and for three overlapping slowed layers
+    // enough that every repeated frame comes from the cache, so no decoder is started again.
+    #[test]
+    fn export_cache_fits_the_layers() {
+        let dir = scratch("hold");
+        let files = ["a", "b", "c"].map(|f| dir.join(format!("{f}.mp4")));
+        for f in &files {
+            film(f, "testsrc=s=64x36:r=30:d=1", &[]);
+        }
+        let layer = |i: usize| Clip {
+            src: files[i].to_string_lossy().into(),
+            w: 64,
+            h: 36,
+            end: 2.,
+            speed: 0.5,
+            opacity: Val::Fixed([1., 0.5, 1.][i]),
+            scale: Val::Fixed([1., 1., 0.5][i]),
+            ..clip("video", "")
+        };
+        let tl = |n: usize| Timeline {
+            fps: 30,
+            size: (64, 36),
+            duration: 2.,
+            clips: (0..n).map(layer).collect(),
+            ..Default::default()
+        };
+        assert_eq!(hold(&tl(1), (64, 36), 1.), 2 * 64 * 36 * 4);
+        let mut pv = Preview {
+            room: hold(&tl(3), (64, 36), 1.),
+            ..Default::default()
+        };
+        let ids = |pv: &Preview| {
+            let mut ids: Vec<u32> = pv.decoders.iter().flat_map(|(_, d)| d.child.as_ref().map(Child::id)).collect();
+            ids.sort();
+            ids
+        };
+        pv.frame(&tl(3), 0., (64, 36));
+        let first = ids(&pv);
+        for k in 1..60 {
+            pv.frame(&tl(3), k as f64 / 30., (64, 36));
+        }
+        assert_eq!((first.len(), ids(&pv)), (3, first));
     }
 }
