@@ -281,8 +281,9 @@ impl Origami {
         if self.web {
             return self.roam = (self.roam.0 - f32::from(d.x), self.roam.1 - f32::from(d.y));
         }
-        if self.motion && t < self.pan {
-            return self.lift -= f32::from(d.y);
+        if t < self.pan {
+            let lift = if self.motion { &mut self.lift } else { &mut self.climb };
+            return *lift -= f32::from(d.y);
         }
         let k = (t - self.pan) / self.span();
         self.zoom = deep(self.zoom * (f64::from(d.y) / 200.).exp(), self.tl.duration, self.fps());
@@ -370,6 +371,41 @@ mod tests {
         assert!(wheel(cx, 200.) > 2.);
         view.update(cx, |o, _| o.mouse = false);
         assert_eq!(wheel(cx, -400.), 1.);
+    }
+
+    // A timeline with more lanes than fit keeps each lane tall enough to read, and scrolling over the
+    // lane names moves through the lanes, never past the first or the last.
+    #[gpui::test]
+    fn many_lanes_scroll(cx: &mut gpui::TestAppContext) {
+        let src = format!("stack(\n{})", "  color(\"#203040\").for(4),\n".repeat(40));
+        let (view, cx) = window(cx, "lanes", &src);
+        cx.run_until_parked();
+        let (x, top, h) = view.update_in(cx, |o, window, _| {
+            let h = f32::from(window.viewport_size().height);
+            (o.lead() + (2. / o.per_px(window)) as f32, h - 28. - o.dock + RULER, h)
+        });
+        let pick = |cx: &mut gpui::VisualTestContext, y: f32| {
+            let at = gpui::point(px(x), px(y));
+            cx.simulate_mouse_down(at, gpui::MouseButton::Left, Default::default());
+            cx.simulate_mouse_up(at, gpui::MouseButton::Left, Default::default());
+            view.update(cx, |o, _| o.sel)
+        };
+        let wheel = |cx: &mut gpui::VisualTestContext, y: f32| {
+            cx.simulate_event(ScrollWheelEvent {
+                position: gpui::point(px(10.), px(top + 40.)),
+                delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(y))),
+                ..Default::default()
+            });
+            cx.run_until_parked();
+            view.update(cx, |o, _| o.climb)
+        };
+        assert_eq!((pick(cx, top + 14.), pick(cx, top + 42.)), (Some(39), Some(38)));
+        assert_eq!(wheel(cx, -28.), 28.);
+        assert_eq!(pick(cx, top + 14.), Some(38));
+        let dock = view.update(cx, |o, _| o.dock);
+        assert_eq!(wheel(cx, -1e6), 40. * 28. - (dock - 30.));
+        assert_eq!(pick(cx, h - 28. - 8. - 14.), Some(0));
+        assert_eq!(wheel(cx, 1e6), 0.);
     }
 
     fn window<'a>(cx: &'a mut gpui::TestAppContext, name: &str, src: &str) -> (gpui::Entity<Origami>, &'a mut gpui::VisualTestContext) {

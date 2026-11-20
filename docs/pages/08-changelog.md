@@ -6,6 +6,7 @@ What changed in each version of Origami. The launch screen shows the version you
 
 ### Nov 19
 
+- A timeline with more lanes than fit, such as 55 stacked layers, keeps every lane at least half its usual height instead of squeezing them into a few pixels each. Scroll over the lane names to move through the lanes; scrolling over the clips still zooms.
 - **Scripts run in a helper process.** A script that runs for more than 30 seconds, or uses more than 2 GB of memory, is stopped and its error shows like any other, even when one call never returns (a runaway regular expression, a huge array). Before, such a script kept running in the background and could take all of the Mac's memory and close Origami. While a script is still reading new media files it gets more time, up to 5 minutes.
 - A force-quit or crash during an export no longer leaves a hidden half-written file beside the destination.
 - A project can no longer run the Mac out of memory by naming one font or colour table through many spellings of its path (`./a.ttf`, `././a.ttf`, …): each file is read and kept once.

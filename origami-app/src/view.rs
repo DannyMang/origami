@@ -6,6 +6,7 @@ use crate::{
     lint::Issue,
     menu::place,
     release::VERSION,
+    scene::sink,
     stage::{draw, letterbox},
     words::mark,
 };
@@ -413,7 +414,8 @@ impl Origami {
         let tall = |video: bool| if video { 56. } else { 46. };
         let live = self.growing();
         let room = rows.iter().map(|r| tall(r.0)).sum::<f32>() + live.iter().map(|_| tall(false)).sum::<f32>();
-        let fit = ((self.dock - 30.) / room).min(1.);
+        let fit = ((self.dock - 30.) / room).clamp(0.5, 1.);
+        self.climb = sink(self.climb, room * fit, self.dock - 30.);
         let step = [1., 2., 5., 10., 15., 30., 60., 120., 300., 600.]
             .into_iter()
             .find(|s| d / s <= 10.)
@@ -532,7 +534,8 @@ impl Origami {
             .children(select)
             .child(div().absolute().top_0().bottom_0().left(x(self.t)).w(px(1.)).bg(rgb(ink)));
         let flag = div().absolute().top_0().left(px(self.lead())).right_3().children(head);
-        [ruler].into_iter().chain(rows).chain([line, flag]).collect()
+        let rows = div().mt(px(-self.climb)).flex().flex_col().children(rows);
+        vec![ruler, div().flex_1().overflow_hidden().child(rows), line, flag]
     }
 
     fn timeline(&mut self, tl: &Timeline, focus: Option<&Clip>, per: f64, wide: f32, cx: &mut Context<Self>) -> Div {
