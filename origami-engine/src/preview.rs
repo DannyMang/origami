@@ -864,7 +864,10 @@ impl Preview {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::{TIDY, clip, film, scratch};
+    use crate::{
+        export::hold,
+        tests::{TIDY, clip, film, scratch},
+    };
 
     // Each timeline frame shows the source frame a plain export shows, for 29.97 fps footage on a 30 fps
     // timeline, faster, slower and trimmed clips, last frames held to the clip's end, and frames landing
@@ -1487,5 +1490,49 @@ mod tests {
             assert_eq!((p.stills.len(), p.was.0.len()), (2, 1));
             assert!(Arc::ptr_eq(&first, &wide(&p)));
         }
+    }
+
+    // An export should keep two frames for one video layer, and for three overlapping slowed layers
+    // enough that every repeated frame comes from the cache, so no decoder is started again.
+    #[test]
+    fn export_cache_fits_the_layers() {
+        let dir = scratch("hold");
+        let files = ["a", "b", "c"].map(|f| dir.join(format!("{f}.mp4")));
+        for f in &files {
+            film(f, "testsrc=s=64x36:r=30:d=1", &[]);
+        }
+        let layer = |i: usize| Clip {
+            src: files[i].to_string_lossy().into(),
+            w: 64,
+            h: 36,
+            end: 2.,
+            speed: 0.5,
+            opacity: Val::Fixed([1., 0.5, 1.][i]),
+            scale: Val::Fixed([1., 1., 0.5][i]),
+            ..clip("video", "")
+        };
+        let tl = |n: usize| Timeline {
+            fps: 30,
+            size: (64, 36),
+            duration: 2.,
+            clips: (0..n).map(layer).collect(),
+            ..Default::default()
+        };
+        assert_eq!(hold(&tl(1), (64, 36), 1.), 2 * 64 * 36 * 4);
+        let mut pv = Preview {
+            room: hold(&tl(3), (64, 36), 1.),
+            ..Default::default()
+        };
+        let ids = |pv: &Preview| {
+            let mut ids: Vec<u32> = pv.decoders.iter().flat_map(|(_, d)| d.child.as_ref().map(Child::id)).collect();
+            ids.sort();
+            ids
+        };
+        pv.frame(&tl(3), 0., (64, 36));
+        let first = ids(&pv);
+        for k in 1..60 {
+            pv.frame(&tl(3), k as f64 / 30., (64, 36));
+        }
+        assert_eq!((first.len(), ids(&pv)), (3, first));
     }
 }

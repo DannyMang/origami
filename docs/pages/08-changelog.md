@@ -4,6 +4,10 @@ What changed in each version of Origami. The launch screen shows the version you
 
 ## 0.1.0 (not yet released)
 
+### Nov 20
+
+- Exports use less memory: a 1080p export keeps only the video frames its layers need, so its peak memory fell from about 105 MB to about 65 MB (about 88 to 52 MB with two or three video layers). A 4K export with three or more overlapping video layers, one of them slowed down, no longer restarts a decoder for every repeated frame, so it finishes several times sooner (about 6 s instead of 35 to 60 s for a 4-second example).
+
 ### Nov 19
 
 - A timeline with more lanes than fit, such as 55 stacked layers, keeps every lane at least half its usual height instead of squeezing them into a few pixels each. Scrolling up or down then moves through the lanes, and cmd+scroll zooms; when every lane fits, scrolling zooms as before.

@@ -156,6 +156,23 @@ fn piped(tl: &Timeline, o: &Opts) -> bool {
     span(tl, o) != (0., tl.duration) || !tl.clips.iter().all(|c| plain(c) && c.opacity == Val::Fixed(1.))
 }
 
+pub(crate) fn hold(tl: &Timeline, (w, h): (usize, usize), k: f64) -> usize {
+    let mut ends = vec![];
+    for c in tl.clips.iter().filter(|c| c.kind == Kind::Video && c.video) {
+        let (tw, th, ..) = place(c, (w as f64, h as f64), k);
+        let len = (tw as usize * th as usize * 4) as i64;
+        ends.extend([(c.start, len), (c.end, -len)]);
+    }
+    ends.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    let peak = ends.iter().scan(0, |s, e| {
+        *s += e.1;
+        Some(*s)
+    });
+    let peak = peak.fold(0, i64::max);
+    let most = ends.iter().map(|e| e.1).fold(0, i64::max);
+    ((peak + most) as usize).min((peak as usize).max(1 << 26))
+}
+
 pub fn live(c: &Clip, t: f64) -> bool {
     c.start <= t + 1e-6 && t + 1e-6 < c.end
 }
@@ -448,7 +465,7 @@ pub fn render(tl: &Timeline, out: &str, o: &Opts, mut progress: impl FnMut(f64))
             s.spawn(move || take.iter().try_for_each(|px| pipe.write_all(&px).ok()));
             s.spawn(move || {
                 let (mut pv, fps) = (Preview::default(), tl.fps as f64);
-                pv.room = 1 << 26;
+                pv.room = hold(tl, size, k);
                 ((from * fps).round() as u32..(to * fps).round() as u32)
                     .try_for_each(|k| send.send(pv.frame(tl, k as f64 / fps, size)).ok())
             });
