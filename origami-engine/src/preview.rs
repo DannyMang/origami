@@ -264,12 +264,13 @@ fn blit(
                 };
                 let ((ux, vy), mut sum) = ((u.floor(), v.floor()), [0.; 4]);
                 let (fx, fy) = (u - ux, v - vy);
-                for (ox, oy, w) in [
+                let taps = [
                     (0, 0, (1. - fx) * (1. - fy)),
                     (1, 0, fx * (1. - fy)),
                     (0, 1, (1. - fx) * fy),
                     (1, 1, fx * fy),
-                ] {
+                ];
+                for (ox, oy, w) in taps.into_iter().take(if fx == 0. && fy == 0. { 1 } else { 4 }) {
                     let (sx, sy) = (ux as i64 + ox, vy as i64 + oy);
                     if sx < 0 || sy < 0 || sx >= sw as i64 || sy >= sh as i64 {
                         continue;
@@ -280,6 +281,9 @@ fn blit(
                         sum[i] += s[i] as f64 * w;
                     }
                     sum[3] += w;
+                }
+                if sum[3] == 0. {
+                    continue;
                 }
                 for i in 0..3 {
                     let ink = if mul {
@@ -812,11 +816,13 @@ impl Preview {
         if c.kind == Kind::Group {
             let mut px = vec![0; size.0 * size.1 * 4];
             self.draw(&mut px, tl, t, size, k, c.id);
-            for p in px.chunks_exact_mut(4).filter(|p| p[3] > 0 && p[3] < 255) {
-                for i in 0..3 {
-                    p[i] = (p[i] as u32 * 255 / p[3] as u32).min(255) as u8;
+            spread(&mut px, 4, |_, part| {
+                for p in part.chunks_exact_mut(4).filter(|p| p[3] > 0 && p[3] < 255) {
+                    for i in 0..3 {
+                        p[i] = (p[i] as u32 * 255 / p[3] as u32).min(255) as u8;
+                    }
                 }
-            }
+            });
             let px = Arc::new(px);
             let px = c.grade.as_ref().map_or(px.clone(), |g| grade::paint(g, px, size, vec![]));
             return Some((fx::paint(&fx::now(&c.fx, i), px, size, k), size, (x as i64, y as i64)));
@@ -966,29 +972,27 @@ impl Preview {
             let (mut own, mut cut) = (vec![0; out.len()], vec![0; out.len()]);
             self.one(&mut own, c, tl, t, (pw, ph), k);
             self.draw(&mut cut, tl, t, (pw, ph), k, *id);
-            let mul = c.blend == "multiply";
-            for ((d, s), m) in out
-                .chunks_exact_mut(4)
-                .zip(own.chunks_exact(4))
-                .zip(cut.chunks_exact(4))
-                .filter(|x| x.0.1[3] > 0)
-            {
-                let key = match how.starts_with("luma") {
-                    true => 0.0722 * m[0] as f64 + 0.7152 * m[1] as f64 + 0.2126 * m[2] as f64,
-                    false => m[3] as f64,
-                };
-                let key = if how.ends_with("Inverted") { 255. - key } else { key } / 255.;
-                let (sa, back) = (s[3] as f64 * key / 255., 255. - d[3] as f64);
-                for i in 0..3 {
-                    let ink = if mul {
-                        s[i] as f64 * (d[i] as f64 + back) / 255.
-                    } else {
-                        s[i] as f64
+            let (mul, luma, flip) = (c.blend == "multiply", how.starts_with("luma"), how.ends_with("Inverted"));
+            spread(out, 4, |from, part| {
+                let pairs = own[from..].chunks_exact(4).zip(cut[from..].chunks_exact(4));
+                for (d, (s, m)) in part.chunks_exact_mut(4).zip(pairs).filter(|x| x.1.0[3] > 0) {
+                    let key = match luma {
+                        true => 0.0722 * m[0] as f64 + 0.7152 * m[1] as f64 + 0.2126 * m[2] as f64,
+                        false => m[3] as f64,
                     };
-                    d[i] = (ink * key + d[i] as f64 * (1. - sa)) as u8;
+                    let key = if flip { 255. - key } else { key } / 255.;
+                    let (sa, back) = (s[3] as f64 * key / 255., 255. - d[3] as f64);
+                    for i in 0..3 {
+                        let ink = if mul {
+                            s[i] as f64 * (d[i] as f64 + back) / 255.
+                        } else {
+                            s[i] as f64
+                        };
+                        d[i] = (ink * key + d[i] as f64 * (1. - sa)) as u8;
+                    }
+                    d[3] = (d[3] as f64 + back * sa) as u8;
                 }
-                d[3] = (d[3] as f64 + back * sa) as u8;
-            }
+            });
         }
     }
 
@@ -1807,6 +1811,80 @@ mod tests {
         }
         let same: Vec<bool> = made.windows(2).map(|w| Arc::ptr_eq(&w[0], &w[1])).collect();
         assert_eq!((made.len(), same), (4, vec![true, false, true]));
+    }
+
+    // A layer drawn on whole pixels shows its own pixels, blends its half-clear ones, leaves the picture
+    // under its clear ones as it was, and multiplies into the picture when blended so.
+    #[test]
+    fn whole_pixel_layers_keep_their_pixels() {
+        let src = [[10, 20, 30, 255], [0, 0, 0, 0], [200, 100, 50, 128], [40, 80, 120, 255]].concat();
+        let drawn = |mul: bool| {
+            let mut out = [90, 90, 90, 255].repeat(16);
+            blit(&mut out, (4, 4), &src, (2, 2), 1., 0., (2., 2.), 1., mul);
+            [(0, 0), (1, 1), (2, 1), (1, 2), (2, 2)].map(|(x, y)| out[(y * 4 + x) * 4..][..4].to_vec())
+        };
+        assert_eq!(
+            drawn(false),
+            [
+                [90, 90, 90, 255],
+                [10, 20, 30, 255],
+                [90, 90, 90, 255],
+                [145, 95, 69, 255],
+                [40, 80, 120, 255]
+            ]
+        );
+        assert_eq!(
+            drawn(true),
+            [
+                [90, 90, 90, 255],
+                [3, 7, 10, 255],
+                [90, 90, 90, 255],
+                [80, 62, 53, 255],
+                [14, 28, 42, 255]
+            ]
+        );
+    }
+
+    // A matte shows its clip only where the matte is drawn, or only where it is not when inverted, keyed by
+    // the matte's alpha or its brightness, in every row of the picture.
+    #[test]
+    fn mattes_cut_their_clips() {
+        let shown = |how: &str| {
+            let cut = Clip {
+                w: 32,
+                h: 36,
+                color: "#ffffff".into(),
+                into: 5,
+                pos: (Some(Val::Fixed(0.)), None),
+                ..clip("rect", "")
+            };
+            let red = Clip {
+                w: 64,
+                h: 36,
+                color: "#ff0000".into(),
+                matte: Some((5, how.into())),
+                ..clip("rect", "")
+            };
+            let tl = Timeline {
+                fps: 30,
+                size: (64, 36),
+                duration: 1.,
+                clips: vec![
+                    Clip {
+                        src: "#00ff00".into(),
+                        ..clip("color", "")
+                    },
+                    red,
+                    cut,
+                ],
+                ..Default::default()
+            };
+            let px = Preview::default().frame(&tl, 0.5, (64, 36));
+            [(10, 0), (50, 0), (10, 35), (50, 35)].map(|(x, y)| px[(y * 64 + x) * 4 + 2] > 128)
+        };
+        let left = [true, false, true, false];
+        assert_eq!(["alpha", "luma"].map(shown), [left; 2]);
+        assert_eq!(["alphaInverted", "lumaInverted"].map(shown), [left.map(|v| !v); 2]);
     }
 
     // An export should keep two frames for one video layer, and for three overlapping slowed layers
