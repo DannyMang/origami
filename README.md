@@ -92,7 +92,7 @@ Your scripts, footage and exports stay on your Mac. Origami keeps:
 - Saved versions of each script, unsaved code kept after a crash, your export choices, the Open Recent list and your answer about reports, in `~/Library/Application Support/Origami`.
 - A crash log in `~/Library/Logs/Origami`.
 
-What it sends, in short (the [Privacy](docs/pages/00-intro.md#privacy) section has the full list):
+What it sends, in short:
 
 - **Update check.** Each time it opens, Origami downloads one small file from GitHub to see if a newer version is out. It sends nothing about you or your project. Start it with `ORIGAMI_NO_UPDATE_CHECK=1` to turn this off.
 - **Usage and crash reports, only if you say yes.** The launch screen asks once. Nothing is sent before you click Yes or after you click No thanks. After a yes, a few anonymous events go to PostHog, such as "app opened" and "exported", with a random install id and no script contents, file names, paths or user name. Origami › Share Usage and Crash Reports turns them off, and `ORIGAMI_NO_TELEMETRY=1` sends nothing and never asks.
