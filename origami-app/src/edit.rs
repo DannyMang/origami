@@ -70,7 +70,7 @@ impl History {
 
 impl Origami {
     pub fn glyph(&self) -> f32 {
-        self.font * 0.6023
+        self.font * 0.606
     }
 
     pub fn gutter(&self) -> f32 {

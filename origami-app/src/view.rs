@@ -16,6 +16,7 @@ use gpui::{
 };
 use origami_lang::{Clip, Kind, Timeline};
 use std::{
+    borrow::Cow,
     cell::RefCell,
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
@@ -28,6 +29,7 @@ use std::{
 
 pub type Scans = (Vec<Region>, Vec<bool>, Vec<Issue>, Vec<(usize, usize, usize)>);
 
+pub const FONT: &str = "Paper Mono";
 pub const BG: u32 = 0x282c33;
 pub const PANEL: u32 = 0x2f343e;
 pub const BAR: u32 = 0x3b414d;
@@ -105,6 +107,15 @@ pub fn tokens(s: &str) -> impl Iterator<Item = (Range<usize>, HighlightStyle)> +
         i += n;
         Some((i - n..i, rgb(color).into()))
     })
+}
+
+pub fn faces() -> Vec<Cow<'static, [u8]>> {
+    let faces: [&[u8]; 3] = [
+        include_bytes!("../fonts/PaperMono-Regular.ttf"),
+        include_bytes!("../fonts/PaperMono-Medium.ttf"),
+        include_bytes!("../fonts/PaperMono-Bold.ttf"),
+    ];
+    faces.map(Cow::Borrowed).into()
 }
 
 fn shown(s: &str, cols: Range<usize>) -> (usize, StyledText) {
@@ -1037,7 +1048,7 @@ impl Origami {
             .gap(px(28.))
             .bg(rgb(BG))
             .text_color(rgb(TEXT))
-            .font_family("Menlo")
+            .font_family(FONT)
             .child(
                 div()
                     .flex()
@@ -1180,7 +1191,7 @@ impl Render for Origami {
             .bg(rgb(if self.full { 0 } else { BG }))
             .text_color(rgb(TEXT))
             .text_size(px(13.))
-            .font_family("Menlo")
+            .font_family(FONT)
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| this.key(e, window, cx)))
             .capture_any_mouse_down(cx.listener(|this, _, _, cx| {
                 (this.cursor, this.anchor) = (None, None);
@@ -1313,6 +1324,19 @@ impl Render for Origami {
 #[cfg(test)]
 mod tests {
     use std::{fs, rc::Rc};
+
+    // The app's own font is built in, and its letters are exactly as wide as the code pane counts them.
+    #[test]
+    fn built_in_font_fits() {
+        let face = &super::faces()[0];
+        let word = |at: usize| u16::from_be_bytes([face[at], face[at + 1]]);
+        let table = |tag: &[u8]| {
+            let mut rows = (0..word(4) as usize).map(|i| &face[12 + 16 * i..28 + 16 * i]);
+            let row = rows.find(|r| r[..4] == *tag).unwrap();
+            u32::from_be_bytes([row[8], row[9], row[10], row[11]]) as usize
+        };
+        assert_eq!((word(table(b"hmtx")), word(table(b"head") + 18)), (606, 1000));
+    }
 
     // A waveform drawn again in the same place with the same bars reuses the shape built for it, while
     // a new place builds a new one and at most 64 shapes are kept.

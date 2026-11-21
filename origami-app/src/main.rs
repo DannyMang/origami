@@ -602,6 +602,7 @@ fn main() {
         }
     });
     app.run(move |cx: &mut App| {
+        let _ = cx.text_system().add_fonts(view::faces());
         let recent: Vec<PathBuf> = origami_lang::load(&mouse::recent())
             .unwrap_or_default()
             .lines()
