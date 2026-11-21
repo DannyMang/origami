@@ -273,6 +273,8 @@ impl Origami {
             if matches!(k, "backspace" | "delete") {
                 return;
             }
+        } else {
+            self.anchor = None;
         }
         let Some((r, c)) = self.cursor else { return };
         let len = |this: &Self, r: usize| this.lines[r].chars().count();

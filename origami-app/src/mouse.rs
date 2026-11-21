@@ -418,8 +418,8 @@ mod tests {
         assert_eq!(wheel(cx, 1e6), 0.);
     }
 
-    // A click whose pointer slips a pixel still only places the caret, so backspace removes the letter
-    // behind it, while a longer drag selects.
+    // A click whose pointer slips a pixel still only places the caret, so each backspace removes the letter
+    // behind it and typing adds to it, while a longer drag selects.
     #[gpui::test]
     fn shaky_clicks_place_the_caret(cx: &mut gpui::TestAppContext) {
         let (view, cx) = window(cx, "shaky", "stack(\n  color(\"#203040\").for(4),\n)");
@@ -438,6 +438,8 @@ mod tests {
         assert_eq!(drag(cx, 1.), None);
         cx.simulate_keystrokes("backspace");
         assert_eq!(view.update(cx, |o, _| o.lines[0].clone()), "stck(");
+        cx.simulate_keystrokes("backspace x y");
+        assert_eq!(view.update(cx, |o, _| (o.lines[0].clone(), o.chosen())), ("sxyck(".into(), None));
         assert_eq!(drag(cx, 2. * glyph), Some(((0, 3), (0, 5))));
     }
 
