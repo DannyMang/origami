@@ -1,6 +1,6 @@
 use crate::{
-    export::{alpha, live, place, plain, seat},
-    grade,
+    export::{alpha, grown, live, place, plain, seat},
+    fx, grade,
     lut::spread,
     shape,
     text::{self, Glyph},
@@ -227,7 +227,17 @@ fn spin((x, y): (f64, f64), k: f64, deg: f64) -> (f64, f64) {
     (k * (x * c - y * s), k * (x * s + y * c))
 }
 
-fn blit(out: &mut [u8], (pw, ph): (usize, usize), src: &[u8], (sw, sh): (usize, usize), k: f64, deg: f64, (cx, cy): (f64, f64), a: f64) {
+fn blit(
+    out: &mut [u8],
+    (pw, ph): (usize, usize),
+    src: &[u8],
+    (sw, sh): (usize, usize),
+    k: f64,
+    deg: f64,
+    (cx, cy): (f64, f64),
+    a: f64,
+    mul: bool,
+) {
     if !(k > 0. && a > 0.) || out.is_empty() {
         return;
     }
@@ -272,8 +282,14 @@ fn blit(out: &mut [u8], (pw, ph): (usize, usize), src: &[u8], (sw, sh): (usize, 
                     sum[3] += w;
                 }
                 for i in 0..3 {
-                    d[i] = (sum[i] * a + d[i] as f64 * (1. - sum[3] * a)) as u8;
+                    let ink = if mul {
+                        sum[i] * (d[i] as f64 + 255. - d[3] as f64) / 255.
+                    } else {
+                        sum[i]
+                    };
+                    d[i] = (ink * a + d[i] as f64 * (1. - sum[3] * a)) as u8;
                 }
+                d[3] = (d[3] as f64 + (255. - d[3] as f64) * sum[3] * a) as u8;
             }
         }
     };
@@ -789,9 +805,22 @@ impl Preview {
         self.frames.get(&(key.clone(), k)).cloned()
     }
 
-    fn layer(&mut self, c: &Clip, t: f64, fps: u32, size: (usize, usize), k: f64) -> Option<(Px, (usize, usize), (i64, i64))> {
+    fn layer(&mut self, c: &Clip, t: f64, tl: &Timeline, size: (usize, usize), k: f64) -> Option<(Px, (usize, usize), (i64, i64))> {
         let (tw, th, x, y) = place(c, (size.0 as f64, size.1 as f64), k);
-        let (tw, th) = (tw as usize, th as usize);
+        let (tw, th, fps) = (tw as usize, th as usize, tl.fps);
+        let i = ((t - c.start) * fps as f64).round() as usize;
+        if c.kind == Kind::Group {
+            let mut px = vec![0; size.0 * size.1 * 4];
+            self.draw(&mut px, tl, t, size, k, c.id);
+            for p in px.chunks_exact_mut(4).filter(|p| p[3] > 0 && p[3] < 255) {
+                for i in 0..3 {
+                    p[i] = (p[i] as u32 * 255 / p[3] as u32).min(255) as u8;
+                }
+            }
+            let px = Arc::new(px);
+            let px = c.grade.as_ref().map_or(px.clone(), |g| grade::paint(g, px, size, vec![]));
+            return Some((fx::paint(&c.fx, px, size, i, k), size, (x as i64, y as i64)));
+        }
         let (px, base) = match c.kind {
             Kind::Video => {
                 let tries = [self.fast, false];
@@ -821,10 +850,17 @@ impl Preview {
             }
             _ => {
                 let base = format!(
-                    "{}|{}|{}|{}|{}|{}|{:?}|{tw}x{th}",
-                    c.src, c.color, c.font, c.background, c.align, c.radius, c.ends
+                    "{}|{}|{}|{}|{}|{}|{:?}|{:?}|{tw}x{th}",
+                    c.src,
+                    c.color,
+                    c.font,
+                    c.background,
+                    c.align,
+                    c.radius,
+                    c.ends,
+                    shape::outline(c, i)
                 );
-                let make = || Some(Arc::new(shape::image(c, (size.0 as f64, size.1 as f64), k).0));
+                let make = || Some(Arc::new(shape::image(c, (size.0 as f64, size.1 as f64), k, i).0));
                 (kept(&mut self.stills, &mut self.was.0, base.clone(), make)?, base)
             }
         };
@@ -834,15 +870,16 @@ impl Preview {
             })?,
             None => px,
         };
-        (px.len() >= tw * th * 4).then_some((px, (tw, th), (x as i64, y as i64)))
+        (px.len() >= tw * th * 4).then(|| (fx::paint(&c.fx, px, (tw, th), i, k), (tw, th), (x as i64, y as i64)))
     }
 
-    fn moved(&mut self, out: &mut [u8], c: &Clip, t: f64, fps: u32, (pw, ph): (usize, usize), k: f64, i: usize, a: f64) {
-        let ((w, h), q, turn) = ((pw as f64, ph as f64), c.scale.at(i) / c.scale.max(), c.rotate.at(i));
+    fn moved(&mut self, out: &mut [u8], c: &Clip, t: f64, tl: &Timeline, (pw, ph): (usize, usize), k: f64, i: usize, a: f64) {
+        let ((w, h), q, turn) = ((pw as f64, ph as f64), grown(c, i), c.rotate.at(i));
+        let mul = c.blend == "multiply";
         let mid = |tw, th| seat(c, (w, h), (tw as f64, th as f64), i);
         if c.kind != Kind::Text || c.parts.is_empty() && c.shown == Val::Fixed(1.) {
-            if let Some((px, (sw, sh), _)) = self.layer(c, t, fps, (pw, ph), k) {
-                blit(out, (pw, ph), &px, (sw, sh), q, turn, mid(sw, sh), a);
+            if let Some((px, (sw, sh), _)) = self.layer(c, t, tl, (pw, ph), k) {
+                blit(out, (pw, ph), &px, (sw, sh), q, turn, mid(sw, sh), a, mul);
             }
             return;
         }
@@ -880,7 +917,7 @@ impl Preview {
                 .grade
                 .as_ref()
                 .map_or(plate.clone(), |g| grade::paint(g, plate, (*tw, *th), vec![]));
-            blit(out, (pw, ph), &plate, (*tw, *th), q, turn, mid, a);
+            blit(out, (pw, ph), &plate, (*tw, *th), q, turn, mid, a, mul);
         }
         for g in glyphs.iter().filter(|g| g.i < n && g.w > 0) {
             let (ps, pr, pa, (dx, dy), pc) = match c.parts.iter().find(|p| (p.from..p.to).contains(&g.i)) {
@@ -904,14 +941,90 @@ impl Preview {
                 turn + pr,
                 (mid.0 + u.0 + dx, mid.1 + u.1 + dy),
                 (a * pa).min(1.),
+                mul,
             );
         }
     }
 
+    fn draw(&mut self, out: &mut [u8], tl: &Timeline, t: f64, (pw, ph): (usize, usize), k: f64, into: u32) {
+        let drawn = |c: &&Clip| c.into == into && c.scale.max() > 0. && (c.kind != Kind::Text || c.size > 0.);
+        for c in tl.clips.iter().filter(|c| c.video && live(c, t)).filter(drawn) {
+            let Some((id, how)) = &c.matte else {
+                self.one(out, c, tl, t, (pw, ph), k);
+                continue;
+            };
+            let (mut own, mut cut) = (vec![0; out.len()], vec![0; out.len()]);
+            self.one(&mut own, c, tl, t, (pw, ph), k);
+            self.draw(&mut cut, tl, t, (pw, ph), k, *id);
+            let mul = c.blend == "multiply";
+            for ((d, s), m) in out
+                .chunks_exact_mut(4)
+                .zip(own.chunks_exact(4))
+                .zip(cut.chunks_exact(4))
+                .filter(|x| x.0.1[3] > 0)
+            {
+                let key = match how.starts_with("luma") {
+                    true => 0.0722 * m[0] as f64 + 0.7152 * m[1] as f64 + 0.2126 * m[2] as f64,
+                    false => m[3] as f64,
+                };
+                let key = if how.ends_with("Inverted") { 255. - key } else { key } / 255.;
+                let (sa, back) = (s[3] as f64 * key / 255., 255. - d[3] as f64);
+                for i in 0..3 {
+                    let ink = if mul {
+                        s[i] as f64 * (d[i] as f64 + back) / 255.
+                    } else {
+                        s[i] as f64
+                    };
+                    d[i] = (ink * key + d[i] as f64 * (1. - sa)) as u8;
+                }
+                d[3] = (d[3] as f64 + back * sa) as u8;
+            }
+        }
+    }
+
+    fn one(&mut self, out: &mut [u8], c: &Clip, tl: &Timeline, t: f64, (pw, ph): (usize, usize), k: f64) {
+        let t = if c.step > 0. {
+            c.start + ((t - c.start) * c.step + 1e-6).floor() / c.step
+        } else {
+            t
+        };
+        let i = ((t - c.start) * tl.fps as f64).round() as usize;
+        let (a, solid) = ((alpha(c, t) * c.opacity.at(i)).clamp(0., 1.), c.kind == Kind::Video);
+        if !plain(c) {
+            self.moved(out, c, t, tl, (pw, ph), k, i, a);
+            return;
+        }
+        let Some((px, (sw, sh), (x, y))) = self.layer(c, t, tl, (pw, ph), k) else {
+            return;
+        };
+        let (x0, x1) = ((-x).max(0) as usize, (pw as i64 - x).clamp(0, sw as i64) as usize);
+        let (y0, y1) = (y.clamp(0, ph as i64) as usize, (y + sh as i64).clamp(0, ph as i64) as usize);
+        let paint = |from: usize, rows: &mut [u8]| {
+            for (sy, row) in ((y0 + from / (pw * 4)) as i64 - y..).zip(rows.chunks_exact_mut(pw * 4)) {
+                let dst = &mut row[(x + x0 as i64) as usize * 4..][..(x1 - x0) * 4];
+                let src = &px[(sy as usize * sw + x0) * 4..][..dst.len()];
+                if solid && a >= 1. {
+                    dst.copy_from_slice(src);
+                    continue;
+                }
+                for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
+                    let sa = a * if solid { 1. } else { s[3] as f64 / 255. };
+                    for i in 0..3 {
+                        d[i] = (s[i] as f64 * sa + d[i] as f64 * (1. - sa)) as u8;
+                    }
+                    d[3] = (d[3] as f64 + (255. - d[3] as f64) * sa) as u8;
+                }
+            }
+        };
+        match x1.saturating_sub(x0) * (y1 - y0) {
+            0 => {}
+            n if n < 1 << 16 || solid && a >= 1. => paint(0, &mut out[y0 * pw * 4..y1 * pw * 4]),
+            _ => spread(&mut out[y0 * pw * 4..y1 * pw * 4], pw * 4, paint),
+        }
+    }
+
     pub fn frame(&mut self, tl: &Timeline, t: f64, (pw, ph): (usize, usize)) -> Vec<u8> {
-        let (k, drawn) = (pw as f64 / tl.size.0 as f64, |c: &&Clip| {
-            c.scale.max() > 0. && (c.kind != Kind::Text || c.size > 0.)
-        });
+        let k = pw as f64 / tl.size.0 as f64;
         let (primed, size) = std::mem::take(&mut self.primed);
         if self.fast || size != (pw, ph) {
             self.decoders
@@ -923,40 +1036,7 @@ impl Preview {
         let was = std::mem::replace(&mut self.was, (std::mem::take(&mut self.stills), std::mem::take(&mut self.texts)));
         self.spare
             .extend(was.0.into_values().flatten().filter_map(|px| Arc::try_unwrap(px).ok()));
-        for c in tl.clips.iter().filter(|c| c.video && live(c, t)).filter(drawn) {
-            let i = ((t - c.start) * tl.fps as f64).round() as usize;
-            let (a, solid) = ((alpha(c, t) * c.opacity.at(i)).clamp(0., 1.), c.kind == Kind::Video);
-            if !plain(c) {
-                self.moved(&mut out, c, t, tl.fps, (pw, ph), k, i, a);
-                continue;
-            }
-            let Some((px, (sw, sh), (x, y))) = self.layer(c, t, tl.fps, (pw, ph), k) else {
-                continue;
-            };
-            let (x0, x1) = ((-x).max(0) as usize, (pw as i64 - x).clamp(0, sw as i64) as usize);
-            let (y0, y1) = (y.clamp(0, ph as i64) as usize, (y + sh as i64).clamp(0, ph as i64) as usize);
-            let paint = |from: usize, rows: &mut [u8]| {
-                for (sy, row) in ((y0 + from / (pw * 4)) as i64 - y..).zip(rows.chunks_exact_mut(pw * 4)) {
-                    let dst = &mut row[(x + x0 as i64) as usize * 4..][..(x1 - x0) * 4];
-                    let src = &px[(sy as usize * sw + x0) * 4..][..dst.len()];
-                    if solid && a >= 1. {
-                        dst.copy_from_slice(src);
-                        continue;
-                    }
-                    for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
-                        let sa = a * if solid { 1. } else { s[3] as f64 / 255. };
-                        for i in 0..3 {
-                            d[i] = (s[i] as f64 * sa + d[i] as f64 * (1. - sa)) as u8;
-                        }
-                    }
-                }
-            };
-            match x1.saturating_sub(x0) * (y1 - y0) {
-                0 => {}
-                n if n < 1 << 16 || solid && a >= 1. => paint(0, &mut out[y0 * pw * 4..y1 * pw * 4]),
-                _ => spread(&mut out[y0 * pw * 4..y1 * pw * 4], pw * 4, paint),
-            }
-        }
+        self.draw(&mut out, tl, t, (pw, ph), k, 0);
         let soon = |c: &&Clip| c.kind == Kind::Video && t < c.start && c.start < t + 1.;
         let next = tl.clips.iter().filter(soon).map(|c| c.start).fold(f64::MAX, f64::min);
         for c in tl.clips.iter().filter(soon).filter(|c| c.start == next) {

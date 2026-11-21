@@ -1,5 +1,6 @@
 mod audio;
 mod export;
+mod fx;
 mod grade;
 mod lut;
 mod mic;

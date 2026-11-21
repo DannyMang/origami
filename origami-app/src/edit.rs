@@ -1,6 +1,6 @@
 use crate::Origami;
 use gpui::{Context, Pixels, Point, Window};
-use std::mem;
+use std::{mem, time::Instant};
 
 fn reach(wide: f32, room: f32) -> f32 {
     (wide - room + 40.).max(0.)
@@ -181,12 +181,23 @@ impl Origami {
         Some(at)
     }
 
+    pub fn flash(&mut self, row: usize, rows: usize) {
+        self.glow = Some((Instant::now(), row, rows));
+    }
+
+    pub fn lit(&self) -> Option<(f32, usize, usize)> {
+        let (since, row, rows) = self.glow?;
+        let left = 1. - since.elapsed().as_secs_f32() / 2.;
+        (left > 0.).then_some((left, row, rows))
+    }
+
     pub fn write(&mut self, word: &str) {
         let code = format!("{word}(\"{word}\").at({:.2}).for(3)", self.t);
         if let Some(row) = self.add(&code, false) {
             let col = self.lines[row].find('"').map_or(0, |i| i + 1);
             self.cursor = Some((row, col));
             self.reveal(row);
+            self.flash(row, 1);
         }
     }
 

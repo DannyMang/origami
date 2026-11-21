@@ -1,3 +1,4 @@
+mod begin;
 mod clip;
 mod complete;
 mod crash;
@@ -14,6 +15,7 @@ mod mouse;
 mod peek;
 mod pen;
 mod pulse;
+mod quill;
 mod release;
 mod saves;
 mod scene;
@@ -162,11 +164,15 @@ struct Origami {
     loading: usize,
     export: Option<Arc<Mutex<(String, bool)>>>,
     ship: Option<ship::Ship>,
+    begin: Option<begin::Begin>,
     shelf: Option<Arc<shelf::Shelf>>,
     saves: Option<saves::Saves>,
     shelving: bool,
     take: Option<voice::Take>,
     pen: bool,
+    trace: Option<Vec<(f64, f64)>>,
+    glow: Option<(Instant, usize, usize)>,
+    ghost: Option<Vec<(f64, f64)>>,
     words: Option<words::Words>,
     mic: Option<String>,
     mics: Vec<String>,
@@ -409,7 +415,7 @@ impl Origami {
         self.watch(cx);
         self.stow(cx);
         *crash::UNSAVED.lock().unwrap() = self.dirty.then(|| (self.script.clone(), self.text()));
-        if self.dwell() {
+        if self.dwell() || self.lit().is_some() {
             cx.notify();
         }
         self.gaze(cx);
@@ -575,11 +581,15 @@ fn fresh(focus: FocusHandle, recent: Vec<PathBuf>) -> Origami {
         loading: 0,
         export: None,
         ship: None,
+        begin: None,
         shelf: None,
         saves: None,
         shelving: false,
         take: None,
         pen: false,
+        trace: None,
+        glow: None,
+        ghost: None,
         words: None,
         mic: None,
         mics: vec![],

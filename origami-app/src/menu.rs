@@ -8,7 +8,6 @@ use gpui::{
     Window, actions, prelude::*,
 };
 use std::{
-    env,
     ffi::OsStr,
     fs,
     path::{Path, PathBuf},
@@ -47,7 +46,7 @@ const CHORDS: [&str; 14] = [
     "alt-cmd-]",
 ];
 
-const STARTER: &str = "stack(\n  cat(\n    color(\"#282c33\").for(5),\n  ),\n  text(\"hello origami\"),\n)\n";
+pub const STARTER: &str = "stack(\n  cat(\n    color(\"#282c33\").for(5),\n  ),\n  text(\"hello origami\"),\n)\n";
 
 pub static ARRIVED: Mutex<Option<PathBuf>> = Mutex::new(None);
 
@@ -186,7 +185,10 @@ pub fn install(cx: &mut App, recent: &[PathBuf]) {
     route(cx, |this, _: &Updates, window, cx| this.check(window, cx));
     route(cx, |this, _: &Share, _, cx| this.share(pulse::shared() != Some(true), cx));
     route(cx, |this, _: &Quit, window, cx| this.leave(window, cx));
-    route(cx, |this, _: &New, window, cx| this.create(window, cx));
+    route(cx, |this, _: &New, _, cx| {
+        this.create();
+        cx.notify();
+    });
     route(cx, |this, _: &Open, window, cx| this.browse(window, cx));
     route(cx, |this, Reopen(path): &Reopen, window, cx| this.switch(path.clone(), window, cx));
     cx.set_menus(menus(recent));
@@ -259,23 +261,6 @@ impl Origami {
         .detach();
     }
 
-    pub fn create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.unsaved("Save them before creating a new file?", window, cx, |_, _, cx| {
-            let path = cx.prompt_for_new_path(&env::current_dir().unwrap_or_default(), Some("edit.js"));
-            cx.spawn(async move |this, cx| {
-                if let Ok(Ok(Some(path))) = path.await
-                    && fs::write(&path, STARTER).is_ok()
-                {
-                    let _ = this.update(cx, |this, cx| {
-                        this.open(path, cx);
-                        cx.notify();
-                    });
-                }
-            })
-            .detach();
-        });
-    }
-
     pub fn browse(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let options = PathPromptOptions {
             files: true,
@@ -312,7 +297,7 @@ impl Origami {
         }
     }
 
-    fn unsaved(
+    pub fn unsaved(
         &mut self,
         detail: &str,
         window: &mut Window,
@@ -376,7 +361,7 @@ impl Origami {
 mod tests {
     use super::*;
     use gpui::{ClipboardItem, Entity, TestAppContext, VisualTestContext};
-    use std::sync::Arc;
+    use std::{env, sync::Arc};
 
     fn items(menu: &Menu) -> Vec<(String, Box<dyn Action>)> {
         let item = |i: &MenuItem| match i {
@@ -479,12 +464,9 @@ mod tests {
     }
 
     // On the launch screen the editing, save and export items are disabled and their keys do nothing, while
-    // cmd+n still makes a new file from the starter script and opens it.
+    // cmd+n still opens the new project dialog.
     #[gpui::test]
     fn launch_menus(cx: &mut TestAppContext) {
-        let dir = fs::canonicalize(env::temp_dir()).unwrap().join("origami-launch-menus-test");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
         cx.update(|cx| install(cx, &[]));
         let (view, cx) = cx.add_window_view(|window, cx| {
             let app = crate::fresh(cx.focus_handle(), vec![]);
@@ -496,10 +478,7 @@ mod tests {
         assert_eq!([on(&Chord("cmd-z")), on(&FullScreen), on(&Export)], [false; 3]);
         assert_eq!([on(&New), on(&Open), on(&Quit), on(&Updates)], [true; 4]);
         assert!(!press(cx, "cmd-z") && press(cx, "cmd-n"));
-        cx.simulate_new_path_selection(|_| Some(dir.join("new.js")));
-        cx.run_until_parked();
-        assert_eq!(view.update(cx, |o, _| o.script.clone()), dir.join("new.js"));
-        assert_eq!(fs::read_to_string(dir.join("new.js")).unwrap(), STARTER);
+        assert!(view.update(cx, |o, _| o.begin.is_some()));
     }
 
     // Quitting with cmd+q or :q while an export runs should ask first and keep the app and the export on

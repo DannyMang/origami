@@ -43,6 +43,9 @@ impl Origami {
     pub fn key(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
         let key = &e.keystroke;
+        if self.begin.is_some() {
+            return self.name(key, window, cx);
+        }
         let save = key.modifiers.control && matches!(key.key.as_str(), "s" | "0" | "f");
         if key.modifiers.control && !save || self.script.as_os_str().is_empty() {
             return cx.propagate();
@@ -79,7 +82,7 @@ impl Origami {
         if self.narrow(&k, key.modifiers.platform, window) {
             return cx.notify();
         }
-        if k == "escape" && mem::take(&mut self.pen) {
+        if k == "escape" && (mem::take(&mut self.pen) | self.trace.take().is_some() | self.ghost.take().is_some()) {
             return cx.notify();
         }
         if self.take.is_some() && matches!(k.as_str(), "escape" | "space") {

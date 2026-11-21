@@ -112,6 +112,8 @@ fn pipe(g: &Grade) -> impl Fn(Rgb) -> Rgb + '_ {
         .hsl_secondary
         .as_ref()
         .map(|s| (s, hsv([0, 1, 2].map(|i| text::rgba(&s.color)[i] as f64 / 255.))));
+    let ink = |c: &String| [0, 1, 2].map(|i| text::rgba(c)[i] as f64 / 255.);
+    let duo = g.duotone.as_ref().map(|(dark, light)| (ink(dark), ink(light)));
     move |mut c| {
         if let Some(lut) = &input {
             c = lut.sample(c);
@@ -153,6 +155,10 @@ fn pipe(g: &Grade) -> impl Fn(Rgb) -> Rgb + '_ {
             let lit = balance(c, s.temperature, s.tint).map(|v| v * 2f64.powf(s.exposure / 2.2));
             let fixed = saturate(contrast(lit, s.contrast), s.saturation / 100.);
             c = blend(c, fixed, mask);
+        }
+        if let Some((dark, light)) = &duo {
+            let y = luma(c).clamp(0., 1.);
+            c = array::from_fn(|i| dark[i] + (light[i] - dark[i]) * y);
         }
         c.map(|v| v.clamp(0., 1.))
     }

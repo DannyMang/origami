@@ -57,7 +57,7 @@ pub fn drag(text: &str, from: usize, kind: Kind, to: [Option<f64>; 2], (t, len, 
 fn loose(c: &Clip) -> bool {
     c.video
         && match c.kind {
-            Kind::Text | Kind::Rect | Kind::Line => true,
+            Kind::Text | Kind::Rect | Kind::Line | Kind::Path => true,
             Kind::Color | Kind::Sound => false,
             _ => c.scale != Val::Fixed(1.) || c.pos != (None, None),
         }

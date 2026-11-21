@@ -46,6 +46,8 @@ pub enum Kind {
     Color,
     Rect,
     Line,
+    Path,
+    Group,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -137,6 +139,18 @@ impl Val {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Fx {
+    Lens(Val),
+    Blur(Val),
+    Levels(f64, f64, bool),
+    Noise(f64, Val),
+    Fractal { scale: f64, seed: Val },
+    Roughen { border: f64, scale: f64, sharp: f64, seed: Val },
+    Displace { amount: Val, size: f64, seed: Val },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Part {
     pub from: usize,
     pub to: usize,
@@ -190,6 +204,22 @@ pub struct Clip {
     pub shown: Val,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parts: Vec<Part>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub blend: String,
+    #[serde(default)]
+    pub step: f64,
+    #[serde(default)]
+    pub id: u32,
+    #[serde(default)]
+    pub into: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matte: Option<(u32, String)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fx: Vec<Fx>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub points: Vec<(Val, Val)>,
+    #[serde(default)]
+    pub curve: bool,
 }
 
 impl Clip {

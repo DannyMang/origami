@@ -35,7 +35,7 @@ fn slot(dir: &Path, lines: &[String]) -> usize {
     (1..).find(|n| !used(n)).unwrap_or(1)
 }
 
-fn top(l: &String) -> bool {
+pub fn top(l: &String) -> bool {
     !l.starts_with([' ', '\t', ')', ']', '}', '.'])
 }
 

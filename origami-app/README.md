@@ -6,7 +6,7 @@ The Origami desktop app (GPUI). Edit the script in your own editor; the app relo
 cargo run --release -- ../demo/edit.js
 ```
 
-With no argument it opens the launch screen (Create new file, Open…, Docs). cmd+o opens a script from anywhere, and so does opening a .js file with Origami from Finder.
+With no argument it opens the launch screen (New project, Open…, Docs). cmd+o opens a script from anywhere, and so does opening a .js file with Origami from Finder.
 
 Starts in Mouse mode: drag the ruler to move the playhead, click a clip to select it, drag clips to move, drag clip edges to trim, scroll to zoom. Drags rewrite the script as you move.
 Click a clip to select it and press delete to remove it. Click the script to type in it; cmd+s saves and applies, and closing with unsaved changes asks first. cmd+z undoes.

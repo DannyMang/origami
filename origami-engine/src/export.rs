@@ -115,12 +115,20 @@ fn spot(c: &Clip, (w, h): (f64, f64), (tw, th): (f64, f64)) -> (f64, f64, f64, f
 fn mid(c: &Clip) -> (f64, f64) {
     match (c.kind, c.ends) {
         (Kind::Line, [x1, y1, x2, y2]) => ((x1 + x2) / 2., (y1 + y2) / 2.),
+        (Kind::Path, _) => {
+            let [x1, y1, x2, y2] = shape::bounds(c);
+            ((x1 + x2) / 2., (y1 + y2) / 2.)
+        }
         _ => (0.5, 0.5),
     }
 }
 
+pub fn grown(c: &Clip, i: usize) -> f64 {
+    c.scale.at(i) / if c.kind == Kind::Group { 1. } else { c.scale.max() }
+}
+
 pub fn seat(c: &Clip, (w, h): (f64, f64), (tw, th): (f64, f64), i: usize) -> (f64, f64) {
-    let (q, m) = (c.scale.at(i) / c.scale.max(), mid(c));
+    let (q, m) = (grown(c, i), mid(c));
     let at = |p: &Option<Val>, w: f64, tw: f64, m: f64| p.as_ref().map_or(m * w, |x| x.at(i) * w + tw * q / 2.);
     (at(&c.pos.0, w, tw, m.0), at(&c.pos.1, h, th, m.1))
 }
@@ -133,7 +141,7 @@ pub fn place(c: &Clip, (w, h): (f64, f64), k: f64) -> (f64, f64, f64, f64) {
             let (_, tw, th) = text::glyphs(c, k, false);
             spot(c, (w, h), (tw as f64, th as f64))
         }
-        Kind::Rect | Kind::Line => {
+        Kind::Rect | Kind::Line | Kind::Path => {
             let (tw, th) = shape::extent(c, (w, h), k);
             spot(c, (w, h), (tw as f64, th as f64))
         }
@@ -149,7 +157,17 @@ pub fn footprint(c: &Clip, size: (f64, f64)) -> (f64, f64) {
 
 pub fn plain(c: &Clip) -> bool {
     let fixed = |(n, v): (&str, &Val)| n == "opacity" || matches!(v, Val::Fixed(_));
-    c.parts.is_empty() && c.rotate == Val::Fixed(0.) && c.shown == Val::Fixed(1.) && c.vals().all(fixed)
+    c.parts.is_empty()
+        && c.blend.is_empty()
+        && c.step == 0.
+        && c.into == 0
+        && c.kind != Kind::Group
+        && c.matte.is_none()
+        && c.fx.is_empty()
+        && c.points.iter().all(|p| matches!(p, (Val::Fixed(_), Val::Fixed(_))))
+        && c.rotate == Val::Fixed(0.)
+        && c.shown == Val::Fixed(1.)
+        && c.vals().all(fixed)
 }
 
 fn piped(tl: &Timeline, o: &Opts) -> bool {
@@ -222,9 +240,9 @@ fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path, (k, (w, h)): (f64, (
                 "-i",
                 &c.src,
             ])),
-            Kind::Text | Kind::Rect | Kind::Line | Kind::Color if video && !solid => {
+            Kind::Text | Kind::Rect | Kind::Line | Kind::Path | Kind::Color if video && !solid => {
                 let file = dir.join(format!("text-{i}.bgra")).to_string_lossy().to_string();
-                let _ = fs::write(&file, shape::image(c, size, k).0);
+                let _ = fs::write(&file, shape::image(c, size, k, 0).0);
                 ins.extend(own(&["-stream_loop", "-1", "-t", &len.to_string()]));
                 ins.extend(raw(&format!("{tw}x{th}"), &["-framerate", &tl.fps.to_string(), "-i", &file]));
             }
