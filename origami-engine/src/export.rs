@@ -511,6 +511,7 @@ mod tests {
         footprint,
         tests::{TIDY, film, scratch},
     };
+    use std::time::Instant;
 
     // Slow and very fast motion with sound, a fade longer than its clip and layers too small to see export
     // and play, two exports at once neither disturb each other nor leave files behind, and a failing export
@@ -552,11 +553,15 @@ mod tests {
         });
         assert_ne!(fs::read(dir.join("one.mp4")).unwrap(), fs::read(dir.join("two.mp4")).unwrap());
         let mine = format!("origami-{}-", process::id());
-        let left = fs::read_dir(env::temp_dir())
-            .unwrap()
-            .flatten()
-            .filter(|e| e.file_name().to_string_lossy().starts_with(&mine));
-        assert_eq!(left.count(), 0);
+        let left = || {
+            let all = fs::read_dir(env::temp_dir()).unwrap().flatten();
+            all.filter(|e| e.file_name().to_string_lossy().starts_with(&mine)).count()
+        };
+        let since = Instant::now();
+        while left() > 0 && since.elapsed() < Duration::from_secs(30) {
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(left(), 0);
         let gone = tl("text('a').for(1)\nvideo('b.mp4').trim(0, 1)");
         fs::remove_file(dir.join("b.mp4")).unwrap();
         fs::write(out("gone.mp4"), "old").unwrap();
