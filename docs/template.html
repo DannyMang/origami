@@ -7,12 +7,12 @@
   color-scheme: dark;
   --bg: #282c33; --bar: #3b414d; --code: #2f343e; --line: #464b57;
   --fg: #dce0e5; --dim: #a9afbc; --accent: #74ade8;
-  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
-  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font: "Paper Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
+@font-face { font-family: "Paper Mono"; src: url(fonts/PaperMono.woff2) format("woff2"); font-weight: 100 800; font-display: swap }
 * { box-sizing: border-box }
 html { scroll-padding-top: 72px }
-body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 var(--sans) }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 var(--font) }
 header { position: sticky; top: 0; z-index: 5; height: 56px; display: flex; align-items: baseline; gap: 8px; background: var(--bar); padding: 14px 16px }
 header b { font-size: 20px }
 header span { font-size: 14px; font-weight: 500 }
@@ -37,10 +37,10 @@ main { flex: 1; min-width: 0; max-width: 740px }
 main > * { margin: 8px 0 0 }
 main h1 { font-size: 28px; font-weight: 700; margin-top: 48px }
 main h1:first-child { margin-top: 0 }
-main h2 { font: 600 18px var(--mono); margin-top: 28px; color: var(--accent) }
+main h2 { font: 600 18px var(--font); margin-top: 28px; color: var(--accent) }
 main a { color: var(--accent) }
 p, li { color: var(--dim) }
-code { font: 14px/1.6 var(--mono) }
+code { font: 14px/1.6 var(--font) }
 pre { padding: 12px 16px; background: var(--code); border: 1px solid var(--line); border-radius: 6px; overflow-x: auto }
 video, img { display: block; max-width: 100%; border: 1px solid var(--line); border-radius: 6px }
 table { border-collapse: collapse; display: block; overflow-x: auto }

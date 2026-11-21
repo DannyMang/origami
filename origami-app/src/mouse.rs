@@ -102,9 +102,10 @@ impl Origami {
         }
         let stamp = |p: &Path| fs::metadata(p).and_then(|m| m.modified()).ok();
         let spare = crash::spare(&self.script);
+        let mine = |t: String| Some(t.strip_prefix(&*self.script.to_string_lossy())?.strip_prefix('\0')?.to_string());
         if fs::symlink_metadata(&spare).is_ok_and(|m| m.is_file())
             && stamp(&spare) > stamp(&self.script)
-            && let Ok(text) = origami_lang::load(&spare)
+            && let Some(text) = origami_lang::load(&spare).ok().and_then(mine)
         {
             let _ = fs::remove_file(&spare);
             if origami_lang::load(&self.script).unwrap_or_default().lines().ne(text.lines()) {
@@ -245,7 +246,7 @@ impl Origami {
         if self.turning.is_some() && self.past.last() == Some(&self.lines) {
             self.past.pop();
         }
-        (self.scrubbing, self.pull, self.picking, self.turning, self.held, self.push) = (false, None, false, None, None, None);
+        (self.scrubbing, self.pull, self.picking, self.turning, self.held, self.push) = (false, None, None, None, None, None);
         if self.slip.take().is_some() && self.lines != self.base {
             self.past.push(mem::take(&mut self.base));
             self.future.clear();
@@ -284,7 +285,10 @@ impl Origami {
             return self.lift -= f32::from(d.y);
         }
         let k = (t - self.pan) / self.span();
-        self.zoom = deep(self.zoom * (f64::from(d.y) / 200.).exp(), self.tl.duration, self.fps());
+        match !self.motion && !e.modifiers.platform && self.climb.1 > 0. {
+            true => self.climb.0 -= f32::from(d.y),
+            false => self.zoom = deep(self.zoom * (f64::from(d.y) / 200.).exp(), self.tl.duration, self.fps()),
+        }
         self.pan = within(t - k * self.span() - f64::from(d.x) * per, self.tl.duration, self.span());
     }
 }
@@ -371,6 +375,74 @@ mod tests {
         assert_eq!(wheel(cx, -400.), 1.);
     }
 
+    // A timeline with more lanes than fit keeps each lane tall enough to read, and scrolling up or down
+    // moves through the lanes, never past the first or the last, while scrolling with cmd held zooms.
+    #[gpui::test]
+    fn many_lanes_scroll(cx: &mut gpui::TestAppContext) {
+        let src = format!("stack(\n{})", "  color(\"#203040\").for(4),\n".repeat(40));
+        let (view, cx) = window(cx, "lanes", &src);
+        cx.run_until_parked();
+        let (x, top, h) = view.update_in(cx, |o, window, _| {
+            let h = f32::from(window.viewport_size().height);
+            (o.lead() + (2. / o.per_px(window)) as f32, h - 28. - o.dock + RULER, h)
+        });
+        let pick = |cx: &mut gpui::VisualTestContext, y: f32| {
+            let at = gpui::point(px(x), px(y));
+            cx.simulate_mouse_down(at, gpui::MouseButton::Left, Default::default());
+            cx.simulate_mouse_up(at, gpui::MouseButton::Left, Default::default());
+            view.update(cx, |o, _| o.sel)
+        };
+        let turn = |cx: &mut gpui::VisualTestContext, y: f32, platform: bool| {
+            cx.simulate_event(ScrollWheelEvent {
+                position: gpui::point(px(x), px(top + 40.)),
+                delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(y))),
+                modifiers: gpui::Modifiers {
+                    platform,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+            cx.run_until_parked();
+            view.update(cx, |o, _| (o.climb.0, o.zoom))
+        };
+        let wheel = |cx: &mut gpui::VisualTestContext, y: f32| turn(cx, y, false).0;
+        assert_eq!((pick(cx, top + 14.), pick(cx, top + 42.)), (Some(39), Some(38)));
+        assert_eq!(turn(cx, -28., false), (28., 1.));
+        let (at, zoom) = turn(cx, 200., true);
+        assert!(at == 28. && zoom > 2.);
+        turn(cx, -400., true);
+        assert_eq!(pick(cx, top + 14.), Some(38));
+        let dock = view.update(cx, |o, _| o.dock);
+        assert_eq!(wheel(cx, -1e6), 40. * 28. - (dock - 30.));
+        assert_eq!(pick(cx, h - 28. - 8. - 14.), Some(0));
+        assert_eq!(wheel(cx, 1e6), 0.);
+    }
+
+    // A click whose pointer slips a pixel still only places the caret, so each backspace removes the letter
+    // behind it and typing adds to it, while a longer drag selects.
+    #[gpui::test]
+    fn shaky_clicks_place_the_caret(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = window(cx, "shaky", "stack(\n  color(\"#203040\").for(4),\n)");
+        cx.run_until_parked();
+        let (x, y, glyph) = view.update_in(cx, |o, window, _| {
+            let w = f32::from(window.viewport_size().width);
+            (w - o.side + o.inset() + 3.45 * o.glyph(), o.head() + o.row() / 2., o.glyph())
+        });
+        let drag = |cx: &mut gpui::VisualTestContext, by: f32| {
+            let (a, b) = (gpui::point(px(x), px(y)), gpui::point(px(x + by), px(y)));
+            cx.simulate_mouse_down(a, gpui::MouseButton::Left, Default::default());
+            cx.simulate_mouse_move(b, Some(gpui::MouseButton::Left), Default::default());
+            cx.simulate_mouse_up(b, gpui::MouseButton::Left, Default::default());
+            view.update(cx, |o, _| o.chosen())
+        };
+        assert_eq!(drag(cx, 1.), None);
+        cx.simulate_keystrokes("backspace");
+        assert_eq!(view.update(cx, |o, _| o.lines[0].clone()), "stck(");
+        cx.simulate_keystrokes("backspace x y");
+        assert_eq!(view.update(cx, |o, _| (o.lines[0].clone(), o.chosen())), ("sxyck(".into(), None));
+        assert_eq!(drag(cx, 2. * glyph), Some(((0, 3), (0, 5))));
+    }
+
     fn window<'a>(cx: &'a mut gpui::TestAppContext, name: &str, src: &str) -> (gpui::Entity<Origami>, &'a mut gpui::VisualTestContext) {
         let path = env::temp_dir().join(format!("origami-{name}-test.js"));
         fs::write(&path, src).unwrap();
@@ -452,11 +524,11 @@ mod tests {
         assert_eq!(state(cx), (moved.0.clone(), false, 1, t));
         view.update(cx, |o, _| {
             o.seize(point(px(x), px(lane)), [0.; 3], crate::motion::Pull::Zoom(1.));
-            (o.pull, o.eyeing, o.picking, o.turning) = (Some(true), true, true, Some(crate::knob::Turn::Wheel));
+            (o.pull, o.eyeing, o.picking, o.turning) = (Some(true), true, Some(Default::default()), Some(crate::knob::Turn::Wheel));
         });
         cx.simulate_mouse_up(point(px(-30.), px(-30.)), Left, m);
         let gone = view.update(cx, |o, _| {
-            o.pull.is_none() && !o.eyeing && !o.picking && o.turning.is_none() && o.slip.is_none()
+            o.pull.is_none() && !o.eyeing && o.picking.is_none() && o.turning.is_none() && o.slip.is_none()
         });
         assert!(gone);
     }
@@ -526,5 +598,63 @@ mod tests {
             assert_eq!(o.lines[0], "const a = text(\"a\").for(2.50).shift(0.5000)");
             assert!(o.used(c, "duplicate").is_none());
         });
+    }
+
+    // Play shows at once and holds the playhead while the player is built in the background, and pausing,
+    // seeking or editing the script meanwhile leaves nothing playing or a player for the new spot and script.
+    #[gpui::test]
+    fn play_builds_the_player_aside(cx: &mut gpui::TestAppContext) {
+        let media = env::temp_dir().join("origami-play-test.mp4");
+        let args = [
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=red:s=64x36:r=30:d=2",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc",
+        ];
+        let made = origami_lang::status(origami_lang::ffmpeg().args(args).args(["-t", "2"]).arg(&media));
+        assert!(made.unwrap().success());
+        let (view, cx) = window(cx, "play", "stack(video(\"origami-play-test.mp4\"))");
+        let tick = |cx: &mut gpui::VisualTestContext| view.update_in(cx, |o, window, cx| o.tick(window, cx));
+        let state = |cx: &mut gpui::VisualTestContext| {
+            view.update(cx, |o, _| {
+                let built = o.player.as_ref().map(|p| (p.1, p.2.is_some() || !o.note.is_empty()));
+                (o.t, built, o.cued)
+            })
+        };
+        tick(cx);
+        cx.run_until_parked();
+        view.update(cx, |o, _| o.toggle());
+        assert_eq!(state(cx), (0., Some((0., false)), true));
+        view.update(cx, |o, _| o.toggle());
+        tick(cx);
+        cx.run_until_parked();
+        tick(cx);
+        cx.run_until_parked();
+        assert_eq!(state(cx).1, None);
+        view.update(cx, |o, _| o.toggle());
+        tick(cx);
+        view.update(cx, |o, _| o.seek(1.5));
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(100));
+        tick(cx);
+        assert_eq!(state(cx), (1.5, Some((1.5, false)), true));
+        cx.run_until_parked();
+        assert_eq!(state(cx), (1.5, Some((1.5, true)), false));
+        view.update(cx, |o, _| o.seek(1.8));
+        tick(cx);
+        let path = view.update(cx, |o, _| o.script.clone());
+        fs::write(&path, "stack(video(\"origami-play-test.mp4\").trim(0, 1))").unwrap();
+        view.update(cx, |o, cx| o.watch(cx));
+        cx.run_until_parked();
+        tick(cx);
+        cx.run_until_parked();
+        assert_eq!(state(cx), (0., Some((0., true)), false));
     }
 }

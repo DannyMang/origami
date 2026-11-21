@@ -256,15 +256,12 @@
     image: file('image', () => ({ video: true, audio: false })),
     text: words(72),
     caption: words(44, [null, 0.84]),
-    captions: line(n => p => {
-      const src = __read(p, 'captions', n).replace(/\r/g, '')
-      return pile(src.split('\n\n').map(b => {
-        const [cue, a, z, s] = b.match(/^(\S+) --> (\S+)\n([\s\S]+)/m) ?? [], t = x => T(x.replace(',', '.'))
-        at = n
-        if (a && !(t(z) > t(a))) must(false, `captions("${p}") line ${src.slice(0, src.indexOf(cue)).split('\n').length}: ${a} --> ${z} is not a time range like 00:00:01,000 --> 00:00:04,000`)
-        return a && caption[n](s.trim().replace(/\n/g, ' ')).at[n](t(a)).for[n](t(z) - t(a))
-      }).filter(Boolean))
-    }),
+    captions: line(n => p => pile(JSON.parse(__read(p, 'captions', n)).map(([row, b]) => {
+      const [cue, a, z, s] = b.match(/^(\S+) --> (\S+)\n([\s\S]+)/m) ?? [], t = x => T(x.replace(',', '.'))
+      at = n
+      if (a && !(t(z) > t(a))) must(false, `captions("${p}") line ${row + b.slice(0, b.indexOf(cue)).split('\n').length - 1}: ${a} --> ${z} is not a time range like 00:00:01,000 --> 00:00:04,000`)
+      return a && caption[n](s.trim().replace(/\n/g, ' ')).at[n](t(a)).for[n](t(z) - t(a))
+    }).filter(Boolean))),
     color: leaf(c => {
       must(typeof c === 'string', 'color is written color("#203040")')
       return { kind: 'color', src: paint(c), video: true, audio: false, label: c }
@@ -334,8 +331,8 @@
     return kept === false ? s[0] : [v.line, kept]
   }
   const ir = (c, z) => ({
-    kind: c.kind, src: c.src, w: c.w ?? 0, h: c.h ?? 0, start: c.start, end: c.end, src_in: c.in, speed: c.speed, z,
-    scale: sample(c, c.scale), pos: (c.pos ?? [null, null]).map(v => v == null ? null : sample(c, v)), gain: c.gain, fade: c.fade.map(f => Math.min(f, c.end - c.start)), label: c.label, line: c.line, home: c.home, total: c.total ?? 0,
+    line: c.line, kind: c.kind, src: c.src, w: c.w ?? 0, h: c.h ?? 0, start: c.start, end: c.end, src_in: c.in, speed: c.speed, z,
+    scale: sample(c, c.scale), pos: (c.pos ?? [null, null]).map(v => v == null ? null : sample(c, v)), gain: c.gain, fade: c.fade.map(f => Math.min(f, c.end - c.start)), label: c.label, home: c.home, total: c.total ?? 0,
     video: c.video, audio: c.audio, size: c.size ?? 0, color: c.color ?? '', font: c.font ?? '', grade: c.grade,
     radius: c.radius ?? 0, ends: c.ends ?? [0, 0, 0, 0], background: c.background ?? '', align: c.align ?? '',
     opacity: sample(c, c.opacity), rotate: sample(c, c.rotate), shown: sample(c, c.shown),

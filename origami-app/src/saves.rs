@@ -662,7 +662,7 @@ impl Origami {
                     ink(skip - 2..skip, GREEN),
                 ],
             };
-            marks.extend(tokens(&code).into_iter().map(|(r, h)| (r.start + skip..r.end + skip, h)));
+            marks.extend(tokens(&code).map(|(r, h)| (r.start + skip..r.end + skip, h)));
             div()
                 .relative()
                 .h(px(self.row()))

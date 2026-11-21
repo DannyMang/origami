@@ -33,11 +33,11 @@ use gpui::{
 };
 use image::{Frame, RgbaImage};
 use mouse::Grab;
-use origami_engine::{Player, Preview, footprint, halt, peaks, thumb};
+use origami_engine::{Player, Preview, footprint, halt, learn, peaks, thumb};
 use origami_lang::{Clip, Kind, Timeline};
 use std::{
     cell::RefCell,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env, fs, mem,
     path::{Path, PathBuf},
     process::Command,
@@ -85,7 +85,7 @@ struct Origami {
     pan: f64,
     cursor: Option<(usize, usize)>,
     anchor: Option<(usize, usize)>,
-    picking: bool,
+    picking: Option<Point<Pixels>>,
     offers: (usize, Vec<complete::Offer>),
     pick: usize,
     slide: f32,
@@ -105,12 +105,11 @@ struct Origami {
     tie: Option<(u32, &'static str)>,
     cord: Option<motion::Cord>,
     lift: f32,
+    climb: (f32, f32),
     key: Option<(u32, &'static str, usize)>,
     slip: Option<motion::Slip>,
     stage: Bounds<Pixels>,
     dense: f32,
-    disc: Arc<RenderImage>,
-    strips: [Arc<RenderImage>; 3],
     finding: Option<String>,
     hit: usize,
     modes: [bool; 3],
@@ -154,6 +153,8 @@ struct Origami {
     reading: bool,
     clash: bool,
     player: Option<(Instant, f64, Option<Player>)>,
+    cued: bool,
+    planning: bool,
     assets: HashMap<String, Option<Asset>>,
     stamps: HashMap<String, Option<(u64, SystemTime)>>,
     jobs: Vec<(String, String, Option<f64>)>,
@@ -226,12 +227,31 @@ impl Origami {
     }
 
     fn play(&mut self) {
-        self.player = None;
         if self.t >= self.end() {
             self.t = 0.;
         }
-        let player = Player::new(&self.tl, self.t, self.rate).map_err(|e| self.note = e.to_string()).ok();
-        self.player = Some((Instant::now(), self.t, player));
+        (self.player, self.cued) = (Some((Instant::now(), self.t, None)), true);
+    }
+
+    fn cue(&mut self, cx: &mut Context<Self>) {
+        let Some(&(_, t, _)) = self.player.as_ref().filter(|_| self.cued && !self.planning && !self.scrubbing) else {
+            return;
+        };
+        let (tl, job, rate) = (self.tl.clone(), self.tl.clone(), self.rate);
+        self.planning = true;
+        cx.spawn(async move |this, cx| {
+            let plan = cx.background_executor().spawn(async move { Player::plan(&job, t, rate) }).await;
+            this.update(cx, |this, cx| {
+                this.planning = false;
+                let same = this.player.as_ref().is_some_and(|p| p.1 == t) && Arc::ptr_eq(&this.tl, &tl) && this.rate == rate;
+                if this.cued && !this.scrubbing && same {
+                    let player = plan.and_then(Player::new).map_err(|e| this.note = e.to_string()).ok();
+                    (this.player, this.cued) = (Some((Instant::now(), t, player)), false);
+                    cx.notify();
+                }
+            })
+        })
+        .detach();
     }
 
     fn load(&mut self, cx: &mut Context<Self>) {
@@ -339,6 +359,10 @@ impl Origami {
                 if let Some(old) = this.image.replace(bitmap(px, w, h)) {
                     cx.drop_image(old, None);
                 }
+                if this.shown.is_none_or(|s| s.1 != want.1) {
+                    let tl = this.tl.clone();
+                    cx.background_executor().spawn(async move { learn(&tl, 0.) }).detach();
+                }
                 (this.busy, this.shown, this.rough, this.rest) = (false, Some(want), rough, Some(Instant::now()));
                 this.refresh(cx);
                 cx.notify();
@@ -356,13 +380,12 @@ impl Origami {
     }
 
     fn watch(&mut self, cx: &mut Context<Self>) {
-        for c in self
-            .tl
-            .clone()
+        let (tl, mut seen) = (self.tl.clone(), HashSet::new());
+        let media = tl
             .clips
             .iter()
-            .filter(|c| matches!(c.kind, Kind::Video | Kind::Sound | Kind::Image))
-        {
+            .filter(|c| matches!(c.kind, Kind::Video | Kind::Sound | Kind::Image));
+        for c in media.filter(|c| seen.insert(&c.src)) {
             let now = fs::metadata(&c.src).and_then(|m| Ok((m.len(), m.modified()?))).ok();
             if self.stamps.insert(c.src.clone(), now).is_some_and(|was| was != now) {
                 self.assets.retain(|k, _| !k.starts_with(&c.src));
@@ -397,7 +420,7 @@ impl Origami {
             cx.notify();
         }
         let was = (self.t, self.player.is_some());
-        if let Some((since, t0, player)) = self.player.as_ref().filter(|_| !self.scrubbing) {
+        if let Some((since, t0, player)) = self.player.as_ref().filter(|_| !self.scrubbing && !self.cued) {
             let t = player.as_ref().map_or(t0 + since.elapsed().as_secs_f64() * self.rate, Player::time);
             let mark = |m| self.marks.get(&m).copied();
             let (a, b) = mark('a').zip(mark('b')).filter(|_| self.looping).unwrap_or((0., self.tl.duration));
@@ -412,6 +435,7 @@ impl Origami {
                 self.t = self.end();
             }
         }
+        self.cue(cx);
         if let Some(job) = self.export.clone() {
             let (note, done) = mem::take(&mut *job.lock().unwrap());
             if !note.is_empty() {
@@ -473,7 +497,7 @@ fn fresh(focus: FocusHandle, recent: Vec<PathBuf>) -> Origami {
         pan: 0.,
         cursor: None,
         anchor: None,
-        picking: false,
+        picking: None,
         offers: (0, vec![]),
         pick: 0,
         slide: 0.,
@@ -493,12 +517,11 @@ fn fresh(focus: FocusHandle, recent: Vec<PathBuf>) -> Origami {
         tie: None,
         cord: None,
         lift: 0.,
+        climb: (0., 0.),
         key: None,
         slip: None,
         stage: Bounds::default(),
         dense: 1.,
-        disc: bitmap(knob::disc(), 300, 300),
-        strips: [0, 1, 2].map(|kind| bitmap(knob::strip(kind), 150, 150)),
         finding: None,
         hit: 0,
         modes: [false; 3],
@@ -542,6 +565,8 @@ fn fresh(focus: FocusHandle, recent: Vec<PathBuf>) -> Origami {
         reading: false,
         clash: false,
         player: None,
+        cued: false,
+        planning: false,
         assets: HashMap::new(),
         stamps: HashMap::new(),
         jobs: vec![],
@@ -563,11 +588,12 @@ fn fresh(focus: FocusHandle, recent: Vec<PathBuf>) -> Origami {
 }
 
 fn main() {
+    crash::guard();
+    origami_lang::serve(footprint);
     let Ok(script) = env::args().nth(1).map(fs::canonicalize).transpose() else {
         return eprintln!("usage: origami-app [script.js]");
     };
     let script = script.unwrap_or_default();
-    crash::guard();
     thread::spawn(Player::warm);
     let app = Application::new();
     app.on_open_urls(|urls| {
@@ -576,6 +602,7 @@ fn main() {
         }
     });
     app.run(move |cx: &mut App| {
+        let _ = cx.text_system().add_fonts(view::faces());
         let recent: Vec<PathBuf> = origami_lang::load(&mouse::recent())
             .unwrap_or_default()
             .lines()

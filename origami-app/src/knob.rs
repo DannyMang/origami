@@ -1,11 +1,14 @@
 use crate::{
-    Origami,
+    Origami, bitmap,
     view::{BLUE, BORDER, DIM, PANEL},
 };
-use gpui::{Context, Div, MouseButton, MouseDownEvent, Pixels, Point, Window, div, img, prelude::*, px, rgb, rgba};
+use gpui::{Context, Div, MouseButton, MouseDownEvent, Pixels, Point, RenderImage, Window, div, img, prelude::*, px, rgb, rgba};
 use origami_engine::tone;
 use origami_lang::Clip;
-use std::borrow::Cow;
+use std::{
+    borrow::Cow,
+    sync::{Arc, LazyLock},
+};
 
 pub struct Knob {
     pub label: String,
@@ -21,6 +24,9 @@ pub enum Turn {
     Wheel,
     Point(usize),
 }
+
+static DISC: LazyLock<Arc<RenderImage>> = LazyLock::new(|| bitmap(disc(), 300, 300));
+static STRIPS: LazyLock<[Arc<RenderImage>; 3]> = LazyLock::new(|| [0, 1, 2].map(|kind| bitmap(strip(kind), 150, 150)));
 
 const PAD: f32 = 200.;
 pub const TRACK: f32 = 160.;
@@ -62,7 +68,7 @@ fn paint(hue: f32, vivid: f32, light: f32) -> [u8; 3] {
     })
 }
 
-pub fn disc() -> Vec<u8> {
+fn disc() -> Vec<u8> {
     let mut px = vec![0; 300 * 300 * 4];
     for (i, p) in px.chunks_exact_mut(4).enumerate() {
         let (dx, dy) = ((i % 300) as f32 - 149.5, 149.5 - (i / 300) as f32);
@@ -73,7 +79,7 @@ pub fn disc() -> Vec<u8> {
     px
 }
 
-pub fn strip(kind: usize) -> Vec<u8> {
+fn strip(kind: usize) -> Vec<u8> {
     let mut px = vec![0; 150 * 150 * 4];
     for (i, p) in px.chunks_exact_mut(4).enumerate() {
         let x = (i % 150) as f32 / 149.;
@@ -143,7 +149,7 @@ fn scan(line: &str, call: &str, from: usize, end: usize) -> Vec<Knob> {
         let from = i;
         let mut found = None;
         match c {
-            b'(' => i = close(s, i).unwrap_or(end),
+            b'(' => i = close(&s[..end], i).unwrap_or(end),
             b'[' => square += 1,
             b']' => square -= 1,
             b',' if square == 0 && key.is_empty() => arg += 1,
@@ -203,24 +209,24 @@ fn scan(line: &str, call: &str, from: usize, end: usize) -> Vec<Knob> {
     out
 }
 
-pub fn calls(line: &str) -> Vec<(String, usize, usize, Vec<Knob>)> {
-    let s = line.as_bytes();
+pub fn calls(line: &str) -> impl Iterator<Item = (String, usize, usize, Vec<Knob>)> + '_ {
+    let (s, mut fuel) = (line.as_bytes(), 16 * line.len());
     let word = |c: &u8| c.is_ascii_alphanumeric() || *c == b'_';
-    let found = (0..s.len()).filter(|i| s[*i] == b'(').filter_map(|open| {
-        let name = open - s[..open].iter().rev().take_while(|c| word(c)).count();
-        let end = close(s, open)?;
+    (0..s.len()).filter(move |i| s[*i] == b'(').filter_map(move |open| {
+        let end = (fuel > 0).then(|| close(s, open)).flatten();
+        fuel = fuel.saturating_sub(end.unwrap_or(s.len()) - open);
+        let (end, name) = (end?, open - s[..open].iter().rev().take_while(|c| word(c)).count());
         Some((
             line[name..open].to_string(),
             name,
             end,
             scan(line, &line[name..open], open + 1, end),
         ))
-    });
-    found.collect()
+    })
 }
 
 pub fn knobs(line: &str, at: usize) -> Option<(String, usize, usize, Vec<Knob>)> {
-    let on = calls(line).into_iter().filter(|c| c.1 <= at && at <= c.2 && live(&c.0, &c.3));
+    let on = calls(line).filter(|c| c.1 <= at && at <= c.2 && live(&c.0, &c.3));
     let from = line.len() - line.trim_start().len();
     let loose = || (String::new(), from, line.len().saturating_sub(1), scan(line, "", from, line.len()));
     let (call, name, end, mut found) = on.max_by_key(|c| c.1).unwrap_or_else(loose);
@@ -488,7 +494,7 @@ impl Origami {
                     div()
                         .absolute()
                         .inset_0()
-                        .child(img(self.strips[i.saturating_sub(2)].clone()).size_full())
+                        .child(img(STRIPS[i.saturating_sub(2)].clone()).size_full())
                 });
                 let handle = |p: &(f32, f32)| dot(p.0, p.1, 14.).bg(rgb(ink)).border_2().border_color(rgb(0x1b1f25));
                 let handles: Vec<Div> = points.iter().map(handle).collect();
@@ -515,7 +521,7 @@ impl Origami {
                     None => (spot("hue").map_or(0., |k| k.value as f32), spot("amount").map_or(0., part)),
                 };
                 let (fx, fy) = (hue.to_radians().cos() * far * 0.5 + 0.5, hue.to_radians().sin() * far * 0.5 + 0.5);
-                let wheel = div().absolute().inset_0().child(img(self.disc.clone()).size_full());
+                let wheel = div().absolute().inset_0().child(img(DISC.clone()).size_full());
                 vec![wheel, dot(fx, fy, 12.).border_2().border_color(rgb(0x1b1f25)).bg(rgb(0xffffff))]
             }
         };
@@ -648,7 +654,7 @@ mod tests {
     #[test]
     fn finds() {
         let tied = "  .pos(title.pos.x, add(title2.pos.y, -0.06)).opacity(mul(title.opacity, 2)).scale(a1.scale)";
-        assert!(calls(tied).iter().all(|c| c.3.is_empty()));
+        assert!(calls(tied).all(|c| c.3.is_empty()));
         assert_eq!(labels("  clip.temperature(-10),", 12), [("0".into(), -10.)]);
         assert_eq!(labels("a.trim(\"0:10\", 30).speed(1.5)", 4), [("0".into(), 10.), ("1".into(), 30.)]);
         assert_eq!(labels("a.trim(\"0:10\", 30).speed(1.5)", 22), [("0".into(), 1.5)]);

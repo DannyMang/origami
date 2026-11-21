@@ -2,12 +2,13 @@ use std::{
     array,
     collections::HashMap,
     fs,
+    os::unix::fs::MetadataExt,
     sync::{Arc, LazyLock, Mutex},
     thread,
     time::SystemTime,
 };
 
-type Files = HashMap<(String, Option<SystemTime>), Option<Arc<Lut>>>;
+type Files = HashMap<(u64, u64, Option<SystemTime>), Option<Arc<Lut>>>;
 
 static FILES: LazyLock<Mutex<Files>> = LazyLock::new(Mutex::default);
 
@@ -71,7 +72,8 @@ impl Lut {
     }
 
     pub fn read(path: &str) -> Option<Arc<Self>> {
-        let key = (path.to_string(), fs::metadata(path).and_then(|m| m.modified()).ok());
+        let m = fs::metadata(path).ok()?;
+        let key = (m.dev(), m.ino(), m.modified().ok());
         let load = || Self::parse(&origami_lang::load(path.as_ref()).ok()?).map(Arc::new);
         FILES.lock().unwrap().entry(key).or_insert_with(load).clone()
     }
@@ -106,11 +108,11 @@ impl Lut {
         })
     }
 
-    pub fn apply(&self, px: &[u8]) -> Vec<u8> {
+    pub fn apply(&self, px: &[u8], mut out: Vec<u8>) -> Vec<u8> {
         let (n, t) = (self.n, self.t.iter().map(|&[r, g, b]| [b, g, r, 1.]).collect::<Vec<_>>());
         let [b, g, r] =
             [n * n, n, 1].map(|step| -> [(usize, f32); 256] { array::from_fn(|v| self.cell(v as f64 / 255.)).map(|(i, f)| (i * step, f)) });
-        let mut out = vec![0; px.len()];
+        out.resize(px.len(), 0);
         spread(&mut out, 4, |from, part| {
             for (p, s) in part.chunks_exact_mut(4).zip(px[from..].chunks_exact(4)) {
                 let [(i, fb), (j, fg), (k, fr)] = [b[s[0] as usize], g[s[1] as usize], r[s[2] as usize]];

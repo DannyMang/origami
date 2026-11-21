@@ -1,4 +1,4 @@
-use crate::preview::{Preview, lead};
+use crate::preview::{Preview, lead, learn};
 use crate::{grade, lut::Lut, shape, text};
 use anyhow::{Result, bail};
 use origami_lang::{Clip, Kind, Timeline, Val, ffmpeg, start, status};
@@ -73,10 +73,10 @@ pub fn halt() {
     live.into_iter().for_each(kill);
 }
 
-fn tether(pid: u32) -> Option<Child> {
+fn tether(pid: u32, part: &str) -> Option<Child> {
     start(
         Command::new("/bin/sh")
-            .args(["-c", &format!("read x; kill -9 {pid}")])
+            .args(["-c", "read x; kill -9 \"$0\"; /bin/rm -f -- \"$1\"", &pid.to_string(), part])
             .stdin(Stdio::piped())
             .stderr(Stdio::null()),
     )
@@ -156,6 +156,23 @@ fn piped(tl: &Timeline, o: &Opts) -> bool {
     span(tl, o) != (0., tl.duration) || !tl.clips.iter().all(|c| plain(c) && c.opacity == Val::Fixed(1.))
 }
 
+pub(crate) fn hold(tl: &Timeline, (w, h): (usize, usize), k: f64) -> usize {
+    let mut ends = vec![];
+    for c in tl.clips.iter().filter(|c| c.kind == Kind::Video && c.video) {
+        let (tw, th, ..) = place(c, (w as f64, h as f64), k);
+        let len = (tw as usize * th as usize * 4) as i64;
+        ends.extend([(c.start, len), (c.end, -len)]);
+    }
+    ends.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    let peak = ends.iter().scan(0, |s, e| {
+        *s += e.1;
+        Some(*s)
+    });
+    let peak = peak.fold(0, i64::max);
+    let most = ends.iter().map(|e| e.1).fold(0, i64::max);
+    ((peak + most) as usize).min((peak as usize).max(1 << 26))
+}
+
 pub fn live(c: &Clip, t: f64) -> bool {
     c.start <= t + 1e-6 && t + 1e-6 < c.end
 }
@@ -183,6 +200,7 @@ fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path, (k, (w, h)): (f64, (
     if video {
         f.push(format!("color=black:s={w}x{h}:r={}:d={}[b0]", tl.fps, tl.duration));
     }
+    learn(tl, from);
     for (i, c) in tl.clips.iter().enumerate().filter(|(_, c)| c.end > from) {
         let skip = (from - c.start).max(0.);
         let (len, on) = (
@@ -245,7 +263,7 @@ fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path, (k, (w, h)): (f64, (
             f.push(match solid {
                 true => {
                     let [r, g, b, _] = text::rgba(&c.src);
-                    let px = lut.map_or(vec![b, g, r], |l| l.apply(&[b, g, r, 255]));
+                    let px = lut.map_or(vec![b, g, r], |l| l.apply(&[b, g, r, 255], vec![]));
                     let shade = mask.map_or(String::new(), |m| format!("[d{i}];[d{i}][{m}:v]overlay={on}"));
                     let fill = format!("color=0x{:02x}{:02x}{:02x}", px[2], px[1], px[0]);
                     format!("[b{b0}]drawbox=w=iw:h=ih:{fill}:t=fill:{on}{shade}[b{}]", b0 + 1)
@@ -394,6 +412,17 @@ pub fn render(tl: &Timeline, out: &str, o: &Opts, mut progress: impl FnMut(f64))
             bail!("line {}: {file} is not a .cube file with a 0 to 1 domain", c.line);
         }
     }
+    let (k, size) = sized(tl, o);
+    if let Some(c) = tl.clips.iter().find(|c| {
+        let (w, h, ..) = place(c, (size.0 as f64, size.1 as f64), k);
+        w.max(h) > 16384.
+    }) {
+        bail!(
+            "line {}: {} would be drawn over 16384 pixels on a side at this export size: export at a smaller size or lower its size or scale",
+            c.line,
+            c.label
+        );
+    }
     let id = |p: &Path| fs::metadata(p).map(|m| (m.dev(), m.ino())).ok();
     if let Some((line, file)) = id(out.as_ref()).and_then(|o| tl.files.iter().find(|(_, f)| id(f) == Some(o))) {
         bail!(
@@ -417,12 +446,12 @@ pub fn render(tl: &Timeline, out: &str, o: &Opts, mut progress: impl FnMut(f64))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped()),
     )?;
-    let (pipe, size, pid, stuck) = (child.stdin.take(), sized(tl, o).1, child.id(), &AtomicBool::new(false));
+    let (pipe, pid, stuck) = (child.stdin.take(), child.id(), &AtomicBool::new(false));
     LIVE.lock().unwrap().push(pid);
     thread::scope(|s| {
         let (beat, pulse) = mpsc::channel();
         s.spawn(move || {
-            let tie = tether(pid);
+            let tie = tether(pid, part);
             if iter::repeat_with(|| pulse.recv_timeout(STALL)).find_map(Result::err) == Some(RecvTimeoutError::Timeout) {
                 stuck.store(true, Relaxed);
                 kill(pid);
@@ -436,7 +465,7 @@ pub fn render(tl: &Timeline, out: &str, o: &Opts, mut progress: impl FnMut(f64))
             s.spawn(move || take.iter().try_for_each(|px| pipe.write_all(&px).ok()));
             s.spawn(move || {
                 let (mut pv, fps) = (Preview::default(), tl.fps as f64);
-                pv.room = 1 << 26;
+                pv.room = hold(tl, size, k);
                 ((from * fps).round() as u32..(to * fps).round() as u32)
                     .try_for_each(|k| send.send(pv.frame(tl, k as f64 / fps, size)).ok())
             });
@@ -482,6 +511,7 @@ mod tests {
         footprint,
         tests::{TIDY, film, scratch},
     };
+    use std::time::Instant;
 
     // Slow and very fast motion with sound, a fade longer than its clip and layers too small to see export
     // and play, two exports at once neither disturb each other nor leave files behind, and a failing export
@@ -523,11 +553,15 @@ mod tests {
         });
         assert_ne!(fs::read(dir.join("one.mp4")).unwrap(), fs::read(dir.join("two.mp4")).unwrap());
         let mine = format!("origami-{}-", process::id());
-        let left = fs::read_dir(env::temp_dir())
-            .unwrap()
-            .flatten()
-            .filter(|e| e.file_name().to_string_lossy().starts_with(&mine));
-        assert_eq!(left.count(), 0);
+        let left = || {
+            let all = fs::read_dir(env::temp_dir()).unwrap().flatten();
+            all.filter(|e| e.file_name().to_string_lossy().starts_with(&mine)).count()
+        };
+        let since = Instant::now();
+        while left() > 0 && since.elapsed() < Duration::from_secs(30) {
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(left(), 0);
         let gone = tl("text('a').for(1)\nvideo('b.mp4').trim(0, 1)");
         fs::remove_file(dir.join("b.mp4")).unwrap();
         fs::write(out("gone.mp4"), "old").unwrap();
@@ -554,8 +588,8 @@ mod tests {
     }
 
     // Export options should change only what they say: a range starts on its first frame and keeps its
-    // length, a size scales the whole frame but never past 16384 on a side, audio can be left out, and each
-    // format writes its codec.
+    // length, a size scales the whole frame but never past 16384 on a side and refuses, naming its line, a
+    // clip it would draw past that, audio can be left out, and each format writes its codec.
     #[test]
     fn exports_with_options() {
         let _tidy = TIDY.read();
@@ -611,6 +645,10 @@ mod tests {
             &pro,
         ]));
         assert!(String::from_utf8_lossy(&codec.unwrap().stdout).starts_with("prores"));
+        fs::write(dir.join("huge.js"), "settings({ size: [64, 36] })\ntext('A', { size: 9000 })").unwrap();
+        let huge = origami_lang::eval(&dir.join("huge.js"), false, footprint).unwrap();
+        let e = render(&huge, &big, &Opts { height: 2160, ..opts }, |_| {}).unwrap_err().to_string();
+        assert!(e.starts_with("line 2: A would be drawn over 16384 pixels on a side"), "{e}");
     }
 
     // A clip that starts on a timeline frame after lengths such as 0.1 + 0.2, which add up to a hair
@@ -730,16 +768,18 @@ mod tests {
         assert_eq!(e, format!("export of {out} stopped: ffmpeg made no progress for 5 seconds"));
     }
 
-    // An export's ffmpeg should be killed soon after its tie to the program is cut, which the system does
-    // when the program dies, even by force quit.
+    // An export's ffmpeg should be killed, and the hidden file it was writing removed, soon after its tie
+    // to the program is cut, which the system does when the program dies, even by force quit.
     #[test]
     fn dies_with_the_program() {
+        let part = scratch("tether").join(".00ff.it's \"$HOME\" $(x).mp4");
+        fs::write(&part, "half").unwrap();
         let args = ["-v", "error", "-re", "-f", "lavfi", "-i", "color=d=60", "-f", "null", "-"];
         let mut ff = start(ffmpeg().args(args)).unwrap();
-        drop(tether(ff.id()));
+        drop(tether(ff.id(), &part.to_string_lossy()));
         let gone = (0..500).any(|_| {
             thread::sleep(Duration::from_millis(10));
-            ff.try_wait().unwrap().is_some()
+            ff.try_wait().unwrap().is_some() && !part.exists()
         });
         let _ = ff.kill();
         assert!(gone);

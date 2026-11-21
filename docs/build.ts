@@ -59,6 +59,7 @@ marked.use({
       return lang === "origami" ? pre + player("video/" + render(text)) + "\n" : pre
     },
     image({ href, text }) {
+      if (!href.startsWith("media/") || href.split("/").includes("..")) throw new Error(`images must be under media/: ${href}`)
       mkdirSync(dirname(join(dist, href)), { recursive: true })
       cpSync(join(root, href), join(dist, href))
       return /\.(mp4|webm|mov)$/.test(href) ? player(href, text) : false
@@ -67,6 +68,7 @@ marked.use({
 })
 
 mkdirSync(videos, { recursive: true })
+cpSync(join(root, "fonts"), join(dist, "fonts"), { recursive: true })
 const site = readdirSync(pages).sort().map((f, i) => {
   page = { file: i ? f.replace(/^\d+-|\.md$/g, "") + ".html" : "index.html", title: "", name: "", links: [], body: "" }
   page.body = marked.parse(readFileSync(join(pages, f), "utf8")) as string

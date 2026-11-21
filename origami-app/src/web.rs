@@ -1,11 +1,12 @@
 use crate::{
     Origami,
-    motion::{Form, Link, ties},
+    motion::{Form, Link, name, ties},
     scene::title,
     view::{BLUE, BORDER, DIM, MUTED, PANEL, TEXT, tint},
 };
 use gpui::{App, Bounds, Context, Div, MouseButton, PathBuilder, Pixels, Window, canvas, div, fill, point, prelude::*, px, rgb, size};
 use origami_lang::Val;
+use std::collections::{HashMap, HashSet};
 
 const WIDE: f32 = 196.;
 const HEAD: f32 = 24.;
@@ -13,17 +14,38 @@ const ROW: f32 = 22.;
 const GAP: (f32, f32) = (112., 22.);
 const PAD: f32 = 28.;
 
+fn firsts(names: &[Option<String>]) -> HashMap<&str, usize> {
+    names
+        .iter()
+        .enumerate()
+        .rev()
+        .filter_map(|(i, n)| Some((n.as_deref()?, i)))
+        .collect()
+}
+
 pub fn depths(names: &[Option<String>], ties: &[Vec<(&'static str, Link)>]) -> Vec<usize> {
-    let mut deep = vec![0; names.len()];
-    for _ in 0..names.len() {
-        for i in 0..names.len() {
-            let from = ties[i]
-                .iter()
-                .filter_map(|(_, l)| names.iter().position(|n| n.as_ref() == Some(&l.clip)));
-            deep[i] = from.filter(|j| *j != i).map(|j| deep[j] + 1).max().unwrap_or(0).min(names.len());
+    let (find, n) = (firsts(names), names.len());
+    let from = |i: usize| {
+        ties[i]
+            .iter()
+            .filter_map(|(_, l)| find.get(l.clip.as_str()).copied())
+            .filter(move |j| *j != i)
+    };
+    let (mut deep, mut busy) = (vec![None; n], vec![false; n]);
+    for root in 0..n {
+        let mut stack = vec![root];
+        while let Some(&i) = stack.last().filter(|i| deep[**i].is_none()) {
+            busy[i] = true;
+            match from(i).find(|j| deep[*j].is_none() && !busy[*j]) {
+                Some(j) => stack.push(j),
+                None => {
+                    deep[i] = Some(from(i).map(|j| deep[j].map_or(n, |d: usize| d + 1)).max().unwrap_or(0).min(n));
+                    (busy[i], _) = (false, stack.pop());
+                }
+            }
         }
     }
-    deep
+    deep.into_iter().flatten().collect()
 }
 
 pub fn seats(deep: &[usize], homes: &[u32], tall: &[f32]) -> Vec<(f32, f32)> {
@@ -46,15 +68,14 @@ impl Origami {
     }
 
     pub fn web(&mut self, room: (f32, f32), cx: &mut Context<Self>) -> Div {
-        let (tl, text) = (self.tl.clone(), self.lines.join("\n"));
-        let names: Vec<Option<String>> = tl.clips.iter().map(|c| self.named(c)).collect();
-        let tied = tl
-            .clips
-            .iter()
-            .map(|c| self.offset(c).map_or(vec![], |from| ties(&text, from, c.kind)));
+        let (tl, (text, at)) = (self.tl.clone(), self.sites());
+        let names = tl.clips.iter().zip(&at).map(|(c, f)| Some(name(&text, (*f)?, c.kind)?.to_string()));
+        let names: Vec<Option<String>> = names.collect();
+        let tied = tl.clips.iter().zip(&at).map(|(c, f)| f.map_or(vec![], |f| ties(&text, f, c.kind)));
         let tied: Vec<Vec<(&'static str, Link)>> = tied.collect();
-        let source = |l: &Link| names.iter().position(|n| n.as_ref() == Some(&l.clip));
-        let fed: Vec<(usize, &str)> = tied.iter().flatten().filter_map(|(_, l)| Some((source(l)?, l.attr))).collect();
+        let find = firsts(&names);
+        let source = |l: &Link| find.get(l.clip.as_str()).copied();
+        let fed: HashSet<(usize, &str)> = tied.iter().flatten().filter_map(|(_, l)| Some((source(l)?, l.attr))).collect();
         let listed = tl.clips.iter().enumerate().map(|(i, c)| {
             let live = |n: &str| c.vals().any(|v| v.0 == n && matches!(v.1, Val::Frames(..)));
             let shown = |r: &crate::motion::Row| {
@@ -67,7 +88,7 @@ impl Origami {
                 };
                 Some((r.name, text, matches!(r.form, Form::Keyed(_) | Form::Linked(_))))
             };
-            self.rows(c).iter().filter_map(shown).collect::<Vec<_>>()
+            self.rows_at(c, &text, at[i]).iter().filter_map(shown).collect::<Vec<_>>()
         });
         let listed: Vec<Vec<(&'static str, String, bool)>> = listed.collect();
         let tall: Vec<f32> = listed.iter().map(|l| HEAD + l.len().max(1) as f32 * ROW).collect();
@@ -232,7 +253,8 @@ mod tests {
     use origami_lang::Kind;
 
     // In the Graph tab, a clip that follows another should be drawn one column to its right, so
-    // connections read left to right.
+    // connections read left to right, clips in a loop of follows should go to the last column and a
+    // chain of 2,000 clips should be laid out at once.
     #[test]
     fn lays_out_by_depth() {
         let src = "const shot = color(\"#203040\").for(6)
@@ -265,5 +287,57 @@ stack(shot, title, text(\"loose\").scale(title.scale), tag, dot)";
             },
         )]];
         assert_eq!(depths(&[Some("a".into())], &own), [0]);
+        let tie = |c: &str| {
+            (
+                "x",
+                Link {
+                    clip: c.into(),
+                    attr: "x",
+                    wire: None,
+                },
+            )
+        };
+        let names: Vec<Option<String>> = (0..2000).map(|i| Some(format!("c{i}"))).collect();
+        let ring = [vec![tie("c1")], vec![tie("c0")], vec![tie("c0"), tie("c9")], vec![]];
+        assert_eq!(depths(&names[..4], &ring), [4, 4, 4, 0]);
+        let chain: Vec<_> = (0..2000).map(|i| vec![tie(&format!("c{}", i + 1))]).collect();
+        let start = std::time::Instant::now();
+        assert_eq!(depths(&names, &chain), (0..2000).rev().collect::<Vec<_>>());
+        assert!(start.elapsed().as_secs() < 1);
+    }
+
+    // The Graph tab, the follow menu and going to a followed clip's source should take time that
+    // grows with the clips, not with clips times script, on 20,000 clips that each follow the one
+    // above, including clips written to follow another's whole position.
+    #[gpui::test]
+    fn many_clips_graph_quickly(cx: &mut gpui::TestAppContext) {
+        let path = std::env::temp_dir().join("origami-graph-test.js");
+        std::fs::write(&path, "text('t')").unwrap();
+        let mut tl = origami_lang::eval(&path, false, origami_engine::footprint).unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| crate::fresh(cx.focus_handle(), vec![]));
+        cx.update(|window, cx| {
+            view.update(cx, |o, cx| {
+                o.lines = (0..20000)
+                    .map(|i| format!("const c{} = text('t').pos(c{i}.pos).opacity(c{i}.opacity)", i + 1))
+                    .collect();
+                let each = |home| origami_lang::Clip {
+                    home,
+                    z: home,
+                    ..tl.clips[0].clone()
+                };
+                tl.clips = (1..=20000).map(each).collect();
+                (o.tl, o.tie, o.motion, o.menu) = (std::sync::Arc::new(tl), Some((20000, "opacity")), true, "follow");
+                let start = std::time::Instant::now();
+                o.web((800., 600.), cx);
+                let graph = start.elapsed().as_secs_f32();
+                assert!(o.wires(window, cx).is_some());
+                let menu = start.elapsed().as_secs_f32() - graph;
+                o.trace((20000, "opacity"));
+                let source = start.elapsed().as_secs_f32() - graph - menu;
+                assert_eq!(o.sel, Some(19999));
+                let most = if cfg!(debug_assertions) { 10. } else { 1. };
+                assert!([graph, menu, source].iter().all(|&t| t < most), "{graph} {menu} {source}");
+            })
+        });
     }
 }

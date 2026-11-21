@@ -2,14 +2,58 @@ use std::{
     env,
     ffi::OsStr,
     fs,
-    io::{self, ErrorKind::NotFound},
-    os::unix::fs::PermissionsExt,
+    io::{
+        self,
+        ErrorKind::{Interrupted, NotFound},
+        Read,
+    },
+    os::unix::{fs::PermissionsExt, process::ExitStatusExt},
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Output, Stdio},
-    sync::{LazyLock, Mutex, PoisonError},
+    sync::{LazyLock, Mutex, Once, PoisonError},
+    thread,
+    time::{Duration, Instant},
 };
 
 static SPAWN: Mutex<()> = Mutex::new(());
+static QUIET: Mutex<Vec<(u32, Instant)>> = Mutex::new(vec![]);
+const STILL: Duration = Duration::from_secs(if cfg!(test) { 3 } else { 20 });
+
+unsafe extern "C" {
+    fn kill(pid: i32, sig: i32) -> i32;
+}
+
+pub struct Watch(u32);
+
+pub fn watch(pid: u32) -> Watch {
+    static WATCHER: Once = Once::new();
+    WATCHER.call_once(|| {
+        thread::spawn(|| {
+            loop {
+                thread::sleep(STILL / 8);
+                let quiet = QUIET.lock().unwrap_or_else(PoisonError::into_inner);
+                for (pid, _) in quiet.iter().filter(|q| q.1.elapsed() > STILL) {
+                    unsafe { kill(*pid as i32, 9) };
+                }
+            }
+        });
+    });
+    QUIET.lock().unwrap_or_else(PoisonError::into_inner).push((pid, Instant::now()));
+    Watch(pid)
+}
+
+impl Watch {
+    pub fn beat(&self) {
+        let mut quiet = QUIET.lock().unwrap_or_else(PoisonError::into_inner);
+        quiet.iter_mut().filter(|q| q.0 == self.0).for_each(|q| q.1 = Instant::now());
+    }
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        QUIET.lock().unwrap_or_else(PoisonError::into_inner).retain(|q| q.0 != self.0);
+    }
+}
 
 static TOOLS: LazyLock<[PathBuf; 2]> = LazyLock::new(|| {
     let exe = env::current_exe()
@@ -35,7 +79,7 @@ pub fn ffmpeg() -> Command {
 
 pub fn ffprobe() -> Command {
     let mut cmd = Command::new(&TOOLS[1]);
-    cmd.args(["-protocol_whitelist", "file"]);
+    cmd.args(["-protocol_whitelist", "file", "-max_alloc", "268435456"]);
     cmd
 }
 
@@ -53,7 +97,27 @@ pub fn missing() -> Option<String> {
     TOOLS.iter().filter(|t| !t.is_file()).find_map(|t| absent(t.as_os_str()))
 }
 
+pub fn playable(path: &Path) -> io::Result<()> {
+    let named = path
+        .extension()
+        .is_some_and(|e| ["m3u8", "m3u"].iter().any(|x| e.eq_ignore_ascii_case(x)));
+    let head = fs::metadata(path).ok().filter(|m| m.is_file()).map(|_| {
+        let mut head = vec![];
+        let _ = fs::File::open(path).and_then(|f| f.take(8).read_to_end(&mut head));
+        head
+    });
+    match head {
+        Some(h) if named || h.starts_with(b"#EXTM3U") || h.starts_with(b"ffconcat") => {
+            Err(io::Error::other("playlist files are not supported: use a video or sound file"))
+        }
+        _ => Ok(()),
+    }
+}
+
 pub fn start(cmd: &mut Command) -> io::Result<Child> {
+    if absent(cmd.get_program()).is_some() {
+        cmd.get_args().try_for_each(|a| playable(Path::new(a)))?;
+    }
     let _one = SPAWN.lock().unwrap_or_else(PoisonError::into_inner);
     let made = cmd.spawn();
     made.map_err(|e| {
@@ -67,21 +131,60 @@ pub fn status(cmd: &mut Command) -> io::Result<ExitStatus> {
     start(cmd)?.wait()
 }
 
+fn drain(pipe: Option<impl Read>, seen: &Watch) -> Vec<u8> {
+    let (mut v, mut buf) = (vec![], vec![0; 1 << 16]);
+    if let Some(mut p) = pipe {
+        loop {
+            match p.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => v.extend_from_slice(&buf[..n]),
+                Err(e) if e.kind() == Interrupted => {}
+                Err(_) => break,
+            }
+            seen.beat();
+        }
+    }
+    v
+}
+
 pub fn output(cmd: &mut Command) -> io::Result<Output> {
-    start(cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()))?.wait_with_output()
+    let mut child = start(cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()))?;
+    let (seen, out, err) = (watch(child.id()), child.stdout.take(), child.stderr.take());
+    let (stdout, stderr) = thread::scope(|s| {
+        let err = s.spawn(|| drain(err, &seen));
+        (drain(out, &seen), err.join().unwrap_or_default())
+    });
+    drop(seen);
+    let status = child.wait()?;
+    let name = Path::new(cmd.get_program()).file_name().unwrap_or_default().to_string_lossy();
+    match status.signal() {
+        Some(9) => Err(io::Error::other(format!(
+            "{name} was stopped after {} seconds without output",
+            STILL.as_secs()
+        ))),
+        _ => Ok(Output { status, stdout, stderr }),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{
-        sync::{
-            atomic::{AtomicBool, Ordering::Relaxed},
-            mpsc,
-        },
-        thread,
-        time::Duration,
+    use std::sync::{
+        atomic::{AtomicBool, Ordering::Relaxed},
+        mpsc,
     };
+
+    // A program that sends nothing for too long is stopped and the call says so, while one that keeps
+    // talking may run longer than that.
+    #[test]
+    fn silent_programs_are_stopped() {
+        let from = Instant::now();
+        let said = output(Command::new("sleep").arg("60")).unwrap_err().to_string();
+        assert_eq!(said, "sleep was stopped after 3 seconds without output");
+        assert!(from.elapsed() < STILL * 2);
+        let chat = "for i in 1 2 3 4 5 6 7 8; do echo $i; sleep 0.5; done";
+        assert_eq!(output(Command::new("/bin/sh").args(["-c", chat])).unwrap().stdout.len(), 16);
+    }
 
     // Reading a short program's output should end when that program ends, however many long-lived
     // programs other threads start at the same moment.
@@ -109,6 +212,40 @@ mod tests {
             })
         };
         assert!((0..12).all(round));
+    }
+
+    // A playlist, known by its name or its first bytes, is refused before ffmpeg or ffprobe starts, while
+    // films, files not made yet and named pipes are passed on unread.
+    #[test]
+    fn playlists_never_reach_ffmpeg() {
+        let dir = env::temp_dir().join("origami-lang-lists");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let film = dir.join("a.mp4");
+        assert!(
+            status(ffmpeg().args(["-v", "error", "-f", "lavfi", "-i", "color=s=16x16:d=1"]).arg(&film))
+                .unwrap()
+                .success()
+        );
+        let lists = [
+            ("live.M3U8", "a.mp4"),
+            ("a.m3u", ""),
+            ("hls.mp4", "#EXTM3U\n"),
+            ("cat.mov", "ffconcat version 1.0\nfile a.mp4\n"),
+        ];
+        for (name, text) in lists {
+            fs::write(dir.join(name), text).unwrap();
+            for cmd in [
+                ffprobe().arg(dir.join(name)),
+                ffmpeg().arg("-i").arg(dir.join(name)).args(["-f", "null", "-"]),
+            ] {
+                let said = output(cmd).unwrap_err().to_string();
+                assert_eq!(said, "playlist files are not supported: use a video or sound file");
+            }
+        }
+        assert!(output(ffprobe().arg(&film)).unwrap().status.success());
+        assert!(status(Command::new("mkfifo").arg(dir.join("pipe.m3u8"))).unwrap().success());
+        assert!(playable(&dir.join("pipe.m3u8")).is_ok() && playable(&dir.join("new.m3u8")).is_ok());
     }
 
     // A missing ffmpeg or ffprobe should say in plain words how to install it, and any other missing

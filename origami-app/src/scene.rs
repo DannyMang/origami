@@ -1,7 +1,7 @@
 use crate::{
     Origami,
     complete::faces,
-    motion::{ATTRS, Cord, FOLLOWS, Form, Link, Pull, Row, STILL, curve, secs},
+    motion::{ATTRS, Cord, FOLLOWS, Form, Link, Pull, Row, STILL, curve, name, secs},
     view::{BAR, BG, BLUE, BORDER, DIM, MUTED, ORANGE, PANEL, RULER, TEXT, tint},
 };
 use gpui::{
@@ -844,8 +844,14 @@ impl Origami {
                 .child(item("break", Self::sever, cx));
             return Some(menu.children(maths));
         }
-        let above = self.tl.clips.iter().filter(|c| c.home < me.home && c.kind != Kind::Sound);
-        let mut named: Vec<(&Clip, String)> = above.filter_map(|c| Some((c, self.named(c)?))).collect();
+        let (text, sites) = self.sites();
+        let above = self
+            .tl
+            .clips
+            .iter()
+            .zip(sites)
+            .filter(|(c, _)| c.home < me.home && c.kind != Kind::Sound);
+        let mut named: Vec<(&Clip, String)> = above.filter_map(|(c, f)| Some((c, name(&text, f?, c.kind)?.into()))).collect();
         named.dedup_by_key(|n| n.0.home);
         let both = ["pos"].into_iter().filter(|_| at.1.len() == 1);
         let lines = named.iter().map(|(c, name)| {

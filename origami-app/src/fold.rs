@@ -1,4 +1,5 @@
 use crate::Origami;
+use std::collections::HashSet;
 
 pub struct Region {
     pub start: usize,
@@ -48,13 +49,19 @@ impl Origami {
                 });
             }
         }
+        let (mut ends, mut open, mut d) = (vec![None; lines.len()], vec![], 0);
+        for (j, l) in lines.iter().enumerate() {
+            let before = d;
+            d += depth(l);
+            while let Some(&(i, _)) = open.last().filter(|o: &&(usize, i32)| o.1 >= d) {
+                (ends[i], _) = (Some(j), open.pop());
+            }
+            if d > before {
+                open.push((j, before));
+            }
+        }
         for (i, _) in lines.iter().enumerate().filter(|(_, l)| want(l) && depth(l) > 0) {
-            let mut d = 0;
-            let close = lines[i..].iter().position(|l| {
-                d += depth(l);
-                d <= 0
-            });
-            if let Some(n) = close.filter(|n| *n > 0) {
+            if let Some(n) = ends[i].map(|e| e - i) {
                 let note = format!("\u{2026} {} lines {}", n - 1, lines[i + n].trim());
                 out.push(Region {
                     start: i,
@@ -72,13 +79,16 @@ impl Origami {
     }
 
     fn shut(&self) -> Vec<Region> {
-        self.spans(|l| self.folded.contains(l))
+        let folded: HashSet<&String> = self.folded.iter().collect();
+        self.spans(|l| folded.contains(l))
     }
 
     pub fn hidden(&self) -> Vec<bool> {
-        let mut hidden = vec![false; self.lines.len()];
-        for r in self.shut() {
-            hidden[r.start + 1..=r.end].fill(true);
+        let (mut hidden, mut shut, mut reach) = (vec![false; self.lines.len()], self.shut(), 0);
+        shut.sort_by_key(|r| r.start);
+        for r in shut {
+            hidden[(r.start + 1).max(reach).min(r.end + 1)..=r.end].fill(true);
+            reach = reach.max(r.end + 1);
         }
         hidden
     }
@@ -132,5 +142,25 @@ mod tests {
         assert_eq!(super::floor(&folded, 3), 1);
         assert_eq!(super::floor(&folded, 2), 4);
         assert_eq!(super::floor(&[], 36), 0);
+    }
+
+    // Working out folds should take moments on 100,000 lines that each open a bracket, and folding
+    // every brace of a deep nest should hide everything inside the outermost one.
+    #[gpui::test]
+    fn huge_scripts_fold_quickly(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = cx.add_window_view(|_, cx| crate::fresh(cx.focus_handle(), vec![]));
+        view.update(cx, |o, _| {
+            let start = std::time::Instant::now();
+            o.lines = vec!["f(".to_string(); 100_000];
+            assert!(o.regions().is_empty());
+            o.lines = ["{", "}"].iter().flat_map(|b| vec![b.to_string(); 50_000]).collect();
+            o.fold_all(false);
+            let hidden = o.hidden();
+            assert_eq!(
+                (o.folded.len(), hidden.iter().filter(|h| **h).count(), hidden[0]),
+                (50_000, 99_999, false)
+            );
+            assert!(start.elapsed().as_secs() < 2);
+        });
     }
 }

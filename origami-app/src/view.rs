@@ -11,11 +11,13 @@ use crate::{
 };
 use gpui::{
     App, Bounds, ClipboardItem, Context, Div, FontWeight, HighlightStyle, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ObjectFit, ParentElement, PathBuilder, Pixels, Render, ScrollWheelEvent, Styled, StyledImage, StyledText,
-    Window, canvas, deferred, div, img, point, prelude::*, px, relative, rgb, rgba,
+    MouseMoveEvent, MouseUpEvent, ObjectFit, ParentElement, Path, PathBuilder, Pixels, Render, ScrollWheelEvent, Styled, StyledImage,
+    StyledText, Window, canvas, deferred, div, img, point, prelude::*, px, relative, rgb, rgba,
 };
 use origami_lang::{Clip, Kind, Timeline};
 use std::{
+    borrow::Cow,
+    cell::RefCell,
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
     mem,
@@ -27,6 +29,7 @@ use std::{
 
 pub type Scans = (Vec<Region>, Vec<bool>, Vec<Issue>, Vec<(usize, usize, usize)>);
 
+pub const FONT: &str = "Paper Mono";
 pub const BG: u32 = 0x282c33;
 pub const PANEL: u32 = 0x2f343e;
 pub const BAR: u32 = 0x3b414d;
@@ -49,7 +52,7 @@ pub const RULER: f32 = 22.;
 const HELP: &str =
     "mouse: drag the ruler to move the playhead, click a clip to select, drag to move, drag edges to trim, delete removes it, cmd+z undo, cmd+shift+z redo, f full screen
 right-click (two-finger click) a clip for a menu: s splits it at the playhead, cmd+x cut, cmd+c copy, cmd+v paste at the playhead, cmd+d duplicate
-click the script to type in it, cmd+s saves and applies, esc leaves     scroll zooms the timeline     drag pane edges to resize     cmd+ cmd-  code size     cmd+0  reset layout     cmd+f  search
+click the script to type in it, cmd+s saves and applies, esc leaves     scroll zooms the timeline, or with cmd when its lanes scroll     drag pane edges to resize     cmd+ cmd-  code size     cmd+0  reset layout     cmd+f  search
 the red dot records a voiceover from the playhead while it plays: space or the stop square keeps it, esc discards it; the microphone picks the input
 Motion tab: click a clip to open its properties, drag a number sideways to change it, click a diamond to add or remove a key at the playhead
 click a key for its time, value and ease, drag it to move it, delete removes it     Graph Editor: drag keys and curve handles
@@ -75,11 +78,11 @@ fn tab(label: impl IntoElement) -> Div {
         .child(label)
 }
 
-pub fn tokens(s: &str) -> Vec<(Range<usize>, HighlightStyle)> {
-    let (mut out, mut i) = (vec![], 0);
-    while i < s.len() {
+pub fn tokens(s: &str) -> impl Iterator<Item = (Range<usize>, HighlightStyle)> + '_ {
+    let mut i = 0;
+    std::iter::from_fn(move || {
         let rest = &s[i..];
-        let c = rest.chars().next().unwrap();
+        let c = rest.chars().next()?;
         let until = |f: fn(char) -> bool| rest.find(f).unwrap_or(rest.len());
         let (n, color) = match c {
             _ if rest.starts_with("//") => (rest.len(), COMMENT),
@@ -101,24 +104,54 @@ pub fn tokens(s: &str) -> Vec<(Range<usize>, HighlightStyle)> {
             }
             _ => (until(|c| c.is_alphanumeric() || "\"'_/".contains(c)).max(c.len_utf8()), CODE),
         };
-        out.push((i..i + n, rgb(color).into()));
         i += n;
-    }
-    out
+        Some((i - n..i, rgb(color).into()))
+    })
+}
+
+pub fn faces() -> Vec<Cow<'static, [u8]>> {
+    let faces: [&[u8]; 3] = [
+        include_bytes!("../fonts/PaperMono-Regular.ttf"),
+        include_bytes!("../fonts/PaperMono-Medium.ttf"),
+        include_bytes!("../fonts/PaperMono-Bold.ttf"),
+    ];
+    faces.map(Cow::Borrowed).into()
+}
+
+fn shown(s: &str, cols: Range<usize>) -> (usize, StyledText) {
+    let edge = |c: usize| s.char_indices().nth(c).map_or(s.len(), |x| x.0);
+    let (lead, a, b) = (edge(cols.start.saturating_sub(1 << 12)), edge(cols.start), edge(cols.end));
+    let marks = tokens(&s[lead..]).map(|(r, h)| (r.start + lead..r.end + lead, h));
+    let marks = marks.skip_while(|t| t.0.end <= a).take_while(|t| t.0.start < b);
+    let marks = marks.map(|(r, h)| (r.start.max(a) - a..r.end.min(b) - a, h));
+    (s[..a].chars().count(), StyledText::new(s[a..b].to_string()).with_highlights(marks))
+}
+
+thread_local! {
+    static WAVES: RefCell<Vec<(Bounds<Pixels>, Vec<f32>, Path<Pixels>)>> = RefCell::default();
 }
 
 pub fn wave(bars: Vec<f32>, ink: u32) -> Div {
     let draw = move |b: Bounds<Pixels>, _, window: &mut Window, _: &mut App| {
-        let w = b.size.width / bars.len().max(1) as f32;
-        let edge = |i: usize, side: f32| {
-            let y = b.origin.y + b.size.height * (0.5 + side * bars[i].max(0.04) / 2.);
-            [point(b.origin.x + w * i as f32, y), point(b.origin.x + w * (i + 1) as f32, y)]
-        };
-        let top = (0..bars.len()).flat_map(|i| edge(i, -1.));
-        let bottom = (0..bars.len()).rev().flat_map(|i| edge(i, 1.).into_iter().rev());
-        let mut shape = PathBuilder::fill();
-        shape.add_polygon(&top.chain(bottom).collect::<Vec<_>>(), true);
-        if let Ok(shape) = shape.build() {
+        let kept = WAVES.with_borrow(|k| k.iter().find(|k| k.0 == b && k.1 == bars).map(|k| k.2.clone()));
+        let shape = kept.or_else(|| {
+            let w = b.size.width / bars.len().max(1) as f32;
+            let edge = |i: usize, side: f32| {
+                let y = b.origin.y + b.size.height * (0.5 + side * bars[i].max(0.04) / 2.);
+                [point(b.origin.x + w * i as f32, y), point(b.origin.x + w * (i + 1) as f32, y)]
+            };
+            let top = (0..bars.len()).flat_map(|i| edge(i, -1.));
+            let bottom = (0..bars.len()).rev().flat_map(|i| edge(i, 1.).into_iter().rev());
+            let mut shape = PathBuilder::fill();
+            shape.add_polygon(&top.chain(bottom).collect::<Vec<_>>(), true);
+            let shape = shape.build().ok()?;
+            WAVES.with_borrow_mut(|k| {
+                k.push((b, bars, shape.clone()));
+                k.drain(..k.len().saturating_sub(64));
+            });
+            Some(shape)
+        });
+        if let Some(shape) = shape {
             window.paint_path(shape, rgba(ink << 8 | 0xb0));
         }
     };
@@ -413,7 +446,9 @@ impl Origami {
         let tall = |video: bool| if video { 56. } else { 46. };
         let live = self.growing();
         let room = rows.iter().map(|r| tall(r.0)).sum::<f32>() + live.iter().map(|_| tall(false)).sum::<f32>();
-        let fit = ((self.dock - 30.) / room).min(1.);
+        let fit = ((self.dock - 30.) / room).clamp(0.5, 1.);
+        self.climb.1 = (room * fit - self.dock + 30.).max(0.);
+        self.climb.0 = self.climb.0.clamp(0., self.climb.1);
         let step = [1., 2., 5., 10., 15., 30., 60., 120., 300., 600.]
             .into_iter()
             .find(|s| d / s <= 10.)
@@ -532,7 +567,8 @@ impl Origami {
             .children(select)
             .child(div().absolute().top_0().bottom_0().left(x(self.t)).w(px(1.)).bg(rgb(ink)));
         let flag = div().absolute().top_0().left(px(self.lead())).right_3().children(head);
-        [ruler].into_iter().chain(rows).chain([line, flag]).collect()
+        let rows = div().mt(px(-self.climb.0)).flex().flex_col().children(rows);
+        vec![ruler, div().flex_1().overflow_hidden().child(rows), line, flag]
     }
 
     fn timeline(&mut self, tl: &Timeline, focus: Option<&Clip>, per: f64, wide: f32, cx: &mut Context<Self>) -> Div {
@@ -599,7 +635,10 @@ impl Origami {
         let name = self.script.file_name().unwrap_or_default().to_string_lossy().to_string();
         let scans = self.scans();
         let (regions, hidden, issues, found) = &*scans;
+        let seen = (self.left / self.glyph()) as usize;
+        let seen = seen.saturating_sub(64)..seen + (self.side / self.glyph()) as usize + 64;
         let row = |(i, s): (usize, &String)| {
+            let (from, text) = shown(s, seen.clone());
             let on = i + 1 == active;
             let region = regions.iter().find(|r| r.start == i);
             let shut = region.is_some() && self.folded.contains(s);
@@ -641,7 +680,7 @@ impl Origami {
                         }
                         this.blink(cx);
                         this.place(e.position, window);
-                        (this.anchor, this.picking) = (this.cursor, e.click_count == 1);
+                        (this.anchor, this.picking) = (this.cursor, Some(e.position).filter(|_| e.click_count == 1));
                         this.widen(e.click_count);
                         if e.click_count == 3 {
                             this.glance(i, cx);
@@ -655,9 +694,9 @@ impl Origami {
                     }),
                 )
                 .children(
-                    found[found.partition_point(|h| h.0 < i)..]
+                    found[found.partition_point(|h| (h.0, h.1 + h.2) <= (i, seen.start))..]
                         .iter()
-                        .take_while(|h| h.0 == i)
+                        .take_while(|h| h.0 == i && h.1 < seen.end)
                         .map(|h| {
                             div()
                                 .absolute()
@@ -684,7 +723,8 @@ impl Origami {
                         self.inset() + x.span.0 as f32 * self.glyph(),
                         (x.span.1 - x.span.0) as f32 * self.glyph(),
                     );
-                    (0..(wide / 3.) as usize).map(move |n| {
+                    let shown = ((self.side - from) / 3. + 1.) as usize;
+                    ((-from / 3.).max(0.) as usize..((wide / 3.) as usize).min(shown)).map(move |n| {
                         div()
                             .absolute()
                             .bottom(px(if n % 2 == 0 { 1. } else { 3. }))
@@ -709,12 +749,7 @@ impl Origami {
                         cx.notify();
                     }
                 }))
-                .child(
-                    div()
-                        .ml(px(self.inset()))
-                        .flex_none()
-                        .child(StyledText::new(s.clone()).with_highlights(tokens(s))),
-                )
+                .child(div().ml(px(self.inset() + from as f32 * self.glyph())).flex_none().child(text))
                 .children(region.filter(|_| shut).map(|r| {
                     let note = div().px_3().flex().items_center().text_color(rgb(DIM)).child(r.note.clone());
                     note.when(r.run, |n| n.absolute().top_0().bottom_0().right_0().bg(rgb(BG)))
@@ -854,12 +889,15 @@ impl Origami {
                     .bg(rgb(PANEL))
                     .border_b_1()
                     .border_color(rgb(BORDER))
-                    .child(if q.is_empty() {
-                        div().text_color(rgb(DIM)).child("Search\u{2026}")
-                    } else {
-                        div().when(bad, |d| d.text_color(rgb(RED))).child(q.clone())
-                    })
-                    .child(div().w(px(1.)).h(px(14.)).bg(rgb(BLUE)))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .when(q.is_empty(), |d| d.flex_row_reverse().text_color(rgb(DIM)))
+                            .when(bad, |d| d.text_color(rgb(RED)))
+                            .child(if q.is_empty() { "Search\u{2026}".into() } else { q.clone() })
+                            .child(div().w(px(1.)).h(px(14.)).bg(rgb(BLUE))),
+                    )
                     .child(div().flex_1())
                     .child(mode("Aa", 0))
                     .child(mode("wd", 1))
@@ -1010,7 +1048,7 @@ impl Origami {
             .gap(px(28.))
             .bg(rgb(BG))
             .text_color(rgb(TEXT))
-            .font_family("Menlo")
+            .font_family(FONT)
             .child(
                 div()
                     .flex()
@@ -1153,7 +1191,7 @@ impl Render for Origami {
             .bg(rgb(if self.full { 0 } else { BG }))
             .text_color(rgb(TEXT))
             .text_size(px(13.))
-            .font_family("Menlo")
+            .font_family(FONT)
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| this.key(e, window, cx)))
             .capture_any_mouse_down(cx.listener(|this, _, _, cx| {
                 (this.cursor, this.anchor) = (None, None);
@@ -1193,7 +1231,10 @@ impl Render for Origami {
                     this.slide(e.position);
                     this.watch(cx);
                     cx.notify();
-                } else if this.picking {
+                } else if this
+                    .picking
+                    .is_some_and(|p| this.chosen().is_some() || (e.position - p).magnitude() > 3.)
+                {
                     this.place(e.position, window);
                     cx.notify();
                 } else if this.full && this.scrubbing {
@@ -1282,7 +1323,57 @@ impl Render for Origami {
 
 #[cfg(test)]
 mod tests {
-    use std::rc::Rc;
+    use std::{fs, rc::Rc};
+
+    // The app's own font is built in, and its letters are exactly as wide as the code pane counts them.
+    #[test]
+    fn built_in_font_fits() {
+        let face = &super::faces()[0];
+        let word = |at: usize| u16::from_be_bytes([face[at], face[at + 1]]);
+        let table = |tag: &[u8]| {
+            let mut rows = (0..word(4) as usize).map(|i| &face[12 + 16 * i..28 + 16 * i]);
+            let row = rows.find(|r| r[..4] == *tag).unwrap();
+            u32::from_be_bytes([row[8], row[9], row[10], row[11]]) as usize
+        };
+        assert_eq!((word(table(b"hmtx")), word(table(b"head") + 18)), (606, 1000));
+    }
+
+    // A waveform drawn again in the same place with the same bars reuses the shape built for it, while
+    // a new place builds a new one and at most 64 shapes are kept.
+    #[gpui::test]
+    fn waves_keep_their_shape(cx: &mut gpui::TestAppContext) {
+        let dir = std::env::temp_dir().join("origami-waves-test");
+        fs::create_dir_all(&dir).unwrap();
+        let made = origami_lang::status(
+            origami_lang::ffmpeg()
+                .args(["-v", "error", "-y", "-f", "lavfi", "-i", "anullsrc", "-t", "4"])
+                .arg(dir.join("s.wav")),
+        );
+        assert!(made.unwrap().success());
+        let (path, src) = (dir.join("edit.js"), "stack(sound(\"s.wav\"))");
+        fs::write(&path, src).unwrap();
+        let tl = origami_lang::eval(&path, false, origami_engine::footprint).unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            (app.script, app.lines, app.tl) = (path.clone(), vec![src.into()], std::sync::Arc::new(tl));
+            app.assets
+                .insert(app.tl.clips[0].src.clone(), Some(crate::Asset::Wave(vec![0.5; 80])));
+            app
+        });
+        let mut draw = |f: &dyn Fn(&mut crate::Origami)| {
+            view.update(cx, |o, cx| {
+                f(o);
+                cx.notify();
+            });
+            cx.run_until_parked();
+            super::WAVES.with_borrow(|k| k.len())
+        };
+        let first = draw(&|_| {});
+        assert!(first > 0);
+        assert!((1..6).all(|i| draw(&|o| o.t = i as f64 / 30.) == first));
+        let zoomed: Vec<usize> = (1..100).map(|i| draw(&|o| o.zoom = 1. + i as f64 / 20.)).collect();
+        assert_eq!((zoomed[0], zoomed[98]), (first + 1, 64));
+    }
 
     // The code pane's folds, lint and search hits should be worked out once and kept while nothing
     // they depend on changes, and worked out again when the script, a fold, the error or the search
@@ -1343,6 +1434,36 @@ mod tests {
             assert_eq!(check(o), 1);
             (o.tl, o.rev) = (std::sync::Arc::new(tl), o.rev + 1);
             assert_eq!(check(o), 2);
+        });
+    }
+
+    // The code pane should build a frame quickly, at the start and scrolled sideways, for a huge
+    // line with an error, a search match in every other column or a token in every column.
+    #[gpui::test]
+    fn huge_lines_draw_quickly(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = cx.add_window_view(|_, cx| crate::fresh(cx.focus_handle(), vec![]));
+        view.update(cx, |o, cx| {
+            let mut took = |o: &mut crate::Origami, line: &str, n: usize| {
+                o.lines = vec![line.repeat(n)];
+                o.scans();
+                let at = std::time::Instant::now();
+                o.script(None, 40, cx);
+                at.elapsed().as_secs_f32()
+            };
+            for left in [0., 100_000.] {
+                o.left = left * o.glyph();
+                (o.bad, o.err, o.finding) = (1, "wrong".into(), None);
+                o.aim();
+                let a = took(o, "x ", 200_000);
+                (o.bad, o.finding) = (0, Some("x".into()));
+                o.aim();
+                let b = took(o, "x ", 500_000);
+                o.finding = None;
+                o.aim();
+                let c = took(o, "a(", 3_000_000);
+                let most = if cfg!(debug_assertions) { 0.2 } else { 0.04 };
+                assert!([a, b, c].iter().all(|&t| t < most), "{left} {a} {b} {c}");
+            }
         });
     }
 }

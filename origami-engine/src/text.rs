@@ -6,23 +6,25 @@ use origami_lang::Clip;
 use std::{
     collections::HashMap,
     fs,
+    os::unix::fs::MetadataExt,
     sync::{Arc, LazyLock, Mutex},
 };
 
 const SPARE: &str = "/System/Library/Fonts/Supplemental/Arial Unicode.ttf";
 
-static FONTS: LazyLock<Mutex<HashMap<String, Arc<Font>>>> = LazyLock::new(Mutex::default);
+static FONTS: LazyLock<Mutex<HashMap<Option<(u64, u64)>, Arc<Font>>>> = LazyLock::new(Mutex::default);
 
 fn face(path: &str) -> Arc<Font> {
-    let load = |p: &str| {
-        fs::metadata(p).ok().filter(|m| m.is_file() && m.len() < 1 << 27)?;
-        Font::from_bytes(fs::read(p).ok()?, FontSettings::default()).ok().map(Arc::new)
-    };
+    let id = fs::metadata(path)
+        .ok()
+        .filter(|m| m.is_file() && m.len() < 1 << 27)
+        .map(|m| (m.dev(), m.ino()));
+    let load = |p: &str| Font::from_bytes(fs::read(p).ok()?, FontSettings::default()).ok().map(Arc::new);
     let plain = "/System/Library/Fonts/HelveticaNeue.ttc";
     let mut fonts = FONTS.lock().unwrap();
     let font = fonts
-        .entry(path.into())
-        .or_insert_with(|| load(path).or_else(|| load(plain)).unwrap());
+        .entry(id)
+        .or_insert_with(|| id.and_then(|_| load(path)).or_else(|| load(plain)).unwrap());
     font.clone()
 }
 
@@ -189,5 +191,14 @@ mod tests {
         assert_eq!(g.iter().map(|g| g.i).collect::<Vec<_>>(), [0, 1, 2, 3]);
         assert!(g[1].w == g[0].w && g[1].h > g[0].h);
         assert_eq!((g[2].w, g[2].h), (wide.width, wide.height));
+    }
+
+    // A font named through different spellings of its path is read and kept once, and a missing font
+    // falls back to the default one.
+    #[test]
+    fn fonts_are_kept_once() {
+        let spelled = "/System/Library/Fonts//Supplemental/./Arial Unicode.ttf";
+        assert!(Arc::ptr_eq(&face(SPARE), &face(spelled)));
+        assert!(Arc::ptr_eq(&face("/nowhere.ttf"), &face("")));
     }
 }

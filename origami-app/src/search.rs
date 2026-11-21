@@ -7,8 +7,11 @@ impl Origami {
         };
         let rows = self.lines.iter().enumerate();
         rows.flat_map(|(r, l)| {
-            let found = seek.find_iter(l).filter(|m| !m.is_empty());
-            found.map(move |m| (r, l[..m.start()].chars().count(), m.as_str().chars().count()))
+            let (found, mut at) = (seek.find_iter(l).filter(|m| !m.is_empty()), (0, 0));
+            found.map(move |m| {
+                at = (m.start(), at.1 + l[at.0..m.start()].chars().count());
+                (r, at.1, m.as_str().chars().count())
+            })
         })
         .collect()
     }
@@ -72,6 +75,23 @@ impl Origami {
             "enter" | "down" => Some(!shift),
             "up" => Some(false),
             _ => None,
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Searching a line of 400,000 letters should find every match at its column in moments.
+    #[gpui::test]
+    fn long_lines_search_quickly(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = cx.add_window_view(|_, cx| crate::fresh(cx.focus_handle(), vec![]));
+        view.update(cx, |o, _| {
+            (o.lines, o.finding) = (vec!["\u{e9}a".repeat(200_000)], Some("a".into()));
+            o.aim();
+            let start = std::time::Instant::now();
+            let hits = o.hits();
+            assert_eq!((hits.len(), hits[1], hits[199_999]), (200_000, (0, 3, 1), (0, 399_999, 1)));
+            assert!(start.elapsed().as_secs() < 2);
         });
     }
 }

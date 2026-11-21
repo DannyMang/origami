@@ -9,26 +9,32 @@ use boa_engine::{
 };
 pub use error::Error;
 pub use grade::{Curves, Grade, Secondary, Vignette, Wheels};
-use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
+use serde::{
+    Deserialize, Deserializer, Serialize,
+    de::{self, DeserializeSeed, Error as _, SeqAccess, Visitor},
+};
 use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
-    fs,
-    io::{self, Read, Seek, SeekFrom},
+    env, fmt, fs,
+    io::{self, Read, Seek, SeekFrom, Write},
     mem,
+    os::unix::fs::MetadataExt,
+    panic,
     path::{Path, PathBuf},
     pin::pin,
+    process::{Child, ChildStdin, Command, Stdio},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock, PoisonError,
         atomic::{AtomicBool, Ordering::Relaxed},
-        mpsc,
+        mpsc::{self, RecvTimeoutError},
     },
     task::{self, Poll, Waker},
     thread,
     time::{Duration, Instant, UNIX_EPOCH},
 };
-pub use tool::{ffmpeg, ffprobe, missing, output, start, status};
+pub use tool::{ffmpeg, ffprobe, missing, output, start, status, watch};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -42,26 +48,76 @@ pub enum Kind {
     Line,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum Val {
     Fixed(f64),
-    Frames(u32, #[serde(deserialize_with = "frames")] Vec<f32>),
+    Frames(u32, Vec<f32>),
 }
 
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum Run {
-    Kept(usize),
-    Given(Vec<f32>),
+struct Shape;
+
+impl<'a> Visitor<'a> for Shape {
+    type Value = Val;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("a number or per-frame numbers")
+    }
+
+    fn visit_u64<E: de::Error>(self, v: u64) -> Result<Val, E> {
+        Ok(Val::Fixed(v as f64))
+    }
+
+    fn visit_i64<E: de::Error>(self, v: i64) -> Result<Val, E> {
+        Ok(Val::Fixed(v as f64))
+    }
+
+    fn visit_f64<E: de::Error>(self, v: f64) -> Result<Val, E> {
+        Ok(Val::Fixed(v))
+    }
+
+    fn visit_seq<A: SeqAccess<'a>>(self, mut s: A) -> Result<Val, A::Error> {
+        match (s.next_element()?, s.next_element_seed(Run)?) {
+            (Some(line), Some(run)) if !run.is_empty() => Ok(Val::Frames(line, run)),
+            _ => Err(A::Error::custom("no such run")),
+        }
+    }
 }
 
-fn frames<'a, D: Deserializer<'a>>(d: D) -> Result<Vec<f32>, D::Error> {
-    let s = match Run::deserialize(d)? {
-        Run::Kept(i) => KEPT.with_borrow_mut(|k| k.get_mut(i).map(mem::take)),
-        Run::Given(s) => Some(s),
-    };
-    s.filter(|s| !s.is_empty()).ok_or_else(|| D::Error::custom("no such run"))
+impl<'a> Deserialize<'a> for Val {
+    fn deserialize<D: Deserializer<'a>>(d: D) -> Result<Val, D::Error> {
+        d.deserialize_any(Shape)
+    }
+}
+
+struct Run;
+
+impl<'a> Visitor<'a> for Run {
+    type Value = Vec<f32>;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("per-frame numbers")
+    }
+
+    fn visit_u64<E: de::Error>(self, i: u64) -> Result<Vec<f32>, E> {
+        Ok(KEPT.with_borrow_mut(|k| k.get_mut(i as usize).map(mem::take)).unwrap_or_default())
+    }
+
+    fn visit_seq<A: SeqAccess<'a>>(self, mut s: A) -> Result<Vec<f32>, A::Error> {
+        let mut out = vec![];
+        while let Some(v) = s.next_element::<f64>()? {
+            out.push(v as f32);
+        }
+        Ok(out)
+    }
+}
+
+impl<'a> DeserializeSeed<'a> for Run {
+    type Value = Vec<f32>;
+
+    fn deserialize<D: Deserializer<'a>>(self, d: D) -> Result<Vec<f32>, D::Error> {
+        d.deserialize_any(self)
+    }
 }
 
 impl Val {
@@ -107,6 +163,7 @@ pub struct Clip {
     pub gain: f64,
     pub fade: (f64, f64),
     pub label: String,
+    #[serde(deserialize_with = "line")]
     pub line: u32,
     #[serde(default)]
     pub home: u32,
@@ -188,6 +245,13 @@ thread_local! {
     static READ: RefCell<Vec<(u32, PathBuf)>> = RefCell::default();
     static COLD: RefCell<(bool, Vec<(String, PathBuf)>, Lock)> = RefCell::default();
     static KEPT: RefCell<Vec<Vec<f32>>> = RefCell::default();
+    static LINE: RefCell<u32> = RefCell::default();
+}
+
+fn line<'a, D: Deserializer<'a>>(d: D) -> Result<u32, D::Error> {
+    let n = u32::deserialize(d)?;
+    LINE.set(n);
+    Ok(n)
 }
 
 fn find(dir: &Path, rel: &str) -> Option<PathBuf> {
@@ -267,6 +331,9 @@ fn stat(path: &Path) -> Result<(u64, u64)> {
 fn scan(path: &Path, prev: Option<&Media>, relock: bool, rel: &str) -> Result<Media> {
     let ((size, mtime), mut hash, mut file) = (stat(path)?, Sha256::new(), fs::File::open(path)?);
     BUSY.store(true, Relaxed);
+    if SERVING.load(Relaxed) {
+        let _ = send(&mut io::stdout().lock(), &[]);
+    }
     hash.update(size.to_le_bytes());
     for at in [0, size.saturating_sub(1 << 20)] {
         file.seek(SeekFrom::Start(at))?;
@@ -301,6 +368,9 @@ fn scan(path: &Path, prev: Option<&Media>, relock: bool, rel: &str) -> Result<Me
 }
 
 fn media(path: &Path, old: &Lock, new: &mut Lock, relock: bool, rel: &str) -> Result<String> {
+    if !new.contains_key(rel) {
+        tool::playable(path)?;
+    }
     let (size, mtime) = stat(path)?;
     let same = |m: &Media| m.size == size && m.mtime == mtime;
     let m = match old.get(rel) {
@@ -365,7 +435,18 @@ fn probe(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
 }
 
 fn read(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
-    host(args, cx, "__read", find, |_, path| Ok(load(path)?))
+    host(args, cx, "__read", find, |_, path| {
+        let text = Some(load(path)?)
+            .filter(|t| t.lines().count() <= 1 << 18)
+            .ok_or_else(|| anyhow!("the file has over {} lines", 1 << 18))?
+            .replace('\r', "");
+        let rows = text.split("\n\n").scan(1, |row, b| {
+            let at = *row;
+            *row += b.matches('\n').count() + 2;
+            Some((at, b))
+        });
+        Ok(serde_json::to_string(&rows.collect::<Vec<_>>())?)
+    })
 }
 
 fn lut(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
@@ -536,6 +617,8 @@ fn single(v: f64) -> f32 {
     serde_json::from_str(&text).unwrap_or(f)
 }
 
+const MANY: usize = if cfg!(test) { 1 << 16 } else { 1 << 20 };
+
 fn keep(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
     let Some(all) = list(args.get_or_undefined(0)) else {
         return Ok(JsValue::undefined());
@@ -549,6 +632,11 @@ fn keep(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
     }
     if s.iter().all(|v| *v == s[0]) {
         return Ok(false.into());
+    }
+    if KEPT.with_borrow(Vec::len) >= MANY {
+        return Err(JsNativeError::error()
+            .with_message(format!("the script has over {MANY} animated values"))
+            .into());
     }
     Ok(KEPT
         .with_borrow_mut(|k| {
@@ -630,7 +718,192 @@ fn boot() -> Context {
     cx
 }
 
+const HELP: &str = "--origami-evaluate";
+const HEAVY: u64 = if cfg!(test) { 1 << 28 } else { 2 << 30 };
+static FAR: AtomicBool = AtomicBool::new(false);
+static SERVING: AtomicBool = AtomicBool::new(false);
+type Helper = (Child, ChildStdin, mpsc::Receiver<Vec<u8>>);
+static HELPER: Mutex<Option<Helper>> = Mutex::new(None);
+
+unsafe extern "C" {
+    fn proc_pid_rusage(pid: i32, flavor: i32, info: *mut [u64; 12]) -> i32;
+    fn _exit(code: i32) -> !;
+}
+
+fn heft(pid: u32) -> u64 {
+    let mut info = [0; 12];
+    match unsafe { proc_pid_rusage(pid as i32, 0, &mut info) } {
+        0 => info[9],
+        _ => 0,
+    }
+}
+
+fn send(w: &mut impl Write, data: &[u8]) -> io::Result<()> {
+    w.write_all(&(data.len() as u64).to_le_bytes())?;
+    w.write_all(data)?;
+    w.flush()
+}
+
+fn frame(r: &mut impl Read) -> Option<Vec<u8>> {
+    let mut n = [0; 8];
+    r.read_exact(&mut n).ok()?;
+    let n = Some(u64::from_le_bytes(n)).filter(|n| *n <= 1 << 28)?;
+    let mut v = vec![];
+    r.take(n).read_to_end(&mut v).ok()?;
+    (v.len() as u64 == n).then_some(v)
+}
+
+pub fn serve(measure: Measure) {
+    if env::args_os().nth(1).is_none_or(|a| a != HELP) {
+        FAR.store(true, Relaxed);
+        BUILT.get_or_init(stamp);
+        thread::spawn(|| {
+            let mut slot = HELPER.lock().unwrap_or_else(PoisonError::into_inner);
+            if slot.is_none() {
+                *slot = fresh().ok();
+            }
+        });
+        return;
+    }
+    SERVING.store(true, Relaxed);
+    let hook = panic::take_hook();
+    panic::set_hook(Box::new(move |p| {
+        hook(p);
+        unsafe { _exit(101) }
+    }));
+    let vm = spawn();
+    while let Some(job) = frame(&mut io::stdin().lock()) {
+        let _ = vm.send(Box::new(move |cx: &mut Context| {
+            let reply = answer(cx, &job, measure);
+            if send(&mut io::stdout().lock(), &reply).is_err() {
+                unsafe { _exit(0) }
+            }
+        }));
+    }
+    unsafe { _exit(0) }
+}
+
+type Head = (Result<(usize, Vec<usize>, Vec<(u32, PathBuf)>), Vec<String>>, Option<Error>);
+
+fn answer(cx: &mut Context, job: &[u8], measure: Measure) -> Vec<u8> {
+    let (script, relock, src): (PathBuf, bool, Option<String>) = serde_json::from_slice(job).unwrap_or_default();
+    BUSY.store(false, Relaxed);
+    let got = half(cx, &script, relock, src.as_deref(), measure);
+    let fail = FAIL.take().filter(|_| src.is_none());
+    let (head, out, kept): (Head, _, _) = match got {
+        Ok((out, kept, files)) => ((Ok((out.len(), kept.iter().map(Vec::len).collect(), files)), fail), out, kept),
+        Err(e) => ((Err(e.chain().map(|c| c.to_string()).collect()), fail), String::new(), vec![]),
+    };
+    let head = serde_json::to_vec(&head).unwrap_or_default();
+    let mut reply = [&(head.len() as u64).to_le_bytes()[..], &head, out.as_bytes()].concat();
+    reply.extend(kept.iter().flatten().flat_map(|f| f.to_le_bytes()));
+    reply
+}
+
+fn hire(cmd: &mut Command) -> io::Result<Helper> {
+    let mut child = start(cmd.stdin(Stdio::piped()).stdout(Stdio::piped()))?;
+    let (stdin, mut stdout) = child.stdin.take().zip(child.stdout.take()).ok_or(io::ErrorKind::BrokenPipe)?;
+    let (tell, heard) = mpsc::channel();
+    thread::spawn(move || {
+        while let Some(f) = frame(&mut stdout) {
+            if tell.send(f).is_err() {
+                break;
+            }
+        }
+    });
+    Ok((child, stdin, heard))
+}
+
+type Stamp = Option<(u64, u64, i64, i64)>;
+static BUILT: OnceLock<Stamp> = OnceLock::new();
+
+fn stamp() -> Stamp {
+    let m = fs::metadata(env::current_exe().ok()?).ok()?;
+    Some((m.dev(), m.ino(), m.mtime(), m.mtime_nsec()))
+}
+
+fn fresh() -> Result<Helper> {
+    if BUILT.get().is_some_and(|b| *b != stamp()) {
+        bail!("Origami was updated: restart it to run scripts");
+    }
+    let made = env::current_exe().and_then(|me| hire(Command::new(me).arg(HELP)));
+    made.map_err(|e| anyhow!("could not start evaluating the script: {e}"))
+}
+
+fn crashed() -> anyhow::Error {
+    anyhow!("script evaluation crashed: edit the script and try again")
+}
+
+fn wait(h: &Helper) -> Result<Vec<u8>> {
+    let (from, mut since, mut busy) = (Instant::now(), Instant::now(), false);
+    loop {
+        match h.2.recv_timeout(Duration::from_millis(100)) {
+            Ok(f) if !f.is_empty() => return Ok(f),
+            Ok(_) => busy = true,
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return Err(crashed()),
+        }
+        if heft(h.0.id()) > HEAVY {
+            bail!("script used too much memory: stopped at {} MB", HEAVY >> 20)
+        }
+        let over = since.elapsed() > LIMIT * 3;
+        if over && !mem::take(&mut busy) || from.elapsed() > LIMIT * 30 {
+            bail!("script took too long: stopped after {} seconds", from.elapsed().as_secs())
+        }
+        if over {
+            since = Instant::now();
+        }
+    }
+}
+
+fn open(f: &[u8], measure: Measure) -> Result<Timeline> {
+    let (n, rest) = f.split_first_chunk::<8>().ok_or_else(crashed)?;
+    let (head, rest) = rest.split_at_checked(u64::from_le_bytes(*n) as usize).ok_or_else(crashed)?;
+    let (got, fail): Head = serde_json::from_slice(head).map_err(|_| crashed())?;
+    let fall = |e: anyhow::Error| fail.map_or(e, Into::into);
+    match got {
+        Err(chain) => {
+            let e = chain.into_iter().rev().fold(None, |e: Option<anyhow::Error>, m| match e {
+                Some(e) => Some(e.context(m)),
+                None => Some(anyhow!(m)),
+            });
+            Err(fall(e.unwrap_or_else(crashed)))
+        }
+        Ok((n, lens, files)) => {
+            let (out, rest) = rest.split_at_checked(n).ok_or_else(crashed)?;
+            let mut floats = rest.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+            let kept = lens.iter().map(|n| floats.by_ref().take(*n).collect()).collect();
+            finish(std::str::from_utf8(out)?, kept, files, measure).map_err(fall)
+        }
+    }
+}
+
+fn remote(script: &Path, relock: bool, src: Option<&str>, measure: Measure) -> Result<Timeline> {
+    let job = serde_json::to_vec(&(script, relock, src))?;
+    let mut slot = HELPER.lock().unwrap_or_else(PoisonError::into_inner);
+    let alive = |mut h: Helper| matches!(h.0.try_wait(), Ok(None)).then_some(h);
+    let mut h = match slot.take().and_then(alive) {
+        Some(h) => h,
+        None => fresh()?,
+    };
+    let _ = send(&mut h.1, &job);
+    let got = wait(&h);
+    *slot = match got {
+        Ok(_) => Some(h),
+        Err(_) => {
+            let _ = h.0.kill();
+            let _ = h.0.wait();
+            fresh().ok()
+        }
+    };
+    drop(slot);
+    open(&got?, measure)
+}
+
 fn ask(script: &Path, relock: bool, src: Option<&str>, measure: Measure) -> Result<Timeline> {
+    if FAR.load(Relaxed) {
+        return remote(script, relock, src, measure);
+    }
     let (script, src, (back, got)) = (script.to_path_buf(), src.map(String::from), mpsc::channel());
     let job = move |cx: &mut Context| {
         let tl = build(cx, &script, relock, src.as_deref(), measure);
@@ -663,6 +936,13 @@ pub fn peek(script: &Path, src: &str, measure: Measure) -> Result<Timeline> {
 }
 
 fn build(cx: &mut Context, script: &Path, relock: bool, src: Option<&str>, measure: Measure) -> Result<Timeline> {
+    let (out, kept, files) = half(cx, script, relock, src, measure)?;
+    finish(&out, kept, files, measure)
+}
+
+type Half = (String, Vec<Vec<f32>>, Vec<(u32, PathBuf)>);
+
+fn half(cx: &mut Context, script: &Path, relock: bool, src: Option<&str>, measure: Measure) -> Result<Half> {
     let script = script
         .canonicalize()
         .with_context(|| format!("missing script: {}", script.display()))?;
@@ -714,7 +994,7 @@ fn build(cx: &mut Context, script: &Path, relock: bool, src: Option<&str>, measu
         };
         let probed = thread::scope(|s| {
             let jobs: Vec<_> = missed
-                .chunks(missed.len().div_ceil(32))
+                .chunks(missed.len().div_ceil(8))
                 .map(|part| s.spawn(move || probe(part)))
                 .collect();
             jobs.into_iter().flat_map(|j| j.join().unwrap_or_default()).collect()
@@ -731,15 +1011,27 @@ fn build(cx: &mut Context, script: &Path, relock: bool, src: Option<&str>, measu
     if new != old && src.is_none() {
         let _ = save(&lock, serde_json::to_string_pretty(&new)?);
     }
-    let mut tl: Timeline = serde_json::from_str(&out).or_else(|_| {
-        let all: serde_json::Value = serde_json::from_str(&out)?;
-        for c in all["clips"].as_array().into_iter().flatten() {
-            if let Err(e) = Clip::deserialize(c) {
-                bail!("line {}: {e}", c["line"]);
-            }
+    if out.len() > 1 << 24 {
+        bail!("the timeline is over 16 MB as text: use fewer clips or shorter texts");
+    }
+    Ok((out, KEPT.take(), READ.take()))
+}
+
+fn finish(out: &str, kept: Vec<Vec<f32>>, files: Vec<(u32, PathBuf)>, measure: Measure) -> Result<Timeline> {
+    KEPT.set(kept);
+    LINE.take();
+    let tl = serde_json::from_str(out).map_err(|e| {
+        let said = e.to_string();
+        let said = said
+            .strip_suffix(&format!(" at line {} column {}", e.line(), e.column()))
+            .unwrap_or(&said);
+        match LINE.take() {
+            0 => anyhow!("{said}"),
+            n => anyhow!("line {n}: {said}"),
         }
-        Ok::<_, anyhow::Error>(serde_json::from_value(all)?)
-    })?;
+    });
+    KEPT.take();
+    let mut tl: Timeline = tl?;
     const DAY: f64 = 86400.;
     let fair = |v: u32, top: u32| (1..=top).contains(&v);
     if !(fair(tl.fps, 240) && fair(tl.size.0, 16384) && fair(tl.size.1, 16384) && tl.duration <= DAY) {
@@ -752,7 +1044,6 @@ fn build(cx: &mut Context, script: &Path, relock: bool, src: Option<&str>, measu
     {
         bail!("line {}: {} has a time or speed out of range", c.line, c.label);
     }
-    let files = READ.take();
     let opened: BTreeSet<&Path> = files.iter().map(|(_, f)| f.as_path()).collect();
     if let Some(e) = tl.clips.iter().find_map(|c| stray(c, |f| opened.contains(Path::new(f)))) {
         bail!("{e}");
@@ -1218,13 +1509,17 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
     }
 
     // A script that reaches past the clip functions to name a web address or a file it never opened, to
-    // read a device, a pipe or a huge file (the script itself included), to hand over values that would
-    // hang or crash the app, or to replace a function Origami calls after the script, is refused.
+    // read a device, a pipe, a huge file (the script itself included) or captions with too many lines,
+    // to hand over values that would hang or crash the app or a timeline too big to read safely, or to
+    // replace a function Origami calls after the script, is refused, and a long captions file with a
+    // bad time deep inside is read quickly and names that time's line.
     #[test]
     fn reaching_past_the_functions_is_refused() {
         let dir = scratch("reach");
         status(std::process::Command::new("mkfifo").arg(dir.join("pipe.srt"))).unwrap();
         fs::File::create(dir.join("big.srt")).unwrap().set_len((1 << 24) + 1).unwrap();
+        fs::write(dir.join("long.srt"), "\n".repeat((1 << 18) + 1)).unwrap();
+        fs::write(dir.join("many.srt"), (" ".repeat(500) + "\n\n").repeat(8000) + "1\nxx --> yy\nodd").unwrap();
         let away = "Object.assign(v.$, { kind: 'video', src: 'http://127.0.0.1:9/a.mp4' })";
         for (src, says) in [
             (
@@ -1255,7 +1550,19 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
                 "captions('big.srt')".into(),
                 "line 1: captions(\"big.srt\"): the file is over 16 MB",
             ),
+            (
+                "text('a')\ncaptions('long.srt')".into(),
+                "line 2: captions(\"long.srt\"): the file has over 262144 lines",
+            ),
+            (
+                "captions('many.srt')".into(),
+                "line 1: captions(\"many.srt\") line 16002: xx --> yy is not a time range",
+            ),
             ("const t = text('a').for(1)\nt.$.opacity = [1, []]\nt".into(), "line 1: "),
+            (
+                "const t = text('a')\nt.$.label = 'a'.repeat(1 << 12).repeat(1 << 12)\nt".into(),
+                "the timeline is over 16 MB as text",
+            ),
             (
                 "text('a').for(1).speed(1e-200).speed(1e-200)".into(),
                 "line 1: a has a time or speed out of range",
@@ -1392,9 +1699,10 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         assert_eq!((t.fps, t.preview.as_str(), t.proxy), (24, "auto", true));
     }
 
-    // Origami's own functions called straight from a script with missing, odd or huge arguments fail
-    // with a plain message on the script's line or not at all, never with a JSON position, a JavaScript
-    // type error or line 0, and a followed clip holding a value out of range names its own line.
+    // Origami's own functions called straight from a script with missing, odd or huge arguments, or too
+    // many times, fail with a plain message on the script's line or not at all, never with a JSON
+    // position, a JavaScript type error or line 0, and a followed clip holding a value out of range
+    // names its own line.
     #[test]
     fn natives_fail_plainly() {
         let dir = scratch("natives");
@@ -1418,6 +1726,11 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
                 "a has a value out of range",
             ),
             ("const r = rect(5e9, 10)\ntext('b').pos(r.pos)", 2, "r has a value out of range"),
+            (
+                "const s = [0, 1]\nArray.from({ length: 65537 }, () => __keep(s))",
+                3,
+                "the script has over 65536 animated values",
+            ),
         ] {
             let e = fails(&dir, &format!("text('z')\n{call}"));
             assert!(e.starts_with(&format!("line {line}: {says}")), "{call}: {e}");
@@ -1458,6 +1771,30 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         let e = eval(&dir.join("edit.js"), false, boom).unwrap_err().to_string();
         assert_eq!(e, "script evaluation crashed: edit the script and try again");
         assert_eq!(tl("text('a').for(4)").duration, 4.);
+    }
+
+    // A helper that grows past the memory limit is stopped at once, one that dies or answers with a
+    // damaged reply reports a crash instead of panicking, one that never answers is stopped after three
+    // times the time limit, and no new helper starts from an Origami binary that changed since launch.
+    #[test]
+    fn stuck_helpers_are_stopped() {
+        let run = |sh: &str| {
+            let mut h = hire(Command::new("/bin/sh").args(["-c", sh])).unwrap();
+            let got = wait(&h).and_then(|f| open(&f, size));
+            let _ = h.0.kill();
+            let _ = h.0.wait();
+            got.unwrap_err().to_string()
+        };
+        let fat = "exec /usr/bin/perl -e '$x = \"a\" x 4e8; sleep 60'";
+        assert_eq!(run(fat), "script used too much memory: stopped at 256 MB");
+        assert_eq!(run("exit 3"), crashed().to_string());
+        let lie = "printf '\\012\\0\\0\\0\\0\\0\\0\\0\\377\\0\\0\\0\\0\\0\\0\\0{}'; exec sleep 60";
+        assert_eq!(run(lie), crashed().to_string());
+        let from = Instant::now();
+        assert_eq!(run("exec sleep 60"), "script took too long: stopped after 6 seconds");
+        assert!(from.elapsed() < Duration::from_secs(8));
+        BUILT.set(None).unwrap();
+        assert_eq!(fresh().err().unwrap().to_string(), "Origami was updated: restart it to run scripts");
     }
 
     fn media(name: &str) -> PathBuf {
@@ -1506,6 +1843,30 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
             fails(&dir, src.replace("i.png", "none.png").as_str()),
             "line 4: image(\"none.png\") points to a file that does not exist"
         );
+    }
+
+    // A playlist used as media is refused on its line at once, before any program reads it, even when a
+    // shipped origami.lock already lists it.
+    #[test]
+    fn playlists_are_refused_at_once() {
+        let dir = scratch("lists");
+        fs::write(dir.join("a.ts"), "").unwrap();
+        fs::write(dir.join("live.m3u8"), "#EXTM3U\n#EXT-X-TARGETDURATION:100000\n#EXTINF:1,\na.ts\n").unwrap();
+        fs::write(dir.join("nest.mp4"), "ffconcat version 1.0\nfile live.m3u8\n").unwrap();
+        let (size, mtime) = stat(&dir.join("nest.mp4")).unwrap();
+        let entry =
+            serde_json::json!({ "size": size, "mtime": mtime, "sha": "", "dur": 5, "w": 64, "h": 36, "video": true, "audio": false });
+        fs::write(dir.join("origami.lock"), serde_json::json!({ "nest.mp4": entry }).to_string()).unwrap();
+        for (src, says) in [
+            ("video('live')", "line 1: video(\"live\")"),
+            ("text('a')\nvideo('nest.mp4')", "line 2: video(\"nest.mp4\")"),
+            ("sound('live.m3u8')", "line 1: sound(\"live.m3u8\")"),
+        ] {
+            assert_eq!(
+                fails(&dir, src),
+                format!("{says}: playlist files are not supported: use a video or sound file")
+            );
+        }
     }
 
     // A file that is not what the script says it is (a broken film, a film used as a picture, a

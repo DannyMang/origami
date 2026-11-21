@@ -3,7 +3,7 @@ use crate::{
     view::{BLUE, BORDER, DIM, PANEL},
 };
 use gpui::{Div, Styled, Window, div, prelude::*, px, rgb, rgba};
-use std::{fs, mem, path::Path, sync::LazyLock};
+use std::{collections::HashSet, fs, mem, path::Path, sync::LazyLock};
 
 pub struct Def {
     pub name: &'static str,
@@ -278,11 +278,11 @@ fn inside(head: &[char]) -> String {
 }
 
 fn vars(lines: &[String]) -> Vec<String> {
-    let mut out = vec![];
+    let (mut out, mut seen) = (vec![], HashSet::new());
     for line in lines {
         let words: Vec<&str> = line.split(|c| !ident(c)).filter(|w| !w.is_empty()).collect();
         for pair in words.windows(2) {
-            if ["let", "const", "var"].contains(&pair[0]) && !out.iter().any(|v| v == pair[1]) {
+            if ["let", "const", "var"].contains(&pair[0]) && seen.insert(pair[1]) {
                 out.push(pair[1].to_string());
             }
         }
@@ -583,5 +583,16 @@ mod tests {
             fill("video(\"clips/in\")", 13, 15, "intro.mp4", ""),
             ("video(\"clips/intro.mp4\")".into(), 22)
         );
+    }
+
+    // Typing a name in a script of 100,000 variables should offer the matching ones, in order, in
+    // moments.
+    #[test]
+    fn many_names_offer_quickly() {
+        let start = std::time::Instant::now();
+        let src: String = (0..100_000).map(|i| format!("const v{i} = 1\n")).collect();
+        let want: Vec<String> = (0..10).map(|d| format!("v1234{d}")).collect();
+        assert_eq!(at(&format!("{src}v1234")), want);
+        assert!(start.elapsed().as_secs() < 2);
     }
 }
