@@ -368,7 +368,9 @@ fn scan(path: &Path, prev: Option<&Media>, relock: bool, rel: &str) -> Result<Me
 }
 
 fn media(path: &Path, old: &Lock, new: &mut Lock, relock: bool, rel: &str) -> Result<String> {
-    tool::playable(path)?;
+    if !new.contains_key(rel) {
+        tool::playable(path)?;
+    }
     let (size, mtime) = stat(path)?;
     let same = |m: &Media| m.size == size && m.mtime == mtime;
     let m = match old.get(rel) {
