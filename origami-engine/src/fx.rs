@@ -1,5 +1,5 @@
 use crate::lut::spread;
-use origami_lang::Fx;
+use origami_lang::{Fx, Val};
 use std::{f64::consts::FRAC_PI_2, sync::Arc};
 
 fn hash(x: i64, y: i64, seed: i64) -> f64 {
@@ -152,12 +152,27 @@ fn displace(px: &[u8], (w, h): (usize, usize), k: f64, amount: f64, size: f64, s
     })
 }
 
-pub fn paint(fx: &[Fx], mut px: Arc<Vec<u8>>, size: (usize, usize), i: usize, k: f64) -> Arc<Vec<u8>> {
-    let whole = |v: &origami_lang::Val| v.at(i).floor() as i64;
+pub fn now(fx: &[Fx], i: usize) -> Vec<Fx> {
+    let (at, whole) = (|v: &Val| Val::Fixed(v.at(i)), |v: &Val| Val::Fixed(v.at(i).floor()));
+    let one = |f: &Fx| {
+        let mut f = f.clone();
+        match &mut f {
+            Fx::Lens(v) | Fx::Blur(v) => *v = at(v),
+            Fx::Noise(_, seed) | Fx::Fractal { seed, .. } | Fx::Roughen { seed, .. } => *seed = whole(seed),
+            Fx::Displace { amount, seed, .. } => (*amount, *seed) = (at(amount), whole(seed)),
+            Fx::Levels(..) => {}
+        }
+        f
+    };
+    fx.iter().map(one).collect()
+}
+
+pub fn paint(fx: &[Fx], mut px: Arc<Vec<u8>>, size: (usize, usize), k: f64) -> Arc<Vec<u8>> {
+    let whole = |v: &Val| v.at(0) as i64;
     for f in fx {
         let made = match f {
-            Fx::Lens(fov) if fov.at(i) != 0. => lens(&px, size, fov.at(i)),
-            Fx::Blur(r) if r.at(i) * k >= 0.5 => blur(&px, size, (r.at(i) * k).round() as usize),
+            Fx::Lens(fov) if fov.at(0) != 0. => lens(&px, size, fov.at(0)),
+            Fx::Blur(r) if r.at(0) * k >= 0.5 => blur(&px, size, (r.at(0) * k).round() as usize),
             Fx::Lens(_) | Fx::Blur(_) => continue,
             Fx::Levels(black, white, alpha) => {
                 let map = |v: u8| ((v as f64 / 255. - black) / (white - black).max(1e-6) * 255.).clamp(0., 255.) as u8;
@@ -186,7 +201,7 @@ pub fn paint(fx: &[Fx], mut px: Arc<Vec<u8>>, size: (usize, usize), i: usize, k:
                 sharp,
                 seed,
             } => roughen(&px, size, k, *border, *scale, *sharp, whole(seed)),
-            Fx::Displace { amount, size: cell, seed } => displace(&px, size, k, amount.at(i), *cell, whole(seed)),
+            Fx::Displace { amount, size: cell, seed } => displace(&px, size, k, amount.at(0), *cell, whole(seed)),
         };
         px = Arc::new(made);
     }

@@ -819,7 +819,7 @@ impl Preview {
             }
             let px = Arc::new(px);
             let px = c.grade.as_ref().map_or(px.clone(), |g| grade::paint(g, px, size, vec![]));
-            return Some((fx::paint(&c.fx, px, size, i, k), size, (x as i64, y as i64)));
+            return Some((fx::paint(&fx::now(&c.fx, i), px, size, k), size, (x as i64, y as i64)));
         }
         let (px, base) = match c.kind {
             Kind::Video => {
@@ -870,7 +870,17 @@ impl Preview {
             })?,
             None => px,
         };
-        (px.len() >= tw * th * 4).then(|| (fx::paint(&c.fx, px, (tw, th), i, k), (tw, th), (x as i64, y as i64)))
+        let now = fx::now(&c.fx, i);
+        let px = match now.is_empty() || px.len() < tw * th * 4 {
+            true => px,
+            false => kept(
+                &mut self.stills,
+                &mut self.was.0,
+                format!("{base}|{:?}|{k}|{now:?}", c.grade),
+                || Some(fx::paint(&now, px, (tw, th), k)),
+            )?,
+        };
+        (px.len() >= tw * th * 4).then_some((px, (tw, th), (x as i64, y as i64)))
     }
 
     fn moved(&mut self, out: &mut [u8], c: &Clip, t: f64, tl: &Timeline, (pw, ph): (usize, usize), k: f64, i: usize, a: f64) {
@@ -1771,6 +1781,32 @@ mod tests {
             assert_eq!((p.stills.len(), p.was.0.len()), (2, 1));
             assert!(Arc::ptr_eq(&first, &wide(&p)));
         }
+    }
+
+    // An effect on a still is worked out once while its settings stay the same and again when its seed
+    // changes, and every frame shows the same pixels as a fresh preview.
+    #[test]
+    fn effects_on_stills_are_kept() {
+        let fx = r#"[{"roughen":{"border":4,"scale":20,"sharp":1,"seed":[1,[0,0,1,1]]}},{"blur":2}]"#;
+        let tl = Timeline {
+            fps: 4,
+            size: (200, 100),
+            duration: 1.,
+            clips: vec![Clip {
+                fx: serde_json::from_str(fx).unwrap(),
+                ..clip("rect", "")
+            }],
+            ..Default::default()
+        };
+        let mut pv = Preview::default();
+        let mut made = vec![];
+        for k in 0..4 {
+            let px = pv.frame(&tl, k as f64 / 4., (200, 100));
+            assert!(px == Preview::default().frame(&tl, k as f64 / 4., (200, 100)));
+            made.extend(pv.stills.iter().filter(|(k, _)| k.contains("Roughen")).flat_map(|(_, v)| v.clone()));
+        }
+        let same: Vec<bool> = made.windows(2).map(|w| Arc::ptr_eq(&w[0], &w[1])).collect();
+        assert_eq!((made.len(), same), (4, vec![true, false, true]));
     }
 
     // An export should keep two frames for one video layer, and for three overlapping slowed layers

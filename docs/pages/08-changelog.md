@@ -4,6 +4,10 @@ What changed in each version of Origami. The launch screen shows the version you
 
 ## 0.1.0 (not yet released)
 
+### Nov 21
+
+- Picture effects (`roughen`, `blur`, `lens`, `displace`, `noise`, `fractal` and `levels`) on an image, shape or text are worked out once and kept while the picture and the effect's settings stay the same, instead of again on every frame. A 1080p export of 2 seconds with a roughened 1400×900 image in multiply took about 2.2 s and now takes about 0.7 s; 4 seconds with three roughened images, two roughened shapes, a group and a matte took about 11.4 s and now about 5.3 s. Playing such a timeline saves about 30 ms a frame for each roughened full-size image. The pictures are unchanged.
+
 ### Nov 20
 
 - With the search bar open, clicking in the code now sends your typing to the code. Before, it kept going into the search box. Click the bar or press ⌘F to type in the search again.
