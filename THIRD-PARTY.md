@@ -6,7 +6,7 @@ The list covers every crate compiled into the app and the `origami` command-line
 
 ffmpeg is not part of Origami and is not included in the app. Origami runs the `ffmpeg` and `ffprobe` you install yourself, for example with `brew install ffmpeg`, under ffmpeg's own licence.
 
-The app's own text is set in Paper Mono (Regular, Medium and Bold), copyright 2025 The Paper-Mono.Git Project Authors (https://github.com/paper-design/paper-mono), included in the app under the SIL Open Font License 1.1.
+The app's own text and the docs site are set in Paper Mono, copyright 2025 The Paper-Mono.Git Project Authors (https://github.com/paper-design/paper-mono), included in both under the SIL Open Font License 1.1.
 
 | Crate | Version | Licence | Source |
 | --- | --- | --- | --- |
