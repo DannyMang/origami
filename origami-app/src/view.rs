@@ -681,6 +681,7 @@ impl Origami {
                         this.blink(cx);
                         this.place(e.position, window);
                         (this.anchor, this.picking) = (this.cursor, Some(e.position).filter(|_| e.click_count == 1));
+                        this.away = true;
                         this.widen(e.click_count);
                         if e.click_count == 3 {
                             this.glance(i, cx);
@@ -889,6 +890,13 @@ impl Origami {
                     .bg(rgb(PANEL))
                     .border_b_1()
                     .border_color(rgb(BORDER))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.away = false;
+                            cx.notify();
+                        }),
+                    )
                     .child(
                         div()
                             .flex()
@@ -896,7 +904,7 @@ impl Origami {
                             .when(q.is_empty(), |d| d.flex_row_reverse().text_color(rgb(DIM)))
                             .when(bad, |d| d.text_color(rgb(RED)))
                             .child(if q.is_empty() { "Search\u{2026}".into() } else { q.clone() })
-                            .child(div().w(px(1.)).h(px(14.)).bg(rgb(BLUE))),
+                            .when(!self.away, |d| d.child(div().w(px(1.)).h(px(14.)).bg(rgb(BLUE)))),
                     )
                     .child(div().flex_1())
                     .child(mode("Aa", 0))
