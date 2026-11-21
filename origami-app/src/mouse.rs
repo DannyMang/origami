@@ -443,6 +443,24 @@ mod tests {
         assert_eq!(drag(cx, 2. * glyph), Some(((0, 3), (0, 5))));
     }
 
+    // Clicking in the code while the search bar is open should send typing to the code, and Find should send it back to the bar.
+    #[gpui::test]
+    fn clicks_leave_the_search_bar(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = window(cx, "leave", "stack(\n  color(\"#203040\").for(4),\n)");
+        cx.run_until_parked();
+        view.update(cx, |o, _| o.finding = Some("co".into()));
+        let at = view.update_in(cx, |o, window, _| {
+            let w = f32::from(window.viewport_size().width);
+            gpui::point(px(w - o.side + o.inset() + 2.45 * o.glyph()), px(o.head() + o.row() / 2.))
+        });
+        cx.simulate_click(at, Default::default());
+        cx.simulate_keystrokes("x cmd-f l");
+        assert_eq!(
+            view.update(cx, |o, _| (o.lines[0].clone(), o.finding.clone())),
+            ("stxack(".into(), Some("col".into()))
+        );
+    }
+
     fn window<'a>(cx: &'a mut gpui::TestAppContext, name: &str, src: &str) -> (gpui::Entity<Origami>, &'a mut gpui::VisualTestContext) {
         let path = env::temp_dir().join(format!("origami-{name}-test.js"));
         fs::write(&path, src).unwrap();

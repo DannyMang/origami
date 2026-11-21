@@ -87,7 +87,7 @@ impl Origami {
             return cx.notify();
         }
         let again = key.modifiers.platform && key.key == "g";
-        if self.finding.is_some() && (again || !(key.modifiers.platform || save)) {
+        if self.finding.is_some() && (again || !(self.away || key.modifiers.platform || save)) {
             self.search(if again { "enter" } else { &k }, key.modifiers.shift);
             return cx.notify();
         }
@@ -109,7 +109,9 @@ impl Origami {
                 }
             }
             (true, "f") => {
-                self.finding = self.finding.take().xor(Some(String::new()));
+                if !mem::take(&mut self.away) || self.finding.is_none() {
+                    self.finding = self.finding.take().xor(Some(String::new()));
+                }
                 self.aim();
             }
             (true, "0") => self.reset(),
