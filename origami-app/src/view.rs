@@ -11,11 +11,12 @@ use crate::{
 };
 use gpui::{
     App, Bounds, ClipboardItem, Context, Div, FontWeight, HighlightStyle, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ObjectFit, ParentElement, PathBuilder, Pixels, Render, ScrollWheelEvent, Styled, StyledImage, StyledText,
-    Window, canvas, deferred, div, img, point, prelude::*, px, relative, rgb, rgba,
+    MouseMoveEvent, MouseUpEvent, ObjectFit, ParentElement, Path, PathBuilder, Pixels, Render, ScrollWheelEvent, Styled, StyledImage,
+    StyledText, Window, canvas, deferred, div, img, point, prelude::*, px, relative, rgb, rgba,
 };
 use origami_lang::{Clip, Kind, Timeline};
 use std::{
+    cell::RefCell,
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
     mem,
@@ -115,18 +116,31 @@ fn shown(s: &str, cols: Range<usize>) -> (usize, StyledText) {
     (s[..a].chars().count(), StyledText::new(s[a..b].to_string()).with_highlights(marks))
 }
 
+thread_local! {
+    static WAVES: RefCell<Vec<(Bounds<Pixels>, Vec<f32>, Path<Pixels>)>> = RefCell::default();
+}
+
 pub fn wave(bars: Vec<f32>, ink: u32) -> Div {
     let draw = move |b: Bounds<Pixels>, _, window: &mut Window, _: &mut App| {
-        let w = b.size.width / bars.len().max(1) as f32;
-        let edge = |i: usize, side: f32| {
-            let y = b.origin.y + b.size.height * (0.5 + side * bars[i].max(0.04) / 2.);
-            [point(b.origin.x + w * i as f32, y), point(b.origin.x + w * (i + 1) as f32, y)]
-        };
-        let top = (0..bars.len()).flat_map(|i| edge(i, -1.));
-        let bottom = (0..bars.len()).rev().flat_map(|i| edge(i, 1.).into_iter().rev());
-        let mut shape = PathBuilder::fill();
-        shape.add_polygon(&top.chain(bottom).collect::<Vec<_>>(), true);
-        if let Ok(shape) = shape.build() {
+        let kept = WAVES.with_borrow(|k| k.iter().find(|k| k.0 == b && k.1 == bars).map(|k| k.2.clone()));
+        let shape = kept.or_else(|| {
+            let w = b.size.width / bars.len().max(1) as f32;
+            let edge = |i: usize, side: f32| {
+                let y = b.origin.y + b.size.height * (0.5 + side * bars[i].max(0.04) / 2.);
+                [point(b.origin.x + w * i as f32, y), point(b.origin.x + w * (i + 1) as f32, y)]
+            };
+            let top = (0..bars.len()).flat_map(|i| edge(i, -1.));
+            let bottom = (0..bars.len()).rev().flat_map(|i| edge(i, 1.).into_iter().rev());
+            let mut shape = PathBuilder::fill();
+            shape.add_polygon(&top.chain(bottom).collect::<Vec<_>>(), true);
+            let shape = shape.build().ok()?;
+            WAVES.with_borrow_mut(|k| {
+                k.push((b, bars, shape.clone()));
+                k.drain(..k.len().saturating_sub(64));
+            });
+            Some(shape)
+        });
+        if let Some(shape) = shape {
             window.paint_path(shape, rgba(ink << 8 | 0xb0));
         }
     };
@@ -1298,7 +1312,44 @@ impl Render for Origami {
 
 #[cfg(test)]
 mod tests {
-    use std::rc::Rc;
+    use std::{fs, rc::Rc};
+
+    // A waveform drawn again in the same place with the same bars reuses the shape built for it, while
+    // a new place builds a new one and at most 64 shapes are kept.
+    #[gpui::test]
+    fn waves_keep_their_shape(cx: &mut gpui::TestAppContext) {
+        let dir = std::env::temp_dir().join("origami-waves-test");
+        fs::create_dir_all(&dir).unwrap();
+        let made = origami_lang::status(
+            origami_lang::ffmpeg()
+                .args(["-v", "error", "-y", "-f", "lavfi", "-i", "anullsrc", "-t", "4"])
+                .arg(dir.join("s.wav")),
+        );
+        assert!(made.unwrap().success());
+        let (path, src) = (dir.join("edit.js"), "stack(sound(\"s.wav\"))");
+        fs::write(&path, src).unwrap();
+        let tl = origami_lang::eval(&path, false, origami_engine::footprint).unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            (app.script, app.lines, app.tl) = (path.clone(), vec![src.into()], std::sync::Arc::new(tl));
+            app.assets
+                .insert(app.tl.clips[0].src.clone(), Some(crate::Asset::Wave(vec![0.5; 80])));
+            app
+        });
+        let mut draw = |f: &dyn Fn(&mut crate::Origami)| {
+            view.update(cx, |o, cx| {
+                f(o);
+                cx.notify();
+            });
+            cx.run_until_parked();
+            super::WAVES.with_borrow(|k| k.len())
+        };
+        let first = draw(&|_| {});
+        assert!(first > 0);
+        assert!((1..6).all(|i| draw(&|o| o.t = i as f64 / 30.) == first));
+        let zoomed: Vec<usize> = (1..100).map(|i| draw(&|o| o.zoom = 1. + i as f64 / 20.)).collect();
+        assert_eq!((zoomed[0], zoomed[98]), (first + 1, 64));
+    }
 
     // The code pane's folds, lint and search hits should be worked out once and kept while nothing
     // they depend on changes, and worked out again when the script, a fold, the error or the search
