@@ -7,6 +7,7 @@ What changed in each version of Origami. The launch screen shows the version you
 ### Nov 20
 
 - With the search bar open, clicking in the code now sends your typing to the code. Before, it kept going into the search box. Click the bar or press ⌘F to type in the search again.
+- Origami is now open source under the GNU General Public License, version 3: anyone may use, change and share it, and whoever shares it or a changed version shares the source under the same licence. Before, it was under the Functional Source License, which did not allow competing commercial use for two years.
 - Origami's own text, in the code, the timeline and every panel, is now set in Paper Mono, which is built into the app. These docs use it too. Text in your videos is unchanged.
 - While scrubbing, a `.LRF` proxy beside a clip is only used when it is a plain file. One that is something else, such as a named pipe, is skipped in favour of the clip itself; before, it could stall the preview for 20 seconds at a time.
 - Reading media takes far less memory for huge pictures: a 1 MB, 16000×16000 PNG made each read of it take about 1 GB, and now takes about 6 MB, because ffprobe no longer decodes the picture just to learn its size. A project opened for the first time reads at most 8 new media files at once instead of 32. The sizes, lengths and kinds Origami learns from each file are unchanged.
