@@ -518,6 +518,7 @@ pub struct Preview {
     primed: (Vec<u32>, (usize, usize)),
     pub(crate) room: usize,
     most: usize,
+    shown: usize,
     pub fast: bool,
     pub rough: bool,
 }
@@ -539,6 +540,7 @@ impl Default for Preview {
             primed: Default::default(),
             room,
             most,
+            shown: 0,
             fast: false,
             rough: false,
         }
@@ -616,6 +618,7 @@ impl Preview {
         });
         let lrf = |c: &Clip| Path::new(&c.src).with_extension("LRF").to_string_lossy().into_owned();
         study(tl.clips.iter().filter(shown).flat_map(|c| [c.src.clone(), lrf(c)]).collect());
+        self.shown = tl.clips.iter().filter(shown).count() + 1;
         let mut all = true;
         for c in tl.clips.iter().filter(shown) {
             let (tw, th, ..) = place(c, (pw as f64, ph as f64), k);
@@ -687,7 +690,8 @@ impl Preview {
                         .stderr(Stdio::null()),
                 )
                 .ok()?;
-                self.decoders.drain(..self.decoders.len().saturating_sub(self.most - 1));
+                self.decoders
+                    .drain(..self.decoders.len().saturating_sub(self.most.max(self.shown) - 1));
                 (
                     key.clone(),
                     Decoder {
@@ -1066,6 +1070,7 @@ impl Preview {
         }
         let mut out = [0, 0, 0, 255].repeat(pw * ph);
         (self.rough, self.back) = (false, !self.fast && t < self.at && self.at - t < 5. / tl.fps as f64);
+        self.shown = tl.clips.iter().filter(|c| c.kind == Kind::Video && c.video && live(c, t)).count() + 1;
         self.at = t;
         let was = std::mem::replace(&mut self.was, (std::mem::take(&mut self.stills), std::mem::take(&mut self.texts)));
         self.spare
@@ -1349,6 +1354,41 @@ mod tests {
         let mut pv = Preview::default();
         pv.frame(&tl, 0., (64, 36));
         assert!(pv.decoders.iter().any(|(k, _)| k.1 == 64));
+    }
+
+    // With more videos on screen than the usual number of decoders, each keeps its own decoder from frame
+    // to frame instead of starting a new ffmpeg for every layer of every frame.
+    #[test]
+    fn every_video_on_screen_keeps_its_decoder() {
+        let file = scratch("wall").join("a.mp4");
+        film(&file, "testsrc=s=64x36:r=30:d=1", &[]);
+        let n = Preview::default().most + 2;
+        let layer = |i: usize| Clip {
+            src: file.to_string_lossy().into(),
+            w: 64,
+            h: 36,
+            scale: Val::Fixed(1. - i as f64 * 0.1),
+            ..clip("video", "")
+        };
+        let tl = Timeline {
+            fps: 30,
+            size: (64, 36),
+            duration: 1.,
+            clips: (0..n).map(layer).collect(),
+            ..Default::default()
+        };
+        let mut pv = Preview::default();
+        let ids = |pv: &Preview| {
+            let mut ids: Vec<u32> = pv.decoders.iter().flat_map(|(_, d)| d.child.as_ref().map(Child::id)).collect();
+            ids.sort();
+            ids
+        };
+        pv.frame(&tl, 0., (64, 36));
+        let first = ids(&pv);
+        for k in 1..20 {
+            pv.frame(&tl, k as f64 / 30., (64, 36));
+        }
+        assert_eq!((first.len(), ids(&pv)), (n, first));
     }
 
     // A media file replaced on disk under the same name should show its new pictures in a preview
