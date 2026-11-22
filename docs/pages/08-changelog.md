@@ -7,6 +7,7 @@ What changed in each version of Origami. The launch screen shows the version you
 ### Nov 22
 
 - A save that cannot be written, such as onto a full disk or a read-only drive, now keeps your changes on screen as unsaved and says why in the status bar, and Save when Origami asks about unsaved changes then stays open instead of closing and losing them. Before, the failure was silent. Saves are also written to a hidden file beside the script and moved into place, so a save cut short leaves the last saved script whole instead of half written; the file keeps its permissions and Finder tags. The same goes for `origami.lock` and Origami's own files.
+- Origami › Check for Updates… says "Could not check for updates" when it cannot reach GitHub or gets an answer it cannot trust, instead of saying you have the newest version. When a version of Origami is no longer supported, it says so in an alert each time it opens, with Download and Later; it keeps working either way.
 
 ### Nov 21
 

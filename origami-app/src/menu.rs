@@ -1,6 +1,6 @@
 use crate::{
     Origami, pulse,
-    release::{VERSION, latest},
+    release::{Update, VERSION, latest},
     view::DOCS,
 };
 use gpui::{
@@ -240,21 +240,36 @@ impl Origami {
         let found = cx.background_executor().spawn(async { latest() });
         cx.spawn_in(window, async move |this, cx| {
             let found = found.await;
-            let said = match &found {
-                Some((tag, _)) => format!("Origami v{tag} is available"),
-                None => format!("Origami v{VERSION} is the newest version"),
-            };
-            let picks = match found {
-                Some(_) => [PromptButton::new("Download"), PromptButton::cancel("Later")].to_vec(),
-                None => [PromptButton::ok("OK")].to_vec(),
-            };
-            let answer = cx.prompt(PromptLevel::Info, &said, None, &picks);
-            this.update(cx, |this, cx| {
-                this.latest = found.clone();
-                cx.notify();
-            })?;
-            if let (Ok(0), Some((_, url))) = (answer.await, found) {
-                cx.update(|_, cx| cx.open_url(&url))?;
+            this.update_in(cx, |this, window, cx| this.offer(found, true, window, cx))
+        })
+        .detach();
+    }
+
+    pub fn offer(&mut self, found: Option<Option<Update>>, asked: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(found) = &found {
+            self.latest = found.clone();
+            cx.notify();
+        }
+        let (said, detail) = match &found {
+            Some(Some((tag, _, true))) => (
+                format!("Origami v{tag} is available"),
+                Some(format!(
+                    "v{VERSION} is no longer supported. Download the new version to keep getting fixes; your scripts stay as they are."
+                )),
+            ),
+            _ if !asked => return,
+            Some(Some((tag, ..))) => (format!("Origami v{tag} is available"), None),
+            Some(None) => (format!("Origami v{VERSION} is the newest version"), None),
+            None => ("Could not check for updates".into(), None),
+        };
+        let picks = match found {
+            Some(Some(_)) => [PromptButton::new("Download"), PromptButton::cancel("Later")].to_vec(),
+            _ => [PromptButton::ok("OK")].to_vec(),
+        };
+        let answer = window.prompt(PromptLevel::Info, &said, detail.as_deref(), &picks, cx);
+        cx.spawn(async move |_, cx| {
+            if let (Ok(0), Some(Some((_, url, _)))) = (answer.await, found) {
+                cx.update(|cx| cx.open_url(&url))?;
             }
             anyhow::Ok(())
         })
@@ -566,5 +581,38 @@ mod tests {
         view.update_in(cx, |o, window, cx| o.switch(path.with_file_name("clip.mp4"), window, cx));
         assert_eq!(cx.pending_prompt().map(|p| p.0), Some("Origami opens .js scripts".into()));
         cx.simulate_prompt_answer("OK");
+    }
+
+    // Check for Updates says when it could not check instead of claiming the newest version; when Origami
+    // opens, an ordinary update or a failed check asks nothing and a failed check keeps the update already
+    // known, while a version below the feed's minimum is told so, Download opening the release page.
+    #[gpui::test]
+    fn offers_updates(cx: &mut TestAppContext) {
+        let (view, cx, _) = project(cx, "offer");
+        let get = "https://github.com/DannyMang/origami/releases/latest".to_string();
+        let up: Update = ("99.0.0".into(), get.clone(), false);
+        let offer = |cx: &mut VisualTestContext, found: Option<Option<Update>>, asked: bool| {
+            view.update_in(cx, |o, window, cx| o.offer(found, asked, window, cx))
+        };
+        offer(cx, None, true);
+        assert_eq!(cx.pending_prompt().map(|p| p.0), Some("Could not check for updates".into()));
+        cx.simulate_prompt_answer("OK");
+        offer(cx, Some(None), true);
+        assert_eq!(
+            cx.pending_prompt().map(|p| p.0),
+            Some(format!("Origami v{VERSION} is the newest version"))
+        );
+        cx.simulate_prompt_answer("OK");
+        for found in [Some(Some(up.clone())), None] {
+            offer(cx, found, false);
+            assert!(!cx.has_pending_prompt());
+        }
+        assert_eq!(view.update(cx, |o, _| o.latest.clone()), Some(up));
+        offer(cx, Some(Some(("99.0.0".into(), get.clone(), true))), false);
+        let (said, detail) = cx.pending_prompt().unwrap();
+        assert!(said == "Origami v99.0.0 is available" && detail.starts_with(&format!("v{VERSION} is no longer supported")));
+        cx.simulate_prompt_answer("Download");
+        cx.run_until_parked();
+        assert_eq!(cx.opened_url(), Some(get));
     }
 }

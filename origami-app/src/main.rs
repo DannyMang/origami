@@ -177,7 +177,7 @@ struct Origami {
     mic: Option<String>,
     mics: Vec<String>,
     stir: Instant,
-    latest: Option<(String, String)>,
+    latest: Option<release::Update>,
     focus: FocusHandle,
 }
 
@@ -659,16 +659,13 @@ fn main() {
                     }
                 })
                 .detach();
-                cx.spawn(async move |this, cx| {
+                cx.spawn_in(window, async move |this, cx| {
                     let latest = cx.background_executor().spawn(async {
                         pulse::launch();
                         release::latest()
                     });
                     let latest = latest.await;
-                    this.update(cx, |this, cx| {
-                        this.latest = latest;
-                        cx.notify();
-                    })
+                    this.update_in(cx, |this, window, cx| this.offer(latest, false, window, cx))
                 })
                 .detach();
                 let mut app = fresh(focus, recent);

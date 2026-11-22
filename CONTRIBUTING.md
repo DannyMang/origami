@@ -78,7 +78,7 @@ A build from source sends no usage or crash reports and never asks to, unless `O
 
 `./bundle.sh` builds `dist/Origami.app` and `dist/Origami.dmg`, with `LICENSE` and `THIRD-PARTY.md` in the app's Resources. `FFMPEG_DIR=<folder>` copies `ffmpeg` and `ffprobe` from that folder into the app; they must be static builds, because under the hardened runtime a copied Homebrew ffmpeg cannot load its libraries. Without `SIGN_ID` the app is signed ad-hoc, which runs on any Apple silicon Mac once its owner allows it in Privacy & Security; `SIGN_ID="Developer ID Application: …"` with `NOTARY_PROFILE=<notarytool keychain profile>` signs with that identity, notarises and staples instead. Both use the hardened runtime and `origami.entitlements`.
 
-`./release.sh <version>` checks the tree, sets the version in the three `Cargo.toml` files and `latest.json`, dates the changelog's "(not yet released)" heading, runs the checks and `./bundle.sh`, and prints the dmg's SHA-256 and the `git` and `gh` commands to publish it. `--dry-run` only checks and prints. Update `THIRD-PARTY.md` when a `Cargo.lock` gains or changes a crate.
+`./release.sh <version>` checks the tree, sets the version in the three `Cargo.toml` files and `latest.json`, dates the changelog's "(not yet released)" heading, runs the checks and `./bundle.sh`, and prints the dmg's SHA-256 and the `git` and `gh` commands to publish it. `--dry-run` only checks and prints. To tell older versions they should update, add `"minimum": "<oldest supported version>"` to `latest.json`: a version below it says so in an alert each time it opens, with Download and Later, and keeps working. Update `THIRD-PARTY.md` when a `Cargo.lock` gains or changes a crate.
 
 ## House style
 

@@ -1077,7 +1077,7 @@ impl Origami {
                     .gap(px(4.))
                     .child(div().text_size(px(22.)).child("origami"))
                     .child(match self.latest.clone() {
-                        Some((tag, url)) => div()
+                        Some((tag, url, _)) => div()
                             .text_size(px(12.))
                             .text_color(rgb(BLUE))
                             .underline()
