@@ -1,7 +1,7 @@
 use crate::preview::{Preview, lead, learn};
 use crate::{grade, lut::Lut, shape, text};
 use anyhow::{Result, bail};
-use origami_lang::{Clip, Kind, Timeline, Val, ffmpeg, start, status};
+use origami_lang::{Clip, Kind, Timeline, Val, ffmpeg, literal, start, status};
 use std::{
     env, fs,
     io::{BufRead, BufReader, Read, Write},
@@ -230,16 +230,10 @@ fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path, (k, (w, h)): (f64, (
         let solid = c.kind == Kind::Color && text::rgba(&c.src)[3] == 255;
         let (video, mut cut) = (video && tw >= 1. && th >= 1., String::new());
         match c.kind {
-            Kind::Image if video => ins.extend(own(&[
-                "-loop",
-                "1",
-                "-t",
-                &len.to_string(),
-                "-protocol_whitelist",
-                "file",
-                "-i",
-                &c.src,
-            ])),
+            Kind::Image if video => {
+                let lead = ["-loop", "1", "-t", &len.to_string(), "-protocol_whitelist", "file"];
+                ins.extend(own(&[&lead, literal(&c.src), &["-i", &c.src]].concat()))
+            }
             Kind::Text | Kind::Rect | Kind::Line | Kind::Path | Kind::Color if video && !solid => {
                 let file = dir.join(format!("text-{i}.bgra")).to_string_lossy().to_string();
                 let _ = fs::write(&file, shape::image(c, size, k, 0).0);
@@ -801,5 +795,38 @@ mod tests {
         });
         let _ = ff.kill();
         assert!(gone);
+    }
+
+    // A still image named with a frame number pattern, such as a%d.png, shows that very file in the
+    // export, the preview and the timeline thumbnail, at its own size, not a numbered neighbour like a1.png.
+    #[test]
+    fn numbered_names_show_their_own_picture() {
+        let _tidy = TIDY.read();
+        let dir = scratch("numbered");
+        film(&dir.join("w.png"), "color=white:s=16x16", &["-frames:v", "1"]);
+        film(&dir.join("a1.png"), "color=black:s=8x8", &["-frames:v", "1"]);
+        fs::rename(dir.join("w.png"), dir.join("a%d.png")).unwrap();
+        fs::write(dir.join("edit.js"), "settings({ size: [16, 16] })\nimage('a%d.png').for(1)").unwrap();
+        let tl = origami_lang::eval(&dir.join("edit.js"), true, footprint).unwrap();
+        let [src, out] = ["a%d.png", "out.mp4"].map(|f| dir.join(f).to_string_lossy().to_string());
+        render(&tl, &out, &Opts::default(), |_| {}).unwrap();
+        let args = [
+            "-v",
+            "error",
+            "-i",
+            &out,
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "gray",
+            "-",
+        ];
+        let made = origami_lang::output(ffmpeg().args(args)).unwrap().stdout;
+        let shown = Preview::default().frame(&tl, 0.5, (16, 16));
+        let thumb = crate::thumb(&src, 0., 16, 16).unwrap();
+        let white = [made[8 * 16 + 8], shown[(8 * 16 + 8) * 4], thumb[(8 * 16 + 8) * 4]].map(|v| v > 200);
+        assert_eq!((tl.clips[0].w, white), (16, [true; 3]));
     }
 }

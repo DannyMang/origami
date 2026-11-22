@@ -114,6 +114,31 @@ pub fn playable(path: &Path) -> io::Result<()> {
     }
 }
 
+pub fn literal(path: &str) -> &'static [&'static str] {
+    let stills = [
+        "png", "jpg", "jpeg", "bmp", "tif", "tiff", "tga", "exr", "dpx", "jp2", "qoi", "ppm", "pgm", "pam", "hdr", "sgi",
+    ];
+    let ext = Path::new(path)
+        .extension()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_ascii_lowercase();
+    let (mut chars, mut marks) = (path.chars(), 0);
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            match chars.find(|c| !c.is_ascii_digit()) {
+                Some('d') => marks += 1,
+                Some('%') => {}
+                _ => return &[],
+            }
+        }
+    }
+    match marks == 1 && stills.contains(&ext.as_str()) {
+        true => &["-pattern_type", "none"],
+        false => &[],
+    }
+}
+
 pub fn start(cmd: &mut Command) -> io::Result<Child> {
     if absent(cmd.get_program()).is_some() {
         cmd.get_args().try_for_each(|a| playable(Path::new(a)))?;
@@ -246,6 +271,29 @@ mod tests {
         assert!(output(ffprobe().arg(&film)).unwrap().status.success());
         assert!(status(Command::new("mkfifo").arg(dir.join("pipe.m3u8"))).unwrap().success());
         assert!(playable(&dir.join("pipe.m3u8")).is_ok() && playable(&dir.join("new.m3u8")).is_ok());
+    }
+
+    // A still image whose path holds one frame number pattern such as %d or %03d is read as that very
+    // file, while other names, films and pictures that ffmpeg never reads as numbered files are left alone.
+    #[test]
+    fn numbered_names_are_read_as_named() {
+        let none: &[&str] = &["-pattern_type", "none"];
+        for path in ["a%d.png", "/x/a%05d.JPG", "/x%3d/a.tif", "a%%%d.jpeg"] {
+            assert_eq!(literal(path), none, "{path}");
+        }
+        for path in [
+            "a1.png",
+            "b50%.png",
+            "a%%d.png",
+            "a%d%d.png",
+            "a%x.png",
+            "a%d.gif",
+            "a%d.mp4",
+            "a%d.avif",
+            "a%d",
+        ] {
+            assert!(literal(path).is_empty(), "{path}");
+        }
     }
 
     // A missing ffmpeg or ffprobe should say in plain words how to install it, and any other missing

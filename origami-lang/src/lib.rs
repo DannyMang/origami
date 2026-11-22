@@ -34,7 +34,7 @@ use std::{
     thread,
     time::{Duration, Instant, UNIX_EPOCH},
 };
-pub use tool::{ffmpeg, ffprobe, missing, output, start, status, watch};
+pub use tool::{ffmpeg, ffprobe, literal, missing, output, start, status, watch};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -377,6 +377,7 @@ fn scan(path: &Path, prev: Option<&Media>, relock: bool, rel: &str) -> Result<Me
         ffprobe()
             .args(["-v", "error", "-of", "json", "-show_entries"])
             .arg("format=duration:stream=codec_type,width,height:stream_side_data=rotation")
+            .args(literal(&path.to_string_lossy()))
             .arg(path),
     )?;
     let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
