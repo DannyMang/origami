@@ -188,7 +188,7 @@ mod tests {
         let dir = fs::canonicalize(env::temp_dir()).unwrap().join("origami-begin-test");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("films/.hidden")).unwrap();
-        cx.update(|cx| crate::menu::install(cx, &[]));
+        cx.update(crate::menu::install);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let app = crate::fresh(cx.focus_handle(), vec![]);
             window.focus(&app.focus);

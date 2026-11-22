@@ -653,7 +653,7 @@ fn main() {
             .lines()
             .map(PathBuf::from)
             .collect();
-        menu::install(cx, &recent);
+        menu::install(cx);
         let options = WindowOptions {
             titlebar: Some(TitlebarOptions {
                 title: Some("origami".into()),
@@ -705,8 +705,9 @@ fn main() {
                 })
                 .detach();
                 let mut app = fresh(focus, recent);
-                if !script.as_os_str().is_empty() {
-                    app.open(script, cx);
+                match script.as_os_str().is_empty() {
+                    true => app.hoist(cx),
+                    false => app.open(script, cx),
                 }
                 app
             })

@@ -2,7 +2,6 @@ use crate::{
     Origami,
     clip::set,
     crash,
-    menu::menus,
     scene::{FOOT, LEAD, sink},
     shelf::Shelf,
     view::{HEAD, RULER},
@@ -86,7 +85,7 @@ impl Origami {
         let (list, all) = (recent(), self.recent.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>());
         let _ = fs::create_dir_all(list.parent().unwrap());
         let _ = origami_lang::save(&list, all.join("\n"));
-        cx.set_menus(menus(&self.recent));
+        self.hoist(cx);
         (self.script, self.mtime, self.t, self.dirty, self.clash) = (path, None, 0., false, false);
         (self.past, self.future, self.cursor, self.top, self.left) = (Default::default(), Default::default(), None, 0., 0.);
         (self.folded, self.fresh, self.saves) = (vec![], true, None);
