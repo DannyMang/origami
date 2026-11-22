@@ -156,6 +156,7 @@ struct Origami {
     reading: bool,
     boot: Option<Instant>,
     clash: bool,
+    sealed: bool,
     player: Option<(Instant, f64, Option<Player>)>,
     cued: bool,
     planning: bool,
@@ -267,6 +268,7 @@ impl Origami {
 
     fn load(&mut self, cx: &mut Context<Self>) {
         let read = origami_lang::load(&self.script);
+        self.sealed = read.is_err() && fs::metadata(&self.script).is_ok();
         let gone = read.is_err() && !self.fresh;
         let disk: Vec<String> = read.unwrap_or_default().lines().map(String::from).collect();
         let differs = disk != self.lines;
@@ -597,6 +599,7 @@ fn fresh(focus: FocusHandle, recent: Vec<PathBuf>) -> Origami {
         reading: false,
         boot: None,
         clash: false,
+        sealed: false,
         player: None,
         cued: false,
         planning: false,

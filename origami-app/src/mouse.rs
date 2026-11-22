@@ -385,6 +385,34 @@ mod tests {
         assert_eq!(view.update(cx, |o, _| o.tl.clips.len()), 1);
     }
 
+    // A script that is there but cannot be read, such as one not saved as UTF-8, opens with its error and
+    // an empty editor that is never saved over it, while a script that is gone can be saved again.
+    #[gpui::test]
+    fn never_saves_over_an_unread_script(cx: &mut TestAppContext) {
+        let dir = env::temp_dir().join("origami-unread-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (odd, gone) = (dir.join("odd.js"), dir.join("gone.js"));
+        fs::write(&odd, b"text(\"caf\xe9\")\n").unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| crate::fresh(cx.focus_handle(), vec![]));
+        view.update(cx, |o, cx| o.open(odd.clone(), cx));
+        cx.run_until_parked();
+        view.update(cx, |o, _| {
+            assert!(o.lines.is_empty() && !o.err.is_empty());
+            o.store();
+            o.lines = vec!["text(\"b\")".into()];
+            o.store();
+        });
+        assert_eq!(fs::read(&odd).unwrap(), b"text(\"caf\xe9\")\n");
+        view.update(cx, |o, cx| o.open(gone.clone(), cx));
+        cx.run_until_parked();
+        view.update(cx, |o, _| {
+            o.lines = vec!["text(\"b\")".into()];
+            o.store();
+        });
+        assert_eq!(fs::read_to_string(&gone).unwrap(), "text(\"b\")\n");
+    }
+
     // Thumbnails and waveforms wait while a project is loading, so its first picture is drawn first, and
     // start once it is shown.
     #[gpui::test]
