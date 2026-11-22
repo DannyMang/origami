@@ -2,7 +2,7 @@
 
 ## trim
 
-Keeps the source between two times.
+Keeps the source between two times. It works on one clip: on a `stack` or `cat` it is an error, so trim the clips inside.
 
 ```origami
 video("clips/funny.mp4").trim("0:02", "0:05")
@@ -10,7 +10,7 @@ video("clips/funny.mp4").trim("0:02", "0:05")
 
 ## for
 
-Sets how long the clip lasts.
+Sets how long the clip lasts. On a `stack` or `cat`, clips inside that would run longer are cut at its end, sound included.
 
 ```origami
 settings({ size: [640, 360] })
@@ -41,7 +41,7 @@ cat(
 
 ## speed
 
-Plays faster or slower.
+Plays faster or slower. On a `stack` or `cat`, each clip inside plays faster or slower on its own. A [merged group](arranging.html#merge) takes it before `merge`: `stack(a, b).speed(2).merge()`.
 
 ```origami
 video("clips/funny.mp4").trim(0, 6).speed(2)
@@ -133,7 +133,7 @@ text("tilted", { size: 96 }).for(3).rotate(-10)
 
 ## loop
 
-Repeats the clip.
+Repeats the clip. On a `stack` or `cat`, the whole group repeats.
 
 ```origami
 video("clips/funny.mp4").trim(0, 1).loop(3)
@@ -149,6 +149,7 @@ The next seven methods change a clip's picture: `lens`, `blur`, `levels`, `noise
 - An effect stays inside the clip's own picture. Text and shapes are only as big as they look, so a blur or a wobble stops in a hard line at their box. Put them in a merged `stack` to give the effect the whole frame: `stack(text("glow")).merge().blur(10)`.
 - On a `stack` or `cat` that is not merged, each clip inside gets the effect on its own.
 - Values marked "takes keys" also take keys or a function of time. The others take a plain number.
+- A number outside an effect's range is brought to the nearest value inside it, and the status bar says so. Keys and functions of time for `lens` are held inside its range the same way.
 - Not yet: effects do nothing on text or captions that use `shown` or `each`.
 
 ## lens
@@ -173,9 +174,9 @@ video("clips/funny.mp4").trim(0, 3).blur(keys([0, 0], [3, 20]))
 
 ## levels
 
-Stretches the tones between two points, `black` and `white`, each a share from 0 to 1. Everything at or below `black` turns black, everything at or above `white` turns white, and the rest is spread evenly between. Moving them toward each other adds contrast. Keep `black` below `white`.
+Stretches the tones between two points, `black` and `white`, each a share from 0 to 1. Everything at or below `black` turns black, everything at or above `white` turns white, and the rest is spread evenly between. Moving them toward each other adds contrast. `white` must be above `black`: one at or below it is raised to just above it.
 
-Range: black and white 0 to 1. Both are needed.
+Range: black and white 0 to 1, white above black. Both are needed.
 
 ```origami
 video("clips/funny.mp4").trim(0, 3).levels(0.2, 0.8)
@@ -209,7 +210,7 @@ video("clips/funny.mp4").trim(0, 3).noise(0.12, t => t * 30)
 
 Replaces the picture's colours with soft grey clouds, made of noise at several sizes. The clip keeps its shape: text stays text, filled with clouds. It is meant as a texture: blend it with `"multiply"`, or use it as a `"luma"` [matte](arranging.html#matte).
 
-Options: `scale` is the size of the biggest clouds in pixels, above 0, default 100. `seed` picks the pattern, default 0. The seed takes keys and is rounded down to a whole number, so the clouds jump to a new pattern rather than drift.
+Options: `scale` is the size of the biggest clouds in pixels, 1 or more, default 100. `seed` picks the pattern, default 0. The seed takes keys and is rounded down to a whole number, so the clouds jump to a new pattern rather than drift.
 
 ```origami
 stack(
@@ -224,8 +225,8 @@ Eats into the picture's edges with a ragged line, like torn paper or ink. The ed
 
 | Option | What it does | Default |
 |---|---|---|
-| `border` | how far into the picture the roughness reaches, in pixels | 8 |
-| `scale` | the size of the bumps: 100 is about 10 pixels, bigger is coarser. Above 0 | 100 |
+| `border` | how far into the picture the roughness reaches, in pixels. 0 or more | 8 |
+| `scale` | the size of the bumps: 100 is about 10 pixels, bigger is coarser. 1 or more | 100 |
 | `sharpness` | how crisp the torn edge is: 0 is a soft fade with no bumps, 3 to 5 is crisp. 0 or more | 1 |
 | `seed` | picks the pattern. Takes keys, rounded down to a whole number | 0 |
 
@@ -244,7 +245,7 @@ Pushes every pixel a short way in a direction that changes smoothly across the p
 | Option | What it does | Default |
 |---|---|---|
 | `amount` | how far pixels move, up to this many pixels each way. Takes keys | 50 |
-| `size` | the size of the ripples, in pixels. Above 0 | 100 |
+| `size` | the size of the ripples, in pixels. 1 or more | 100 |
 | `seed` | picks the pattern. Takes keys, rounded down to a whole number. Change it over time to make the ripples move | 0 |
 
 ```origami

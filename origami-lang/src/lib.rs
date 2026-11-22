@@ -1134,6 +1134,14 @@ fn finish(out: &str, kept: Vec<Vec<f32>>, files: Vec<(u32, PathBuf)>, measure: M
             c.label
         );
     }
+    for f in tl.clips.iter_mut().flat_map(|c| &mut c.fx) {
+        if let Fx::Lens(Val::Frames(n, s)) = f
+            && s.iter().any(|v| v.abs() > 170.)
+        {
+            s.iter_mut().for_each(|v| *v = v.clamp(-170., 170.));
+            tl.note = format!("line {n}: lens goes past 170 either way and is held at 170, the most it takes");
+        }
+    }
     tl.files = files;
     Ok(tl)
 }
@@ -1520,6 +1528,77 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         let t = tl("stack(text('x').for(2).loop(2).shift(1), color('#f00'))");
         let span: Vec<_> = t.clips.iter().map(|c| (c.start, c.end)).collect();
         assert_eq!(span, [(1., 3.), (3., 5.), (0., 5.)]);
+    }
+
+    // A stack or merged group given a length with for cuts the clips inside at its end, loop repeats a
+    // whole stack or group, and trim on a stack or speed on a merged group stop with an error on its line.
+    #[test]
+    fn groups_cut_and_repeat() {
+        let t = tl("cat(stack(color('#000').for(4), text('a').at(3)).merge().for(2), stack(rect(9, 9).for(1), text('b')).loop(2))");
+        let span: Vec<_> = t.clips.iter().map(|c| (c.start, c.end)).collect();
+        assert_eq!(span, [(0., 2.), (0., 2.), (2., 3.), (2., 3.), (3., 4.), (3., 4.)]);
+        assert_eq!((t.clips[0].kind, t.clips[4].kind, t.duration), (Kind::Group, Kind::Rect, 4.));
+        let dir = scratch("groups");
+        assert_eq!(
+            fails(&dir, "stack(text('a'))\n  .trim(0, 1)"),
+            "line 2: trim works on one clip, not a stack or cat: trim the clips inside"
+        );
+        assert_eq!(
+            fails(&dir, "stack(text('a')).merge()\n  .speed(2)"),
+            "line 2: speed goes before merge, like stack(a, b).speed(2).merge(), and speeds up each clip inside"
+        );
+    }
+
+    // Every clip of a matte is silent, and the matte's own at and shift move it from the start of the
+    // clip it cuts.
+    #[test]
+    fn mattes_are_silent_and_movable() {
+        let t = tl("stack(text('a').for(3).at(1).volume(2).matte(stack(rect(9, 9).for(1).volume(3)).shift(0.5)))");
+        let span: Vec<_> = t.clips.iter().map(|c| (c.kind, c.start, c.end, c.gain)).collect();
+        assert_eq!(span, [(Kind::Rect, 1.5, 2.5, 0.), (Kind::Text, 1., 4., 2.)]);
+    }
+
+    // An effect value outside what the effect can draw, keys included, is brought to the nearest value
+    // it takes with a note naming its line, while values inside are kept and NaN or Infinity stop the script.
+    #[test]
+    fn effects_stay_in_range() {
+        let t = tl(
+            "rect(9, 9).lens(180).levels(0.6, 0.4).levels(1, 1).noise(-0.5).fractal({ scale: 0 })
+  .roughen({ border: -1, scale: 0, sharpness: -1 }).displace({ size: 0 }).lens(-1e9)",
+        );
+        let want = r#"[{"lens":170.0},{"levels":[0.6,0.61,false]},{"levels":[0.99,1.0,false]},{"noise":[0.0,0.0]},{"fractal":{"scale":1.0,"seed":0.0}},{"roughen":{"border":0.0,"scale":1.0,"sharp":0.0,"seed":0.0}},{"displace":{"amount":50.0,"size":1.0,"seed":0.0}},{"lens":-170.0}]"#;
+        assert_eq!(serde_json::to_string(&t.clips[0].fx).unwrap(), want);
+        for (src, note) in [
+            ("lens(180)", "lens 180 is lowered to 170, the most it takes"),
+            ("lens(-1e9)", "lens -1000000000 is raised to -170, the least it takes"),
+            ("levels(0.6, 0.4)", "levels white 0.4 is raised to 0.61, the least it takes"),
+            (
+                "roughen({ sharpness: -1 })",
+                "roughen sharpness -1 is raised to 0, the least it takes",
+            ),
+            ("displace({ size: 0 })", "displace size 0 is raised to 1, the least it takes"),
+            (
+                "lens(keys([0, 0], [1, -200]))",
+                "lens goes past 170 either way and is held at 170, the most it takes",
+            ),
+        ] {
+            assert_eq!(tl(&format!("rect(9, 9).for(1)\n  .{src}")).note, format!("line 2: {note}"));
+        }
+        let Fx::Lens(v) = &tl("rect(9, 9).for(1).lens(keys([0, 0], [1, -200]))").clips[0].fx[0] else {
+            panic!()
+        };
+        assert_eq!((v.at(15), v.at(29)), (-100., -170.));
+        let t = tl("rect(9, 9).lens(30).levels(0.2, 0.8).roughen({ border: 0, sharpness: 0 }).noise(1)");
+        assert_eq!((t.clips[0].fx[1].clone(), t.note.as_str()), (Fx::Levels(0.2, 0.8, false), ""));
+        let dir = scratch("effects");
+        assert_eq!(
+            fails(&dir, "rect(9, 9)\n  .roughen({ scale: NaN })"),
+            "line 2: roughen scale takes a number"
+        );
+        assert_eq!(
+            fails(&dir, "rect(9, 9)\n  .lens(Infinity)"),
+            "line 2: lens takes a number or a function of time"
+        );
     }
 
     // Values that make no sense (a negative length, zero speed, a frame rate of 0, a loop without end,

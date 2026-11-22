@@ -22,7 +22,7 @@ Hover a call that takes numbers. It underlines. Click it to open its controls. D
 
 | Value | Control | Calls |
 |---|---|---|
-| Number | slider | `speed`, `volume`, `scale`, `loop`, `pos`, `fade`, `trim`, `for`, `at`, `shift`, every colour slider |
+| Number | slider | `speed`, `volume`, `scale`, `loop`, `pos`, `fade`, `trim`, `for`, `at`, `shift`, every colour slider, `displace` amount (0 to 100 pixels) and size |
 | Hue and amount | colour wheel, plus sliders | `shadowTint`, `highlightTint`, `wheel` |
 | Points | curve pad, plus sliders | `curve`, `hueVsSat`, `hueVsHue`, `hueVsLuma`, `lumaVsSat`, `satVsSat` |
 | Colour | colour wheel and a light slider | `color`, text and caption `color`, `hslSecondary` key |

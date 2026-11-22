@@ -6,9 +6,14 @@
   const digits = /^\d+$/, share = /^[\d.]+%$/, written = 'keys are written keys([0, 0], ["50%", 1], [-0.5, 0])', named = /(?:const|let|var)\s+(\w+)\s*=/, made = 'video sound image text captions caption color', bare = 'keys rect line path add mul cat stack settings delay bezier'
   const DAY = 86400, run = Symbol(), calm = Symbol()
   const must = (ok, say) => { if (!ok) throw new Error(at ? `line ${at}: ${say}` : say) }
-  const fin = (k, v) => {
+  const fit = (k, v, lo = -Infinity, hi = Infinity) => {
+    const x = typeof v === 'number' ? Math.min(Math.max(v, lo), hi) : v
+    if (x !== v) note = `line ${at}: ${k} ${v} is ${x > v ? 'raised' : 'lowered'} to ${x}, the ${x > v ? 'least' : 'most'} it takes`
+    return x
+  }
+  const fin = (k, v, lo, hi) => {
     if (!Number.isFinite(v)) throw new Error(`line ${at}: ${k} takes a number`)
-    return v
+    return fit(k, v, lo, hi)
   }
   const opts = (k, o, names) => names.forEach(n => fin(`${k} ${n}`, o[n] ?? 0))
   const dotted = (k, p) => must(__dots(p), `${k} takes points of two numbers, like [[0, 0], [0.5, 0.6], [1, 1]]`)
@@ -58,6 +63,7 @@
   const ops = {
     __proto__: null,
     trim: (d, a, b) => {
+      must(!d.kids, 'trim works on one clip, not a stack or cat: trim the clips inside')
       const top = d.total ? Math.ceil(d.total * 1e3) / 1e3 : DAY, i = Math.max(0, Math.min(span('trim', a), top - 0.04))
       return { ...d, in: i, out: Math.min(Math.max(b == null ? d.out : span('trim', b), i + 0.04), top) }
     },
@@ -65,6 +71,7 @@
     at: (d, t) => ({ ...d, at: span('at', t) }),
     shift: (d, s) => ({ ...d, shift: d.shift + span('shift', s) }),
     speed: (d, x) => {
+      must(!d.kids, 'speed goes before merge, like stack(a, b).speed(2).merge(), and speeds up each clip inside')
       must(x > 0, 'speed takes a number above 0')
       return { ...d, speed: d.speed * x }
     },
@@ -103,22 +110,26 @@
       must(['alpha', 'alphaInverted', 'luma', 'lumaInverted'].includes(how), 'matte is "alpha", "alphaInverted", "luma" or "lumaInverted"')
       return { ...d, matte: [m.$, how] }
     },
-    lens: (d, fov) => fx(d, { lens: anim('lens', fov) }),
+    lens: (d, fov) => fx(d, { lens: fit('lens', anim('lens', fov), -170, 170) }),
     blur: (d, r) => {
       if (r > 16384) [note, r] = [`line ${at}: blur ${r} is lowered to 16384, the widest a picture can be`, 16384]
       return fx(d, { blur: anim('blur', r) })
     },
     levels: (d, black, white, channel = 'rgb') => {
       must(['rgb', 'alpha'].includes(channel), 'levels is written levels(0.2, 0.8) or levels(0.2, 0.8, "alpha")')
-      return fx(d, { levels: [fin('levels', black), fin('levels', white), channel === 'alpha'] })
+      const b = fin('levels black', black, 0, 0.99)
+      return fx(d, { levels: [b, fin('levels white', white, Math.round(b * 100 + 1) / 100, 1), channel === 'alpha'] })
     },
-    noise: (d, amount, seed = 0) => fx(d, { noise: [fin('noise', amount), anim('noise', seed)] }),
-    fractal: (d, o = {}) => fx(d, { fractal: { scale: fin('fractal scale', o.scale ?? 100), seed: anim('fractal seed', o.seed ?? 0) } }),
+    noise: (d, amount, seed = 0) => fx(d, { noise: [fin('noise', amount, 0, 1), anim('noise', seed)] }),
+    fractal: (d, o = {}) => fx(d, { fractal: { scale: fin('fractal scale', o.scale ?? 100, 1), seed: anim('fractal seed', o.seed ?? 0) } }),
     roughen: (d, o = {}) => fx(d, {
-      roughen: { border: fin('roughen border', o.border ?? 8), scale: fin('roughen scale', o.scale ?? 100), sharp: fin('roughen sharpness', o.sharpness ?? 1), seed: anim('roughen seed', o.seed ?? 0) },
+      roughen: {
+        border: fin('roughen border', o.border ?? 8, 0), scale: fin('roughen scale', o.scale ?? 100, 1), sharp: fin('roughen sharpness', o.sharpness ?? 1, 0),
+        seed: anim('roughen seed', o.seed ?? 0),
+      },
     }),
     displace: (d, o = {}) => fx(d, {
-      displace: { amount: anim('displace amount', o.amount ?? 50), size: fin('displace size', o.size ?? 100), seed: anim('displace seed', o.seed ?? 0) },
+      displace: { amount: anim('displace amount', o.amount ?? 50), size: fin('displace size', o.size ?? 100, 1), seed: anim('displace seed', o.seed ?? 0) },
     }),
     merge: d => {
       must(d.kids, 'merge is for a stack or cat')
@@ -314,8 +325,7 @@
   })
   const vid = d => d.kids ? d.kids.some(c => vid(c.$)) : d.video
   const own = d => d.dur ?? (d.out == null ? null : (d.out - d.in) / d.speed)
-  const len = d => {
-    if (!d.kids) return own(d) == null ? null : own(d) * d.loop
+  const once = d => {
     if (d.dur != null) return d.dur
     const k = d.kids.map(c => c.$), end = c => (c.at ?? 0) + c.shift + (len(c) ?? 0)
     const m = d.cat
@@ -323,26 +333,39 @@
       : Math.max(0, ...k.map(end))
     return m > 0 ? m : null
   }
+  const len = d => {
+    if (!d.kids) return own(d) == null ? null : own(d) * d.loop
+    const m = once(d)
+    return m && m * d.loop
+  }
+  const upto = (x, stop) => x > stop + 1e-9 ? stop : x
   const cut = (d, t, n, out) => {
     if (!d.matte) return
-    const id = ++N
-    place(d.matte[0], t, n, out, id)
-    return [id, d.matte[1]]
+    const [m, how] = d.matte, id = ++N, k = out.length
+    place(m, t + (m.at ?? 0) + m.shift, n, out, id)
+    out.slice(k).forEach(c => c.gain = 0)
+    return [id, how]
   }
-  const place = (d, t, fill, out, into = 0) => {
+  const place = (d, t, fill, out, into = 0, stop = Infinity) => {
     if (!d.kids) {
       const n = own(d) ?? fill
-      for (let i = 0; i < d.loop; i++) out.push({ ...d, start: t + i * n, end: t + (i + 1) * n, into, matte: cut(d, t + i * n, n, out) })
+      for (let i = 0; i < d.loop && t + i * n < stop - 1e-9; i++) {
+        const s = t + i * n
+        out.push({ ...d, start: s, end: upto(t + (i + 1) * n, stop), into, matte: cut(d, s, upto(n, stop - s), out) })
+      }
       return
     }
-    const D = len(d) ?? fill
-    if (d.kind) out.push({ ...d, start: t, end: t + D, into, matte: cut(d, t, D, out), id: ++N })
-    if (d.kind) into = N
-    let p = 0
-    for (const c of d.kids.map(c => c.$)) {
-      const seq = d.cat && vid(c), o = (c.at ?? (seq ? p : 0)) + c.shift, n = len(c) ?? (d.cat ? 5 : D - o)
-      place(c, t + o, n, out, into)
-      if (seq) p += n
+    const D = once(d) ?? fill
+    for (let i = 0; i < d.loop && t + i * D < stop - 1e-9; i++) {
+      const s = t + i * D, end = d.dur == null ? stop : upto(s + D, stop)
+      if (d.kind) out.push({ ...d, start: s, end: upto(s + D, stop), into, matte: cut(d, s, upto(D, stop - s), out), id: ++N })
+      const inner = d.kind ? N : into
+      let p = 0
+      for (const c of d.kids.map(c => c.$)) {
+        const seq = d.cat && vid(c), o = (c.at ?? (seq ? p : 0)) + c.shift, n = len(c) ?? (d.cat ? 5 : D - o)
+        place(c, s + o, n, out, inner, end)
+        if (seq) p += n
+      }
     }
   }
   globalThis.__prep = src => {

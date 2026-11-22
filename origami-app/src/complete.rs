@@ -65,6 +65,11 @@ pub const DEFS: &[Def] = &[
         "x1, y1, x2, y2, { color, width }",
         "Draws a line between two points given as fractions of the frame. Width in pixels.",
     ),
+    global(
+        "path",
+        "points, { color, curve }",
+        "Draws a filled shape through points given as fractions of the frame. curve: true rounds it through every point.",
+    ),
     global("cat", "...clips", "Plays clips one after another."),
     global("stack", "...clips", "Plays clips at the same time. Later clips draw on top."),
     global(
@@ -97,6 +102,26 @@ pub const DEFS: &[Def] = &[
     ),
     method("opacity", "amount", "Fades the picture. 0 to 1, a function of time, or keys."),
     method("rotate", "degrees", "Turns the picture. A number, a function of time, or keys."),
+    method(
+        "merge",
+        "",
+        "Draws a stack or cat as one picture, so methods change that picture as a whole.",
+    ),
+    method(
+        "matte",
+        "clip, mode",
+        "Shows the clip only through another clip. mode is \"alpha\", \"alphaInverted\", \"luma\" or \"lumaInverted\".",
+    ),
+    method(
+        "blend",
+        "mode",
+        "How the clip mixes with what is under it: \"normal\" or \"multiply\".",
+    ),
+    method(
+        "fps",
+        "rate",
+        "Plays the clip at its own lower frame rate, so movement steps. Above 0, up to 240.",
+    ),
     method(
         "shown",
         "share",
@@ -141,9 +166,49 @@ pub const DEFS: &[Def] = &[
     ),
     method("hslSecondary", "{ key, refine, correction }", "Corrects one colour range only."),
     method(
+        "duotone",
+        "dark, light",
+        "Repaints the picture in two colours by brightness: black becomes the first, white the second.",
+    ),
+    method(
         "vignette",
         "{ amount, midpoint, roundness, feather }",
         "Darkens or lightens the edges.",
+    ),
+    method(
+        "lens",
+        "degrees",
+        "Bends the picture like a wide lens: positive curves it into a barrel, negative pinches. -170 to 170, a function of time, or keys.",
+    ),
+    method(
+        "blur",
+        "radius",
+        "Softens the picture. Radius in pixels, 0 and up, a function of time, or keys.",
+    ),
+    method(
+        "levels",
+        "black, white, \"alpha\"",
+        "Stretches the tones between black and white, shares from 0 to 1. \"alpha\" works on how solid the picture is.",
+    ),
+    method(
+        "noise",
+        "amount, seed",
+        "Adds grain. Amount 0 to 1; the seed picks the pattern, and a function of time makes it move.",
+    ),
+    method(
+        "fractal",
+        "{ scale, seed }",
+        "Replaces the colours with soft grey clouds. scale is the biggest clouds in pixels.",
+    ),
+    method(
+        "roughen",
+        "{ border, scale, sharpness, seed }",
+        "Eats into the edges with a ragged line, like torn paper or ink.",
+    ),
+    method(
+        "displace",
+        "{ amount, size, seed }",
+        "Pushes every pixel a short way so the picture ripples. amount and size in pixels.",
     ),
 ];
 
@@ -210,7 +275,7 @@ pub fn kind(lines: &[String], name: &str) -> Option<&'static str> {
     let made = |n: &str| match n {
         "video" => Some("Video"),
         "sound" => Some("Audio"),
-        "image" | "color" | "rect" | "line" => Some("Shape"),
+        "image" | "color" | "rect" | "line" | "path" => Some("Shape"),
         "text" | "caption" | "captions" => Some("Text"),
         "cat" | "stack" => Some("Group"),
         _ => None,
@@ -234,6 +299,7 @@ pub fn fits(method: &str, kind: Option<&str>) -> bool {
     let at = |name: &str| DEFS.iter().position(|d| d.name == name).unwrap_or(0);
     match kind {
         Some("Video" | "Audio" | "Shape") if ["shown", "each"].contains(&method) => false,
+        Some(k) if method == "merge" && k != "Group" => false,
         Some("Audio") => at(method) < at("scale"),
         Some("Shape" | "Text") => !["trim", "speed", "volume", "mute"].contains(&method),
         _ => true,
@@ -505,6 +571,9 @@ mod tests {
         assert_eq!(at("let m = sound(\"a\")\nm.o"), [] as [&str; 0]);
         assert_eq!(at("x.opacity(k"), ["keys"]);
         assert_eq!(at("x.opacity(m"), ["mul"]);
+        assert_eq!(at("x.d"), ["duotone", "displace"]);
+        assert_eq!((at("stack(a).me"), at("pa")), (vec!["merge".to_string()], vec!["path".to_string()]));
+        assert!(at("rect(4, 4).me").is_empty() && at("let m = sound(\"a\")\nm.l") == ["loop"]);
         let title = "const title = text(\"a\")\n";
         assert_eq!(
             at(&format!("{title}x.pos(title.")),
