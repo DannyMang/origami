@@ -44,7 +44,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     rc::Rc,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, mpsc},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -184,6 +184,9 @@ struct Origami {
 
 static SAVED: Mutex<(u64, String)> = Mutex::new((u64::MAX, String::new()));
 
+type Early = (PathBuf, Option<SystemTime>, mpsc::Receiver<anyhow::Result<Timeline>>);
+static EARLY: Mutex<Option<Early>> = Mutex::new(None);
+
 fn clock(script: &Path) -> String {
     let mtime = fs::metadata(script).and_then(|m| m.modified()).ok();
     let secs = mtime.and_then(|m| m.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
@@ -278,53 +281,28 @@ impl Origami {
         if std::mem::take(&mut self.fresh) {
             self.fold_all(true);
         }
-        let (script, job, path) = (self.script.clone(), self.script.clone(), self.script.clone());
+        let (script, path) = (self.script.clone(), self.script.clone());
         let saved = cx.background_executor().spawn(async move { clock(&path) });
-        self.reading = true;
+        let early = EARLY.lock().unwrap().take_if(|e| e.0 == script && e.1 == self.mtime);
+        match early.as_ref().and_then(|e| e.2.try_recv().ok()) {
+            Some(tl) => self.took(tl, cx),
+            None => self.reading = true,
+        }
+        let wait = self.reading;
         cx.spawn(async move |this, cx| {
-            let tl = cx
-                .background_executor()
-                .spawn(async move { origami_lang::eval(&job, true, footprint) })
-                .await;
-            this.update(cx, |this, cx| {
-                if this.script != script {
-                    return;
-                }
-                this.reading = false;
-                match tl {
-                    Ok(tl) => {
-                        (this.tl, this.rev) = (Arc::new(tl), this.rev + 1);
-                        this.boot = this.boot.filter(|_| this.tl.duration > 0.);
-                        this.menu = if this.menu == "clip" { "" } else { this.menu };
-                        this.err.clear();
-                        this.bad = 0;
-                        if let Some(gone) = origami_lang::missing() {
-                            this.note = gone;
-                        }
-                        let sel = this.sel;
-                        this.seek(this.t);
-                        this.sel = sel;
-                        this.redraft(cx);
-                        this.refresh(cx);
+            if wait {
+                let job = script.clone();
+                let eval = async move {
+                    let got = early.and_then(|e| e.2.recv().ok());
+                    got.unwrap_or_else(|| origami_lang::eval(&job, true, footprint))
+                };
+                let tl = cx.background_executor().spawn(eval).await;
+                this.update(cx, |this, cx| {
+                    if this.script == script {
+                        this.took(tl, cx);
                     }
-                    Err(e) => {
-                        this.boot = None;
-                        let text = e.to_string();
-                        let text = text.lines().next().unwrap_or_default();
-                        this.bad = ["at :", "line "]
-                            .iter()
-                            .find_map(|k| {
-                                let rest = &text[text.find(k)? + k.len()..];
-                                rest[..rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len())].parse().ok()
-                            })
-                            .unwrap_or(0);
-                        this.err = text.split(" (").next().unwrap_or_default().trim_start_matches("Error: ").into();
-                        this.unfold((this.bad as usize).saturating_sub(1));
-                    }
-                }
-                this.watch(cx);
-                cx.notify();
-            })?;
+                })?;
+            }
             let saved = saved.await;
             this.update(cx, |this, cx| {
                 if this.saved != saved {
@@ -334,6 +312,43 @@ impl Origami {
             })
         })
         .detach();
+    }
+
+    fn took(&mut self, tl: anyhow::Result<Timeline>, cx: &mut Context<Self>) {
+        self.reading = false;
+        match tl {
+            Ok(tl) => {
+                (self.tl, self.rev) = (Arc::new(tl), self.rev + 1);
+                self.boot = self.boot.filter(|_| self.tl.duration > 0.);
+                self.menu = if self.menu == "clip" { "" } else { self.menu };
+                self.err.clear();
+                self.bad = 0;
+                if let Some(gone) = origami_lang::missing() {
+                    self.note = gone;
+                }
+                let sel = self.sel;
+                self.seek(self.t);
+                self.sel = sel;
+                self.redraft(cx);
+                self.refresh(cx);
+            }
+            Err(e) => {
+                self.boot = None;
+                let text = e.to_string();
+                let text = text.lines().next().unwrap_or_default();
+                self.bad = ["at :", "line "]
+                    .iter()
+                    .find_map(|k| {
+                        let rest = &text[text.find(k)? + k.len()..];
+                        rest[..rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len())].parse().ok()
+                    })
+                    .unwrap_or(0);
+                self.err = text.split(" (").next().unwrap_or_default().trim_start_matches("Error: ").into();
+                self.unfold((self.bad as usize).saturating_sub(1));
+            }
+        }
+        self.watch(cx);
+        cx.notify();
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) -> bool {
@@ -615,6 +630,11 @@ fn main() {
         return eprintln!("usage: origami-app [script.js]");
     };
     let script = script.unwrap_or_default();
+    if !script.as_os_str().is_empty() {
+        let ((tell, heard), job) = (mpsc::channel(), script.clone());
+        *EARLY.lock().unwrap() = Some((script.clone(), fs::metadata(&script).and_then(|m| m.modified()).ok(), heard));
+        thread::spawn(move || drop(tell.send(origami_lang::eval(&job, true, footprint))));
+    }
     thread::spawn(Player::warm);
     let app = Application::new();
     app.on_open_urls(|urls| {

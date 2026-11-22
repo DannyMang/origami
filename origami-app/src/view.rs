@@ -1178,7 +1178,13 @@ impl Render for Origami {
         let (trace, ghost) = (self.trace.clone(), self.ghost.clone());
         let (pad, size) = (if self.full { 0. } else { 12. }, (tl.size.0 as usize, tl.size.1 as usize));
         let seen = move |b: Bounds<Pixels>, window: &mut Window, cx: &mut App| {
-            let _ = me.update(cx, |this, _| (this.stage, this.dense) = (b, window.scale_factor()));
+            let _ = me.update(cx, |this, cx| {
+                let first = this.stage.size.width <= px(0.);
+                (this.stage, this.dense) = (b, window.scale_factor());
+                if first {
+                    this.refresh(cx);
+                }
+            });
         };
         let show = move |b: Bounds<Pixels>, _, window: &mut Window, _: &mut App| {
             let sheet = letterbox(b, pad, size);

@@ -345,6 +345,46 @@ mod tests {
         assert!(!seen.borrow().is_empty() && !seen.borrow().iter().any(|(s, n)| *s == b && *n == 2));
     }
 
+    // A timeline evaluated before the window opened is shown in the first frame when it is ready and the
+    // script has not changed since, waited for when it is not ready yet, and ignored when the script
+    // changed after it was evaluated; and the first picture starts as soon as its area is laid out.
+    #[gpui::test]
+    fn uses_the_early_timeline(cx: &mut TestAppContext) {
+        let dir = env::temp_dir().join("origami-early-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (a, other) = (dir.join("a.js"), dir.join("other.js"));
+        fs::write(&a, "text(\"a\").for(2)\n").unwrap();
+        fs::write(&other, "stack(text(\"x\"), text(\"y\"), text(\"z\"))\n").unwrap();
+        let early = |at: Option<std::time::SystemTime>| {
+            let (tell, heard) = std::sync::mpsc::channel();
+            *crate::EARLY.lock().unwrap() = Some((a.clone(), at, heard));
+            tell
+        };
+        let made = || origami_lang::eval(&other, true, origami_engine::footprint);
+        let stamp = |p: &Path| fs::metadata(p).and_then(|m| m.modified()).ok();
+        early(stamp(&a)).send(made()).unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            app.open(a.clone(), cx);
+            assert_eq!((app.tl.clips.len(), app.reading), (3, false));
+            app
+        });
+        assert!(view.update(cx, |o, _| o.image.is_some() && o.boot.is_none()));
+        let late = early(stamp(&a));
+        view.update(cx, |o, cx| {
+            o.open(a.clone(), cx);
+            assert!(o.reading && o.tl.clips.is_empty());
+        });
+        late.send(made()).unwrap();
+        cx.run_until_parked();
+        assert_eq!(view.update(cx, |o, _| o.tl.clips.len()), 3);
+        early(stamp(&a).map(|t| t - Duration::from_secs(1))).send(made()).unwrap();
+        view.update(cx, |o, cx| o.open(a.clone(), cx));
+        cx.run_until_parked();
+        assert_eq!(view.update(cx, |o, _| o.tl.clips.len()), 1);
+    }
+
     // The loading note stays hidden for the first tenth of a second, then names the script while it is
     // evaluated, and is gone once the first frame is shown or the script turns out to have an error.
     #[gpui::test]
