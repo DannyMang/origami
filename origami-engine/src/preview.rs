@@ -884,14 +884,15 @@ impl Preview {
             None => px,
         };
         let now = fx::now(&c.fx, i);
-        let px = match now.is_empty() || px.len() < tw * th * 4 {
-            true => px,
-            false => kept(
+        let px = match (now.is_empty() || px.len() < tw * th * 4, c.kind != Kind::Video || c.step > 0.) {
+            (true, _) => px,
+            (false, true) => kept(
                 &mut self.stills,
                 &mut self.was.0,
                 format!("{base}|{:?}|{k}|{now:?}", c.grade),
                 || Some(fx::paint(&now, px, (tw, th), k)),
             )?,
+            (false, false) => fx::paint(&now, px, (tw, th), k),
         };
         (px.len() >= tw * th * 4).then_some((px, (tw, th), (x as i64, y as i64)))
     }
@@ -1818,6 +1819,35 @@ mod tests {
         }
         let same: Vec<bool> = made.windows(2).map(|w| Arc::ptr_eq(&w[0], &w[1])).collect();
         assert_eq!((made.len(), same), (4, vec![true, false, true]));
+    }
+
+    // An effect on a video is kept from frame to frame only while a clip stepped to a lower rate holds its
+    // picture, so a playing video holds no extra frame, and every frame matches a fresh preview.
+    #[test]
+    fn effects_on_video_are_kept_when_stepped() {
+        let file = scratch("fxvideo").join("a.mp4");
+        film(&file, "testsrc=s=64x36:r=30:d=1", &[]);
+        let kept = |step: f64| {
+            let c = Clip {
+                src: file.to_string_lossy().into(),
+                w: 64,
+                h: 36,
+                step,
+                fx: serde_json::from_str(r#"[{"blur":2}]"#).unwrap(),
+                ..clip("video", "")
+            };
+            let tl = Timeline {
+                fps: 30,
+                size: (64, 36),
+                duration: 1.,
+                clips: vec![c],
+                ..Default::default()
+            };
+            let mut pv = Preview::default();
+            let same = (0..6).all(|k| pv.frame(&tl, k as f64 / 30., (64, 36)) == Preview::default().frame(&tl, k as f64 / 30., (64, 36)));
+            (same, pv.stills.keys().any(|k| k.contains("Blur")))
+        };
+        assert_eq!([kept(0.), kept(10.)], [(true, false), (true, true)]);
     }
 
     // A layer drawn on whole pixels shows its own pixels, blends its half-clear ones, leaves the picture
