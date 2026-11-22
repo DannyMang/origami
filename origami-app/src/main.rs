@@ -154,7 +154,7 @@ struct Origami {
     rest: Option<Instant>,
     busy: bool,
     reading: bool,
-    boot: Option<Instant>,
+    boot: Option<(Instant, bool)>,
     clash: bool,
     sealed: bool,
     player: Option<(Instant, f64, Option<Player>)>,
@@ -447,7 +447,8 @@ impl Origami {
             self.again = true;
             cx.notify();
         }
-        let wait = self.boot.is_some_and(|b| (0.1..0.3).contains(&b.elapsed().as_secs_f32()));
+        let wait = self.boot.is_some_and(|b| !b.1 && b.0.elapsed() > Duration::from_millis(100));
+        self.boot = self.boot.map(|b| (b.0, b.1 || wait));
         if wait || self.take.is_some() || self.full && (2.0..2.1).contains(&self.stir.elapsed().as_secs_f32()) {
             cx.notify();
         }

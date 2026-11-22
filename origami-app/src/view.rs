@@ -1025,7 +1025,7 @@ impl Origami {
     }
 
     pub fn wait(&self) -> Option<String> {
-        self.boot.filter(|b| b.elapsed() > Duration::from_millis(100))?;
+        self.boot.filter(|b| b.0.elapsed() > Duration::from_millis(100))?;
         let name = self.script.file_name().unwrap_or_default().to_string_lossy();
         Some(match self.reading {
             true => format!("loading {name}"),

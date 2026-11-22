@@ -89,7 +89,7 @@ impl Origami {
         (self.script, self.mtime, self.t, self.dirty, self.clash) = (path, None, 0., false, false);
         (self.past, self.future, self.cursor, self.top, self.left) = (Default::default(), Default::default(), None, 0., 0.);
         (self.folded, self.fresh, self.saves) = (vec![], true, None);
-        (self.tl, self.rev, self.shown, self.boot) = (Arc::default(), self.rev + 1, None, Some(Instant::now()));
+        (self.tl, self.rev, self.shown, self.boot) = (Arc::default(), self.rev + 1, None, Some((Instant::now(), false)));
         if let Some(old) = self.image.take() {
             cx.drop_image(old, None);
         }
@@ -435,7 +435,11 @@ mod tests {
         view.update(cx, |o, cx| o.open(dir.join("a.js"), cx));
         cx.run_until_parked();
         let held = view.update_in(cx, |o, window, cx| {
-            (o.boot, o.jobs, o.loading) = (Some(Instant::now()), vec![("k".into(), film.to_string_lossy().into(), Some(0.))], 0);
+            (o.boot, o.jobs, o.loading) = (
+                Some((Instant::now(), false)),
+                vec![("k".into(), film.to_string_lossy().into(), Some(0.))],
+                0,
+            );
             o.tick(window, cx);
             (o.jobs.len(), o.loading)
         });
@@ -449,7 +453,8 @@ mod tests {
     }
 
     // The loading note stays hidden for the first tenth of a second, then names the script while it is
-    // evaluated, and is gone once the first frame is shown or the script turns out to have an error.
+    // evaluated, is gone once the first frame is shown or the script turns out to have an error, and
+    // the window is redrawn once to show it however late the first tick after that tenth comes.
     #[gpui::test]
     fn tells_what_is_loading(cx: &mut TestAppContext) {
         let dir = env::temp_dir().join("origami-wait-test");
@@ -462,7 +467,7 @@ mod tests {
             let mut app = crate::fresh(cx.focus_handle(), vec![]);
             app.open(a.clone(), cx);
             assert_eq!(app.wait(), None);
-            app.boot = app.boot.map(|b| b - Duration::from_millis(200));
+            app.boot = app.boot.map(|b| (b.0 - Duration::from_millis(200), b.1));
             assert_eq!(app.wait(), Some("loading a.js".into()));
             app
         });
@@ -471,11 +476,21 @@ mod tests {
         view.update(cx, |o, cx| {
             o.open(bad.clone(), cx);
             assert!(o.image.is_none());
-            o.boot = o.boot.map(|b| b - Duration::from_millis(200));
+            o.boot = o.boot.map(|b| (b.0 - Duration::from_millis(200), b.1));
             assert_eq!(o.wait(), Some("loading bad.js".into()));
         });
         cx.run_until_parked();
         assert!(view.update(cx, |o, _| o.wait().is_none() && !o.err.is_empty()));
+        let told = Rc::new(RefCell::new(0));
+        let count = told.clone();
+        cx.update(|_, cx| cx.observe(&view, move |_, _| *count.borrow_mut() += 1).detach());
+        for _ in 0..2 {
+            view.update_in(cx, |o, window, cx| {
+                o.boot = o.boot.or(Some((Instant::now() - Duration::from_secs(1), false)));
+                o.tick(window, cx);
+            });
+        }
+        assert_eq!(*told.borrow(), 1);
     }
 
     // The recent list should live in Application Support, start from the old ~/.origami list the first
