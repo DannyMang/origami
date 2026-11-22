@@ -1074,6 +1074,26 @@ fn finish(out: &str, kept: Vec<Vec<f32>>, files: Vec<(u32, PathBuf)>, measure: M
     {
         bail!("line {}: {} has a time or speed out of range", c.line, c.label);
     }
+    let mut held: Vec<(u32, &Clip)> = tl
+        .clips
+        .iter()
+        .flat_map(|c| {
+            let group = (c.kind == Kind::Group).then_some(c.id);
+            group.into_iter().chain(c.matte.as_ref().map(|m| m.0)).map(move |id| (id, c))
+        })
+        .collect();
+    held.sort_by_key(|h| h.0);
+    let mut deep = BTreeMap::new();
+    for (id, c) in held {
+        let d = deep.get(&c.into).map_or(1, |d| d + 1);
+        if id <= c.into || d > 16 || deep.insert(id, d).is_some() {
+            bail!(
+                "line {}: {} is inside itself or inside more than 16 groups and mattes",
+                c.line,
+                c.label
+            );
+        }
+    }
     let opened: BTreeSet<&Path> = files.iter().map(|(_, f)| f.as_path()).collect();
     if let Some(e) = tl.clips.iter().find_map(|c| stray(c, |f| opened.contains(Path::new(f)))) {
         bail!("{e}");
@@ -1953,6 +1973,42 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         ] {
             let e = fails(&dir, src);
             assert!(e.starts_with(want), "{src}: {e}");
+        }
+    }
+
+    // A matte holds its whole clip, so a merged group used as a matte keeps its own scale and a matte
+    // that has its own matte is drawn inside the first.
+    #[test]
+    fn mattes_hold_their_whole_clip() {
+        let t = tl("rect(64, 36).matte(stack(rect(20, 20)).merge().scale(0.5))");
+        let g = t.clips.iter().find(|c| c.kind == Kind::Group).unwrap();
+        assert_eq!(t.clips.iter().find_map(|c| c.matte.clone()), Some((g.into, "alpha".into())));
+        let t = tl("rect(64, 36).matte(rect(20, 20).matte(rect(9, 9)))");
+        let mid = t.clips.iter().find(|c| c.w == 20).unwrap();
+        assert_eq!(t.clips.iter().find(|c| c.w == 64).unwrap().matte.as_ref().unwrap().0, mid.into);
+    }
+
+    // Groups and mattes nest up to 16 deep; one more, a group that holds itself or two groups with
+    // the same number stop the script with an error on the line of the clip that holds them.
+    #[test]
+    fn nesting_is_bounded() {
+        let dir = scratch("nest");
+        let deep = |n: usize, wrap: &str| format!("let g = rect(9, 9)\nfor (let i = 0; i < {n}; i++)\n  g = {wrap}\ng");
+        let (group, matte) = ("stack(g).merge()", "rect(9, 9).matte(g)");
+        assert!(run(&dir, &deep(16, group)).is_ok() && run(&dir, &deep(16, matte)).is_ok());
+        let made = "const g = { kind: 'group', src: '', in: 0, out: 1, speed: 1, gain: 1, fade: [0, 0], scale: 1, opacity: 1, rotate: 0, shown: 1, shift: 0, loop: 1, video: true, audio: false, label: 'g', line: 3 }\n";
+        for (src, n, label) in [
+            (deep(17, group), 3, "group"),
+            (deep(17, matte), 3, "rect"),
+            (format!("{made}\n;({{ $: {{ ...g, id: 0 }} }})"), 3, "g"),
+            (
+                format!("{made}\nstack({{ $: {{ ...g, id: 7 }} }}, {{ $: {{ ...g, id: 7 }} }})"),
+                3,
+                "g",
+            ),
+        ] {
+            let want = format!("line {n}: {label} is inside itself or inside more than 16 groups and mattes");
+            assert_eq!(fails(&dir, &src), want);
         }
     }
 

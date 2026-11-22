@@ -322,8 +322,9 @@
   }
   const cut = (d, t, n, out) => {
     if (!d.matte) return
-    place(d.matte[0], t, n, out, ++N)
-    return [N, d.matte[1]]
+    const id = ++N
+    place(d.matte[0], t, n, out, id)
+    return [id, d.matte[1]]
   }
   const place = (d, t, fill, out, into = 0) => {
     if (!d.kids) {
