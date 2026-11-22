@@ -2,7 +2,7 @@
 
 Names, ranges and defaults follow Lumetri Color. The maths is Origami's own, so a value will not look exactly as it does in Premiere. Preview and export use the same numbers.
 
-Order of steps: inputLut, basic sliders, look, creative sliders, curves, wheels, hslSecondary, vignette. Call order in the script does not change it. Calling a method again replaces its earlier value. On a group, a method applies to every clip inside.
+Order of steps: inputLut, basic sliders, look, creative sliders, curves, wheels, hslSecondary, duotone, vignette. Call order in the script does not change it. Calling a method again replaces its earlier value. On a group, a method applies to every clip inside, or to the whole picture once the group is [merged](arranging.html#merge).
 
 ## temperature
 
@@ -257,7 +257,7 @@ video("clips/funny.mp4").trim(0, 2)
 
 ## hslSecondary
 
-Corrects one colour range only. Pick the range with key, change it with correction (temperature, tint, contrast, saturation). Not built yet: refine and correction.sharpen are accepted and change nothing.
+Corrects one colour range only. Pick the range with key, change it with correction (exposure, temperature, tint, contrast, saturation). Not built yet: refine and correction.sharpen are accepted and change nothing.
 
 Range: key color, range 0 to 100 (default 20), soft 0 to 100 (default 10).
 
@@ -267,6 +267,16 @@ video("clips/funny.mp4").trim(0, 2).hslSecondary({
   refine: { denoise: 10, blur: 4 },
   correction: { temperature: -10, saturation: 0 },
 })
+```
+
+## duotone
+
+Repaints the picture in two colours by its luma, which means brightness: black becomes the first colour, white the second, and every tone between is a mix of the two. Click either colour in the script to pick it on the colour wheel.
+
+Range: two hex colours.
+
+```origami
+video("clips/funny.mp4").trim(0, 2).duotone("#1d2b64", "#f8cdda")
 ```
 
 ## vignette
