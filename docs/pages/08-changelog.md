@@ -7,6 +7,8 @@ What changed in each version of Origami. The launch screen shows the version you
 ### Nov 22
 
 - `for` on a `stack`, a `cat` or a merged group now cuts the clips inside at its end, sound included, and the video ends there too. Before, a clip inside with its own length, such as a trimmed video, kept playing: a merged group went black but its sound and the timeline ran on, and a plain stack ignored the `for`. `loop` now repeats a whole stack, cat or merged group; before, it did nothing on them. `trim` on a stack or cat and `speed` on a merged group, which did nothing, now stop the script with an error on their line that says what to write instead.
+- A video used as a matte is no longer heard, in the preview or the export. Before, its sound was mixed in unless you added `.mute()`.
+- `at` and `shift` on a matte now move it from the start of its clip, so a matte can come in later than its clip. Before, they were ignored and the matte always started with its clip.
 
 ### Nov 21
 

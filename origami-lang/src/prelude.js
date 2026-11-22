@@ -329,8 +329,10 @@
   const upto = (x, stop) => x > stop + 1e-9 ? stop : x
   const cut = (d, t, n, out) => {
     if (!d.matte) return
-    place(d.matte[0], t, n, out, ++N)
-    return [N, d.matte[1]]
+    const [m, how] = d.matte, id = ++N, k = out.length
+    place(m, t + (m.at ?? 0) + m.shift, n, out, id)
+    out.slice(k).forEach(c => c.gain = 0)
+    return [id, how]
   }
   const place = (d, t, fill, out, into = 0, stop = Infinity) => {
     if (!d.kids) {

@@ -1498,6 +1498,15 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         );
     }
 
+    // Every clip of a matte is silent, and the matte's own at and shift move it from the start of the
+    // clip it cuts.
+    #[test]
+    fn mattes_are_silent_and_movable() {
+        let t = tl("stack(text('a').for(3).at(1).volume(2).matte(stack(rect(9, 9).for(1).volume(3)).shift(0.5)))");
+        let span: Vec<_> = t.clips.iter().map(|c| (c.kind, c.start, c.end, c.gain)).collect();
+        assert_eq!(span, [(Kind::Rect, 1.5, 2.5, 0.), (Kind::Text, 1., 4., 2.)]);
+    }
+
     // Values that make no sense (a negative length, zero speed, a frame rate of 0, a loop without end,
     // a day-long timeline) and common slips (a number among clips, an unclosed string or bracket, an
     // error thrown by a function of time) should be refused with a message that names the line.

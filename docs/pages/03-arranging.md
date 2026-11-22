@@ -75,9 +75,9 @@ clip.matte(title, "alphaInverted")   // the clip everywhere except the title's l
 ```
 
 - Any clip can be a matte: text, a shape, an image, a video, or a `stack` of them. It can move and animate like any clip.
-- The matte starts when its clip starts, and its keys count from there. Its own `at` and `shift` are ignored.
-- A matte with no length of its own, such as text or a shape, lasts as long as the clip. One with its own length ends then, and the clip disappears with it, or shows in full with an inverted mode.
-- A video used as a matte is still heard. Add `.mute()` to it.
+- The matte starts when its clip starts, and its keys count from there. `at` and `shift` on the matte move it later or earlier from there.
+- A matte with no length of its own, such as text or a shape, lasts as long as the clip. One with its own length ends then. While the matte is not there, before it starts or after it ends, the clip is hidden, or shows in full with an inverted mode.
+- A matte is never heard: a video used as a matte gives only its picture.
 - The [pen tool](editor.html#pen-tool) draws a shape to use as a matte.
 
 ## blend
