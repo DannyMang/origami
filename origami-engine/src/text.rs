@@ -131,7 +131,7 @@ pub fn raster(c: &Clip, k: f64) -> (Vec<u8>, usize, usize) {
     if c.background.is_empty() {
         px.chunks_exact_mut(4).for_each(|p| p.copy_from_slice(&[0; 4]));
     }
-    for g in glyphs {
+    for g in glyphs.into_iter().filter(|g| g.w > 0) {
         for (i, s) in g.px.chunks_exact(4).enumerate() {
             let (x, y) = (g.x + i % g.w, g.y + i / g.w);
             if x < w && y < h {
@@ -191,6 +191,24 @@ mod tests {
         assert_eq!(g.iter().map(|g| g.i).collect::<Vec<_>>(), [0, 1, 2, 3]);
         assert!(g[1].w == g[0].w && g[1].h > g[0].h);
         assert_eq!((g[2].w, g[2].h), (wide.width, wide.height));
+    }
+
+    // A control character in a text, such as a bell or an escape, takes no room and draws nothing, and
+    // never stops the drawing.
+    #[test]
+    fn control_characters_draw_nothing() {
+        let text = |src: &str| {
+            raster(
+                &Clip {
+                    src: src.into(),
+                    ..crate::tests::clip("text", "")
+                },
+                1.,
+            )
+        };
+        for odd in ["x\u{1}", "x\u{7}", "x\u{1b}", "x\u{7f}"] {
+            assert_eq!(text(odd), text("x"), "{odd:?}");
+        }
     }
 
     // A font named through different spellings of its path is read and kept once, and a missing font

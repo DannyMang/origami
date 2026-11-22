@@ -1075,6 +1075,9 @@ fn finish(out: &str, kept: Vec<Vec<f32>>, files: Vec<(u32, PathBuf)>, measure: M
     {
         bail!("line {}: {} has a time or speed out of range", c.line, c.label);
     }
+    if let Some(c) = tl.clips.iter().find(|c| c.kind == Kind::Sound && c.video) {
+        bail!("line {}: {} is a sound, which has no picture to draw", c.line, c.label);
+    }
     let mut held: Vec<(u32, &Clip)> = tl
         .clips
         .iter()
@@ -1619,6 +1622,10 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
                 "line 1: a has a time or speed out of range",
             ),
             ("text('a').for(1).speed(1e12)".into(), "line 1: a has a time or speed out of range"),
+            (
+                "const t = text('a')\nObject.assign(t.$, { kind: 'sound', src: '', w: 4294967295, h: 1 })\nt".into(),
+                "line 1: t is a sound, which has no picture to draw",
+            ),
             (
                 "const j = JSON.stringify\nJSON.stringify = v => j({ ...v, size: [4e8, 4e8] })\ntext('a')".into(),
                 "fps 30, size (400000000, 400000000) or length 5 is out of range",
