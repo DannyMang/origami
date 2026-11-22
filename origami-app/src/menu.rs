@@ -160,7 +160,7 @@ pub fn menus(recent: &[PathBuf]) -> Vec<Menu> {
     ]
 }
 
-pub fn install(cx: &mut App, recent: &[PathBuf]) {
+pub fn install(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("cmd-h", Hide, None),
         KeyBinding::new("alt-cmd-h", HideOthers, None),
@@ -191,7 +191,6 @@ pub fn install(cx: &mut App, recent: &[PathBuf]) {
     });
     route(cx, |this, _: &Open, window, cx| this.browse(window, cx));
     route(cx, |this, Reopen(path): &Reopen, window, cx| this.switch(path.clone(), window, cx));
-    cx.set_menus(menus(recent));
 }
 
 fn route<A: Action + Clone>(cx: &mut App, f: fn(&mut Origami, &A, &mut Window, &mut Context<Origami>)) {
@@ -209,6 +208,11 @@ fn route<A: Action + Clone>(cx: &mut App, f: fn(&mut Origami, &A, &mut Window, &
 }
 
 impl Origami {
+    pub fn hoist(&self, cx: &mut Context<Self>) {
+        let recent = self.recent.clone();
+        cx.spawn(async move |_, cx| cx.update(|cx| cx.set_menus(menus(&recent)))).detach();
+    }
+
     pub fn listen(&self, root: Div, cx: &mut Context<Self>) -> Div {
         let chord = |this: &mut Self, Chord(keys): &Chord, window: &mut Window, cx: &mut Context<Self>| {
             let keystroke = Keystroke::parse(keys).unwrap();
@@ -425,7 +429,7 @@ mod tests {
         let src = "stack(\n  color(\"#203040\").for(4),\n  text(\"a\").for(4),\n)";
         fs::write(&path, src).unwrap();
         let tl = origami_lang::eval(&path, false, origami_engine::footprint).unwrap();
-        cx.update(|cx| install(cx, &[]));
+        cx.update(install);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut app = crate::fresh(cx.focus_handle(), vec![]);
             (app.script, app.lines, app.tl) = (path.clone(), src.lines().map(String::from).collect(), Arc::new(tl));
@@ -492,7 +496,7 @@ mod tests {
     // cmd+n still opens the new project dialog.
     #[gpui::test]
     fn launch_menus(cx: &mut TestAppContext) {
-        cx.update(|cx| install(cx, &[]));
+        cx.update(install);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let app = crate::fresh(cx.focus_handle(), vec![]);
             window.focus(&app.focus);

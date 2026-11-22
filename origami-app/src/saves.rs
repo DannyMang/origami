@@ -847,7 +847,7 @@ mod tests {
         for (n, lines) in versions.iter().enumerate() {
             save(&shelf, lines, now() - 100 * (versions.len() - n) as u64, None);
         }
-        cx.update(|cx| crate::menu::install(cx, &[]));
+        cx.update(crate::menu::install);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut app = crate::fresh(cx.focus_handle(), vec![]);
             app.open(path.clone(), cx);

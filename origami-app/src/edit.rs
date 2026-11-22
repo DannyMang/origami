@@ -99,8 +99,8 @@ impl Origami {
     }
 
     pub fn store(&mut self) {
-        self.dirty = self.clash;
-        if !self.clash {
+        self.dirty = self.clash || self.sealed;
+        if !self.dirty {
             let text = self.text();
             if let Err(e) = origami_lang::save(&self.script, &text) {
                 self.dirty = true;
