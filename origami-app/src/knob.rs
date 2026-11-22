@@ -42,6 +42,7 @@ fn range(call: &str, label: &str) -> Option<(f64, f64)> {
         ("sharpen" | "vibrance" | "tintBalance", "0") => (-100., 100.),
         (_, "hue") => (0., 360.),
         ("vignette", "amount") => (-3., 3.),
+        ("displace", "amount") => (0., 100.),
         (_, "amount") => (0., 1.),
         (_, "luma") => (-1., 1.),
         (_, "midpoint" | "feather" | "range" | "soft" | "denoise") => (0., 100.),
@@ -735,6 +736,8 @@ mod tests {
         let hot = slides("a.temperature(250)", 3, None);
         assert_eq!((limit("temperature", 0, &hot), part(&hot[0])), ((-100., 100.), 1.));
         assert_eq!(part(&slides("a.temperature(-250)", 3, None)[0]), 0.);
+        let pushed = slides("a.displace({ amount: 50 })", 3, None);
+        assert_eq!((part(&pushed[0]), print("displace", &pushed, 0, 80.)), (0.5, "80".into()));
     }
 
     // On the curve pad, dragging a point moves it, clicking empty space adds one and double-clicking a
