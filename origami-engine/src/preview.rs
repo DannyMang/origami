@@ -834,6 +834,10 @@ impl Preview {
             let px = c.grade.as_ref().map_or(px.clone(), |g| grade::paint(g, px, size, vec![]));
             return Some((fx::paint(&fx::now(&c.fx, i), px, size, k), size, (x as i64, y as i64)));
         }
+        let now = fx::now(&c.fx, i);
+        let (fixed, done) = (!now.is_empty() && now == c.fx && c.kind != Kind::Video, |base: &str| {
+            format!("{base}|{:?}|{k}|{now:?}", c.grade)
+        });
         let (px, base) = match c.kind {
             Kind::Video => {
                 let tries = [self.fast, false];
@@ -851,29 +855,32 @@ impl Preview {
                 self.rough |= lean.0 > 0.;
                 (if lean.0 > 0. { Arc::new(nudge(&px, tw, lean)) } else { px }, base)
             }
-            Kind::Image => {
-                self.renew(&c.src);
-                let base = format!("{}|{tw}x{th}", c.src);
-                (
-                    kept(&mut self.stills, &mut self.was.0, base.clone(), || {
-                        still(&c.src, 0., tw, th).map(Arc::new)
-                    })?,
-                    base,
-                )
-            }
             _ => {
-                let base = format!(
-                    "{}|{}|{}|{}|{}|{}|{:?}|{:?}|{tw}x{th}",
-                    c.src,
-                    c.color,
-                    c.font,
-                    c.background,
-                    c.align,
-                    c.radius,
-                    c.ends,
-                    shape::outline(c, i)
-                );
-                let make = || Some(Arc::new(shape::image(c, (size.0 as f64, size.1 as f64), k, i).0));
+                let base = match c.kind {
+                    Kind::Image => {
+                        self.renew(&c.src);
+                        format!("{}|{tw}x{th}", c.src)
+                    }
+                    _ => format!(
+                        "{}|{}|{}|{}|{}|{}|{:?}|{:?}|{tw}x{th}",
+                        c.src,
+                        c.color,
+                        c.font,
+                        c.background,
+                        c.align,
+                        c.radius,
+                        c.ends,
+                        shape::outline(c, i)
+                    ),
+                };
+                if fixed && [&self.stills, &self.was.0].iter().any(|m| m.contains_key(&done(&base))) {
+                    let px = kept(&mut self.stills, &mut self.was.0, done(&base), || None)?;
+                    return (px.len() >= tw * th * 4).then_some((px, (tw, th), (x as i64, y as i64)));
+                }
+                let make = || match c.kind {
+                    Kind::Image => still(&c.src, 0., tw, th).map(Arc::new),
+                    _ => Some(Arc::new(shape::image(c, (size.0 as f64, size.1 as f64), k, i).0)),
+                };
                 (kept(&mut self.stills, &mut self.was.0, base.clone(), make)?, base)
             }
         };
@@ -883,15 +890,20 @@ impl Preview {
             })?,
             None => px,
         };
-        let now = fx::now(&c.fx, i);
         let px = match (now.is_empty() || px.len() < tw * th * 4, c.kind != Kind::Video || c.step > 0.) {
             (true, _) => px,
-            (false, true) => kept(
-                &mut self.stills,
-                &mut self.was.0,
-                format!("{base}|{:?}|{k}|{now:?}", c.grade),
-                || Some(fx::paint(&now, px, (tw, th), k)),
-            )?,
+            (false, true) => {
+                let px = kept(&mut self.stills, &mut self.was.0, done(&base), || {
+                    Some(fx::paint(&now, px, (tw, th), k))
+                })?;
+                if fixed {
+                    self.stills.remove(&base);
+                    if let Some(g) = &c.grade {
+                        self.stills.remove(&format!("{base}|{g:?}"));
+                    }
+                }
+                px
+            }
             (false, false) => fx::paint(&now, px, (tw, th), k),
         };
         (px.len() >= tw * th * 4).then_some((px, (tw, th), (x as i64, y as i64)))
@@ -1819,6 +1831,30 @@ mod tests {
         }
         let same: Vec<bool> = made.windows(2).map(|w| Arc::ptr_eq(&w[0], &w[1])).collect();
         assert_eq!((made.len(), same), (4, vec![true, false, true]));
+    }
+
+    // A still whose effect never changes keeps only its finished picture from frame to frame, not the
+    // picture and grade it was made from, and shows the same pixels as a fresh preview.
+    #[test]
+    fn fixed_effects_keep_only_the_result() {
+        let tl = Timeline {
+            fps: 4,
+            size: (200, 100),
+            duration: 1.,
+            clips: vec![Clip {
+                fx: serde_json::from_str(r#"[{"roughen":{"border":4,"scale":20,"sharp":1,"seed":2}}]"#).unwrap(),
+                grade: serde_json::from_str(r#"{"exposure":1}"#).unwrap(),
+                ..clip("rect", "")
+            }],
+            ..Default::default()
+        };
+        let mut pv = Preview::default();
+        let mut made = vec![];
+        for k in 0..3 {
+            assert!(pv.frame(&tl, k as f64 / 4., (200, 100)) == Preview::default().frame(&tl, k as f64 / 4., (200, 100)));
+            made.extend(pv.stills.values().flatten().cloned());
+        }
+        assert!(made.len() == 3 && made.windows(2).all(|w| Arc::ptr_eq(&w[0], &w[1])));
     }
 
     // An effect on a video is kept from frame to frame only while a clip stepped to a lower rate holds its
