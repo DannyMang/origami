@@ -30,7 +30,7 @@ impl Take {
 fn slot(dir: &Path, lines: &[String]) -> usize {
     let used = |n: &usize| {
         let name = format!("const voice_{n} ");
-        dir.join(format!("take-{n}.wav")).exists() || lines.iter().any(|l| l.starts_with(&name))
+        fs::symlink_metadata(dir.join(format!("take-{n}.wav"))).is_ok() || lines.iter().any(|l| l.starts_with(&name))
     };
     (1..).find(|n| !used(n)).unwrap_or(1)
 }
@@ -442,5 +442,16 @@ mod tests {
         cx.simulate_keystrokes("escape");
         assert!(!dir.join("voice").exists());
         assert_eq!(view.update(cx, |o, _| o.lines.clone()), lines);
+    }
+
+    // A take number whose file name is already a link, even one leading nowhere, is skipped so a failed
+    // recording never deletes the link.
+    #[test]
+    fn skips_linked_takes() {
+        let dir = std::env::temp_dir().join("origami-voice-link-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        std::os::unix::fs::symlink(dir.join("gone.wav"), dir.join("take-1.wav")).unwrap();
+        assert_eq!(slot(&dir, &[]), 2);
     }
 }

@@ -6,6 +6,7 @@ What changed in each version of Origami. The launch screen shows the version you
 
 ### Nov 22
 
+- The New project dialog treats a link named `edit.js` in the chosen folder, even one leading nowhere, as a script that is already there, and never writes through it. Before, a link to a missing file made Origami create that file, wherever the link pointed, with the starter script. Recording a voice take likewise skips a take number whose file is a link, so a failed recording never deletes it.
 - `blur` wider than its picture now blurs as wide as the picture, which looks the same, since the picture is already spread out almost clear. Before, a huge radius such as `blur(1e9)` kept every core busy for hours and the frame never showed; it now takes well under a second.
 - A matte made from a merged group, or from a clip that has its own matte, now cuts with that whole clip, with its scale, place, effects and own matte. Before, it used the clips inside the group as if the group were not there, or only the innermost matte.
 - Groups and mattes nest up to 16 deep; one more gives the error "is inside itself or inside more than 16 groups and mattes" on its line. Before, about 150 nested groups took about 1.2 GB and 3 seconds for one 1080p frame, and a hand-written clip object could put a group inside itself, which closed Origami as soon as the frame was drawn. 16 nested groups take about 130 MB.
