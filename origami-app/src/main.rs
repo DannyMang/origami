@@ -477,7 +477,8 @@ impl Origami {
         if !self.refresh(cx) && was != (self.t, self.player.is_some()) {
             cx.notify();
         }
-        while self.loading < 4
+        while self.boot.is_none()
+            && self.loading < 4
             && let Some(i) = self.jobs.iter().rposition(|j| j.2.is_some()).or(self.jobs.len().checked_sub(1))
         {
             let (key, path, t) = self.jobs.remove(i);

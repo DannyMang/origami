@@ -385,6 +385,38 @@ mod tests {
         assert_eq!(view.update(cx, |o, _| o.tl.clips.len()), 1);
     }
 
+    // Thumbnails and waveforms wait while a project is loading, so its first picture is drawn first, and
+    // start once it is shown.
+    #[gpui::test]
+    fn thumbnails_wait_for_the_first_picture(cx: &mut TestAppContext) {
+        let dir = env::temp_dir().join("origami-thumbs-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let film = dir.join("v.mp4");
+        let made = origami_lang::status(
+            origami_lang::ffmpeg()
+                .args(["-v", "error", "-f", "lavfi", "-i", "color=red:s=64x64:d=1"])
+                .arg(&film),
+        );
+        assert!(made.unwrap().success());
+        fs::write(dir.join("a.js"), "video(\"v.mp4\")\n").unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| crate::fresh(cx.focus_handle(), vec![]));
+        view.update(cx, |o, cx| o.open(dir.join("a.js"), cx));
+        cx.run_until_parked();
+        let held = view.update_in(cx, |o, window, cx| {
+            (o.boot, o.jobs, o.loading) = (Some(Instant::now()), vec![("k".into(), film.to_string_lossy().into(), Some(0.))], 0);
+            o.tick(window, cx);
+            (o.jobs.len(), o.loading)
+        });
+        assert_eq!(held, (1, 0));
+        let went = view.update_in(cx, |o, window, cx| {
+            o.boot = None;
+            o.tick(window, cx);
+            (o.jobs.len(), o.loading)
+        });
+        assert_eq!(went, (0, 1));
+    }
+
     // The loading note stays hidden for the first tenth of a second, then names the script while it is
     // evaluated, and is gone once the first frame is shown or the script turns out to have an error.
     #[gpui::test]
