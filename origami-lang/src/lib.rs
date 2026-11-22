@@ -1071,7 +1071,7 @@ fn finish(out: &str, kept: Vec<Vec<f32>>, files: Vec<(u32, PathBuf)>, measure: M
     if let Some(c) = tl
         .clips
         .iter()
-        .find(|c| !(c.start >= -DAY && c.end <= DAY && c.speed > 0. && c.speed <= 1e3))
+        .find(|c| !(c.start >= -DAY && c.end <= DAY && c.end >= c.start && c.speed > 0. && c.speed <= 1e3))
     {
         bail!("line {}: {} has a time or speed out of range", c.line, c.label);
     }
@@ -1622,6 +1622,10 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
                 "line 1: a has a time or speed out of range",
             ),
             ("text('a').for(1).speed(1e12)".into(), "line 1: a has a time or speed out of range"),
+            (
+                "const t = text('a')\nt.$.dur = -998\nt".into(),
+                "line 1: t has a time or speed out of range",
+            ),
             (
                 "const t = text('a')\nObject.assign(t.$, { kind: 'sound', src: '', w: 4294967295, h: 1 })\nt".into(),
                 "line 1: t is a sound, which has no picture to draw",
