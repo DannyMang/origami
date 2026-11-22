@@ -27,7 +27,9 @@ pub fn bounds(c: &Clip) -> [f64; 4] {
     };
     let frames = c.points.iter().map(|(x, y)| long(x).max(long(y))).max().unwrap_or(1);
     let wide = |b: [f64; 4], p: (f64, f64)| [b[0].min(p.0), b[1].min(p.1), b[2].max(p.0), b[3].max(p.1)];
+    let same = |v: &Val, i: usize| v.at(i).to_bits() == v.at(i - 1).to_bits();
     (0..frames)
+        .filter(|&i| i == 0 || !c.points.iter().all(|(x, y)| same(x, i) && same(y, i)))
         .flat_map(|i| outline(c, i))
         .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], wide)
 }
@@ -142,6 +144,11 @@ mod tests {
             r#","points":[[[1,[0.1,0.5]],0.2],[[1,[0.3,0.7]],0.2],[[1,[0.3,0.7]],0.6],[[1,[0.1,0.5]],0.6]]"#,
         );
         assert_eq!(bounds(&moving), [0.10000000149011612, 0.2, 0.699999988079071, 0.6]);
+        let held = clip(
+            "path",
+            r#","points":[[[1,[0.1,0.5,0.5,0.5]],0.2],[0.3,0.2],[0.3,[1,[0.6,0.6,0.9,0.9]]]]"#,
+        );
+        assert_eq!(bounds(&held), [0.10000000149011612, 0.2, 0.5, 0.8999999761581421]);
         let at = |i: usize, x: usize| {
             let (px, w, _) = image(&moving, (200., 100.), 1., i);
             px[(20 * w + x) * 4 + 3]

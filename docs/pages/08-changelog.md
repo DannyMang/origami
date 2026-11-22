@@ -10,6 +10,7 @@ What changed in each version of Origami. The launch screen shows the version you
 - `blur` on a picture that changes every frame, such as a video, is worked out on every core and in place: 2 seconds of blurred 1080p video export in about 1.8 s instead of 3.1 s, and a blurred 1080p frame takes about 30 MB less memory. The pictures are unchanged.
 - An effect on a clip drawn less than a pixel wide, such as a video scaled down to almost nothing, no longer stops Origami; the clip is simply not drawn, as without the effect.
 - `roughen` measures how far each pixel is from the picture's edge about four times faster. A roughened 1400×900 image is ready about 15 ms sooner the first time it shows, and 2 seconds of a roughened 1344×756 video over another export in about 1.3 s instead of 1.5 s. The pictures are unchanged.
+- A `path` whose points move only for part of its clip no longer works out its outline again for every later frame on every frame drawn. A 60-second 320×180 export of a 16-point curved path animated over its first 2 seconds took about 5.5 s and now takes about 1.1 s. The pictures are unchanged.
 
 ### Nov 20
 
