@@ -104,7 +104,10 @@
       return { ...d, matte: [m.$, how] }
     },
     lens: (d, fov) => fx(d, { lens: anim('lens', fov) }),
-    blur: (d, r) => fx(d, { blur: anim('blur', r) }),
+    blur: (d, r) => {
+      if (r > 16384) [note, r] = [`line ${at}: blur ${r} is lowered to 16384, the widest a picture can be`, 16384]
+      return fx(d, { blur: anim('blur', r) })
+    },
     levels: (d, black, white, channel = 'rgb') => {
       must(['rgb', 'alpha'].includes(channel), 'levels is written levels(0.2, 0.8) or levels(0.2, 0.8, "alpha")')
       return fx(d, { levels: [fin('levels', black), fin('levels', white), channel === 'alpha'] })

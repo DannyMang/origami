@@ -1968,6 +1968,15 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         }
     }
 
+    // A blur wider than the widest picture is lowered to 16384 with a note naming its line, while a
+    // smaller one is kept as written.
+    #[test]
+    fn lowers_huge_blurs() {
+        let t = tl("text('a').blur(4)\n  .blur(1e9)");
+        assert_eq!(t.clips[0].fx, [Fx::Blur(Val::Fixed(4.)), Fx::Blur(Val::Fixed(16384.))]);
+        assert_eq!(t.note, "line 2: blur 1000000000 is lowered to 16384, the widest a picture can be");
+    }
+
     // An odd frame size should be rounded to even numbers, with a note naming its line when the line
     // is known.
     #[test]
