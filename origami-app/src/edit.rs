@@ -105,6 +105,8 @@ impl Origami {
             if let Err(e) = origami_lang::save(&self.script, &text) {
                 self.dirty = true;
                 self.note = format!("could not save {}: {e}", crate::menu::place(&self.script).0);
+            } else if self.note.starts_with("could not save") {
+                self.note.clear();
             }
             self.shelve(text);
         }

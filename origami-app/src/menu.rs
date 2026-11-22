@@ -587,7 +587,7 @@ mod tests {
 
     // A save that cannot be written, here onto a read-only script, keeps the code on screen marked unsaved
     // and says why, Save on the unsaved changes question then stays instead of opening another script, and
-    // once the file can be written again cmd+s saves it.
+    // once the file can be written again cmd+s saves it and takes the message away.
     #[gpui::test]
     fn failed_save_stays_unsaved(cx: &mut TestAppContext) {
         use std::os::unix::fs::PermissionsExt;
@@ -608,6 +608,7 @@ mod tests {
         assert_eq!((shown(cx), fs::read_to_string(&path).unwrap()), (failed, disk));
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
         cx.simulate_keystrokes("cmd-s");
-        assert!(fs::read_to_string(&path).unwrap().ends_with("// mine\n") && !view.update(cx, |o, _| o.dirty));
+        assert!(fs::read_to_string(&path).unwrap().ends_with("// mine\n"));
+        assert_eq!(shown(cx), (path, false, String::new()));
     }
 }
