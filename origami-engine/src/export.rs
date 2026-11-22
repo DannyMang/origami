@@ -73,10 +73,16 @@ pub fn halt() {
     live.into_iter().for_each(kill);
 }
 
-fn tether(pid: u32, part: &str) -> Option<Child> {
+fn tether(pid: u32, part: &str, dir: &Path) -> Option<Child> {
     start(
         Command::new("/bin/sh")
-            .args(["-c", "read x; kill -9 \"$0\"; /bin/rm -f -- \"$1\"", &pid.to_string(), part])
+            .args([
+                "-c",
+                "read x; kill -9 \"$0\"; /bin/rm -f -- \"$1\"; /bin/rm -rf -- \"$2\"",
+                &pid.to_string(),
+                part,
+            ])
+            .arg(dir)
             .stdin(Stdio::piped())
             .stderr(Stdio::null()),
     )
@@ -448,7 +454,7 @@ pub fn render(tl: &Timeline, out: &str, o: &Opts, mut progress: impl FnMut(f64))
             file.display()
         );
     }
-    let (dir, mut salt) = (room(), [0; 8]);
+    let (dir, mut salt) = (&room(), [0; 8]);
     fs::File::open("/dev/urandom")?.read_exact(&mut salt)?;
     let part = Path::new(out).with_file_name(format!(
         ".{:016x}.{}",
@@ -459,7 +465,7 @@ pub fn render(tl: &Timeline, out: &str, o: &Opts, mut progress: impl FnMut(f64))
     let mut child = start(
         ffmpeg()
             .args(["-v", "error", "-nostats", "-progress", "pipe:1"])
-            .args(args(tl, part, o, &dir))
+            .args(args(tl, part, o, dir))
             .stdin(if pipe { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped()),
@@ -469,7 +475,7 @@ pub fn render(tl: &Timeline, out: &str, o: &Opts, mut progress: impl FnMut(f64))
     thread::scope(|s| {
         let (beat, pulse) = mpsc::channel();
         s.spawn(move || {
-            let tie = tether(pid, part);
+            let tie = tether(pid, part, dir);
             if iter::repeat_with(|| pulse.recv_timeout(STALL)).find_map(Result::err) == Some(RecvTimeoutError::Timeout) {
                 stuck.store(true, Relaxed);
                 kill(pid);
@@ -787,18 +793,22 @@ mod tests {
         assert_eq!(e, format!("export of {out} stopped: ffmpeg made no progress for 5 seconds"));
     }
 
-    // An export's ffmpeg should be killed, and the hidden file it was writing removed, soon after its tie
-    // to the program is cut, which the system does when the program dies, even by force quit.
+    // An export's ffmpeg should be killed, and the hidden file it was writing and its folder of layer
+    // pictures removed, soon after its tie to the program is cut, which the system does when the program
+    // dies, even by force quit.
     #[test]
     fn dies_with_the_program() {
-        let part = scratch("tether").join(".00ff.it's \"$HOME\" $(x).mp4");
+        let dir = scratch("tether");
+        let (part, room) = (dir.join(".00ff.it's \"$HOME\" $(x).mp4"), dir.join("origami-1-0 $(x)"));
+        fs::create_dir_all(&room).unwrap();
+        fs::write(room.join("text-0.bgra"), "layer").unwrap();
         fs::write(&part, "half").unwrap();
         let args = ["-v", "error", "-re", "-f", "lavfi", "-i", "color=d=60", "-f", "null", "-"];
         let mut ff = start(ffmpeg().args(args)).unwrap();
-        drop(tether(ff.id(), &part.to_string_lossy()));
+        drop(tether(ff.id(), &part.to_string_lossy(), &room));
         let gone = (0..500).any(|_| {
             thread::sleep(Duration::from_millis(10));
-            ff.try_wait().unwrap().is_some() && !part.exists()
+            ff.try_wait().unwrap().is_some() && !part.exists() && !room.exists()
         });
         let _ = ff.kill();
         assert!(gone);
