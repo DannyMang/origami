@@ -10,6 +10,7 @@ What changed in each version of Origami. The launch screen shows the version you
 - `origami frame` refuses to write its still over a picture or video the script reads, as exports already did. Before, `origami frame edit.js 1 photo.png` replaced `photo.png` without asking.
 - A huge `blur`, such as `.blur(1e9)` or a function of time that returns one, no longer freezes the preview and exports. A number over 16384 is lowered to 16384 and the status bar says so, and any blur wider than its picture is drawn as wide as the picture, which looks the same.
 - Picture effects (`roughen`, `blur`, `lens`, `displace`, `noise`, `fractal`, `levels`) now show on text animated letter by letter with `each` or `shown`. Before, they were silently left out of the preview and the export.
+- A script Origami cannot read as text, such as one saved in another editor with a non-UTF-8 accent, one over 16 MB or a folder named `.js`, is no longer opened as an empty page. Before, the editor showed nothing and the next save replaced the whole file with what you had typed. Now Origami says why it was not opened and leaves the file as it was.
 
 ### Nov 21
 

@@ -281,10 +281,18 @@ impl Origami {
 
     pub fn switch(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let name = place(&path).0;
-        let Some(path) = fs::canonicalize(&path).ok().filter(|p| p.extension().is_some_and(|e| e == "js")) else {
-            let detail = format!("{name} was not opened: it is missing or not a .js script.");
-            let ok = [PromptButton::ok("OK")];
-            return drop(window.prompt(PromptLevel::Warning, "Origami opens .js scripts", Some(&detail), &ok, cx));
+        let read = fs::canonicalize(&path)
+            .ok()
+            .filter(|p| p.extension().is_some_and(|e| e == "js"))
+            .ok_or("it is missing or not a .js script".to_string())
+            .and_then(|p| origami_lang::load(&p).map(|_| p).map_err(|e| e.to_string()));
+        let path = match read {
+            Ok(path) => path,
+            Err(why) => {
+                let detail = format!("{name} was not opened: {why}.");
+                let ok = [PromptButton::ok("OK")];
+                return drop(window.prompt(PromptLevel::Warning, "Origami opens .js scripts", Some(&detail), &ok, cx));
+            }
         };
         if self.take.is_some() {
             return self.note = "finish the voiceover before opening another script".into();
@@ -535,7 +543,7 @@ mod tests {
 
     // Opening another script from Open Recent, the Open dialog or Finder with unsaved changes should ask first:
     // Cancel keeps the edits, Discard opens the other script and leaves the file on disk as it was, and a
-    // file that is not a .js script is refused.
+    // file that is not a .js script, or a script that cannot be read as text, is refused and left as it was.
     #[gpui::test]
     fn opening_keeps_unsaved(cx: &mut TestAppContext) {
         let (view, cx, path) = project(cx, "open-unsaved");
@@ -564,6 +572,15 @@ mod tests {
         view.update_in(cx, |o, window, cx| o.switch(path.with_file_name("clip.mp4"), window, cx));
         assert_eq!(cx.pending_prompt().map(|p| p.0), Some("Origami opens .js scripts".into()));
         cx.simulate_prompt_answer("OK");
+        let (latin, bytes) = (path.with_file_name("latin.js"), b"// caf\xe9\nstack(text(\"a\").for(1))\n");
+        fs::write(&latin, bytes).unwrap();
+        cx.dispatch_action(Reopen(latin.clone()));
+        let why = "latin.js was not opened: stream did not contain valid UTF-8.";
+        assert_eq!(cx.pending_prompt().map(|p| p.1), Some(why.into()));
+        cx.simulate_prompt_answer("OK");
+        cx.run_until_parked();
+        assert_eq!(view.update(cx, |o, _| o.script.clone()), other);
+        assert_eq!(fs::read(&latin).unwrap(), bytes);
     }
 
     // A save that cannot be written, here onto a read-only script, keeps the code on screen marked unsaved

@@ -605,6 +605,9 @@ fn main() {
     let Ok(script) = env::args().nth(1).map(fs::canonicalize).transpose() else {
         return eprintln!("usage: origami-app [script.js]");
     };
+    if let Some((path, Err(e))) = script.as_ref().map(|s| (s, origami_lang::load(s))) {
+        return eprintln!("{} was not opened: {e}", path.display());
+    }
     let script = script.unwrap_or_default();
     thread::spawn(Player::warm);
     let app = Application::new();
