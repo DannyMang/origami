@@ -12,6 +12,7 @@ What changed in each version of Origami. The launch screen shows the version you
 - Effect values outside what the effect can draw are brought inside its range, and the status bar says so, naming the line: `lens` past 170 either way, keys and functions of time included, `levels` with white at or below black, `noise` outside 0 to 1, a `fractal`, `roughen` or `displace` size or scale under 1, and a negative `roughen` border or sharpness. Before, they were used as written: `lens(180)`, a `roughen` or `displace` size of 0 and a `fractal` scale of 0 made the clip vanish or turn black, a negative sharpness hollowed a shape into a ragged frame, and `levels(0.6, 0.4)` was a hard cut with no warning.
 - Autocomplete and the help shown when you hover a call now know `path`, `merge`, `matte`, `blend`, `fps`, `duotone` and the seven picture effects (`lens`, `blur`, `levels`, `noise`, `fractal`, `roughen`, `displace`), each with a one-line description. `merge` is offered only after a `stack` or `cat`, and the picture methods are not offered on a `sound`.
 - Clicking `displace({ amount: 50 })` opens an amount slider from 0 to 100 pixels. Before, it ran from 0 to 1, like a colour amount, so any drag rewrote the amount to 1 or less, and the editor underlined amounts over 1 as out of range.
+- Dragging a `path` in the preview now moves it, writing `.pos(x, y)` into the script as for other shapes, and its position can be changed in the Motion tab. Before, a path could be selected but a drag left the script as it was.
 
 ### Nov 21
 
