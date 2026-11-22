@@ -321,7 +321,9 @@ impl Origami {
             (s.mark, s.diff, s.pick) = (Some(format!("\u{21ba} restored {when}")), None, None);
         }
         self.change(|this| this.lines = lines);
-        self.note = format!("restored {when} as a new save \u{b7} cmd+z undoes it");
+        if !self.dirty {
+            self.note = format!("restored {when} as a new save \u{b7} cmd+z undoes it");
+        }
     }
 
     pub fn wipe(&mut self, cx: &mut Context<Self>) {

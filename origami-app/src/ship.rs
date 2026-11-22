@@ -225,9 +225,22 @@ impl Origami {
     }
 
     pub fn go(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(path) = self.ship.as_ref().map(|s| s.path.clone()).filter(|p| p.exists()) else {
-            return self.ship_out(None, cx);
+        let Some(path) = self.ship.as_ref().map(|s| s.path.clone()) else {
+            return;
         };
+        self.vet(path, window, cx, |this, out, cx| this.ship_out(out, cx));
+    }
+
+    pub fn vet(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        then: impl FnOnce(&mut Self, Option<PathBuf>, &mut Context<Self>) + 'static,
+    ) {
+        if !path.exists() {
+            return then(self, None, cx);
+        }
         let both = free(&path);
         let ask = format!("Replace it, or keep it and save this export as \u{201c}{}\u{201d}?", named(&both));
         let answer = window.prompt(
@@ -241,8 +254,8 @@ impl Origami {
             let pick = answer.await;
             let _ = this.update(cx, |this, cx| {
                 match pick {
-                    Ok(0) => this.ship_out(None, cx),
-                    Ok(1) => this.ship_out(Some(both), cx),
+                    Ok(0) => then(this, None, cx),
+                    Ok(1) => then(this, Some(both), cx),
                     _ => return,
                 }
                 cx.notify();

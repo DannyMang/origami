@@ -17,17 +17,20 @@ use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
-    env, fmt, fs,
+    env,
+    ffi::{CString, c_char, c_void},
+    fmt, fs,
     io::{self, Read, Seek, SeekFrom, Write},
     mem,
-    os::unix::fs::MetadataExt,
+    os::unix::{ffi::OsStrExt, fs::MetadataExt},
     panic,
     path::{Path, PathBuf},
     pin::pin,
-    process::{Child, ChildStdin, Command, Stdio},
+    process::{self, Child, ChildStdin, Command, Stdio},
+    ptr,
     sync::{
         Arc, Mutex, OnceLock, PoisonError,
-        atomic::{AtomicBool, Ordering::Relaxed},
+        atomic::{AtomicBool, AtomicU64, Ordering::Relaxed},
         mpsc::{self, RecvTimeoutError},
     },
     task::{self, Poll, Waker},
@@ -520,10 +523,27 @@ fn stray(c: &Clip, opened: impl Fn(&str) -> bool) -> Option<String> {
 }
 
 pub fn save(path: &Path, data: impl AsRef<[u8]>) -> io::Result<()> {
-    if fs::symlink_metadata(path).is_ok_and(|m| !m.is_file()) {
-        fs::remove_file(path)?;
+    static PARTS: AtomicU64 = AtomicU64::new(0);
+    let old = fs::symlink_metadata(path).ok().filter(|m| m.is_file());
+    if old.is_some() {
+        fs::OpenOptions::new().write(true).open(path)?;
     }
-    fs::write(path, data)
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let part = path.with_file_name(format!(".{name}.{}-{}", process::id(), PARTS.fetch_add(1, Relaxed)));
+    let _ = fs::remove_file(&part);
+    let wrote = fs::File::create_new(&part).and_then(|mut f| {
+        if let Some(m) = &old {
+            f.set_permissions(m.permissions())?;
+            let c = |p: &Path| CString::new(p.as_os_str().as_bytes()).unwrap_or_default();
+            unsafe { copyfile(c(path).as_ptr(), c(&part).as_ptr(), ptr::null_mut(), ACL_XATTR) };
+        }
+        f.write_all(data.as_ref())?;
+        fs::rename(&part, path)
+    });
+    if wrote.is_err() {
+        let _ = fs::remove_file(&part);
+    }
+    wrote
 }
 
 pub fn load(path: &Path) -> io::Result<String> {
@@ -755,9 +775,12 @@ static SERVING: AtomicBool = AtomicBool::new(false);
 type Helper = (Child, ChildStdin, mpsc::Receiver<Vec<u8>>);
 static HELPER: Mutex<Option<Helper>> = Mutex::new(None);
 
+const ACL_XATTR: u32 = 1 | 4;
+
 unsafe extern "C" {
     fn proc_pid_rusage(pid: i32, flavor: i32, info: *mut [u64; 12]) -> i32;
     fn _exit(code: i32) -> !;
+    fn copyfile(from: *const c_char, to: *const c_char, state: *mut c_void, flags: u32) -> i32;
 }
 
 fn heft(pid: u32) -> u64 {
@@ -1688,12 +1711,18 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
     }
 
     // A name every object inherits, such as valueOf, toString or constructor, is not a clip method:
-    // calling one fails like any unknown method instead of silently dropping or copying the clip.
+    // calling one fails like any unknown method, which the error names when it is the only unknown call
+    // on its line, instead of silently dropping or copying the clip.
     #[test]
     fn inherited_names_are_not_clip_methods() {
         let dir = scratch("inherited");
-        let unknown = fails(&dir, "text('z')\ntext('a').nope()");
-        assert_eq!(unknown, "line 2: TypeError: not a callable function");
+        let unknown =
+            |name: &str| format!("line 2: {name} is not a clip method: check the spelling, or the script may need a newer Origami");
+        assert_eq!(fails(&dir, "text('z')\ntext('a').for(2).nope(1)"), unknown("nope"));
+        assert_eq!(
+            fails(&dir, "text('z')\ntext('a').nope().nada()"),
+            "line 2: TypeError: not a callable function"
+        );
         for name in [
             "valueOf",
             "toString",
@@ -1703,7 +1732,7 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
             "isPrototypeOf",
             "__proto__",
         ] {
-            assert_eq!(fails(&dir, &format!("text('z')\ntext('a').{name}()")), unknown, "{name}");
+            assert_eq!(fails(&dir, &format!("text('z')\ntext('a').{name}()")), unknown(name));
         }
     }
 
@@ -2035,5 +2064,41 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         let all = fonts();
         assert!(all.contains(&"Menlo".to_string()) && all.iter().all(|n| face(Path::new("/nowhere"), n).is_some()));
         assert!(all.windows(2).all(|w| w[0] != w[1]));
+    }
+
+    // A save writes a hidden file beside the old one and moves it into place, keeping the old file's
+    // permissions and extended attributes; a read-only file is left as it was, a link or pipe in its place
+    // is replaced instead of written through, and a save that fails leaves no hidden file behind.
+    #[test]
+    fn saves_whole_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("save");
+        let (file, other) = (dir.join("edit.js"), dir.join("other"));
+        let xattr = |args: &[&str]| output(Command::new("/usr/bin/xattr").args(args).arg(&file)).unwrap();
+        fs::write(&file, "old").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o640)).unwrap();
+        xattr(&["-w", "origami.test", "kept"]);
+        let inode = fs::metadata(&file).unwrap().ino();
+        save(&file, "new").unwrap();
+        let after = fs::metadata(&file).unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "new");
+        assert_eq!((after.ino() != inode, after.permissions().mode() & 0o777), (true, 0o640));
+        assert_eq!(xattr(&["-p", "origami.test"]).stdout, b"kept\n");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o440)).unwrap();
+        assert!(save(&file, "newer").is_err() && fs::read_to_string(&file).unwrap() == "new");
+        fs::remove_file(&file).unwrap();
+        fs::write(&other, "keep").unwrap();
+        std::os::unix::fs::symlink(&other, &file).unwrap();
+        save(&file, "a").unwrap();
+        assert!(!file.is_symlink() && fs::read_to_string(&other).unwrap() == "keep");
+        fs::remove_file(&file).unwrap();
+        assert!(status(Command::new("mkfifo").arg(&file)).unwrap().success());
+        save(&file, "b").unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "b");
+        fs::remove_file(&file).unwrap();
+        fs::create_dir(&file).unwrap();
+        assert!(save(&file, "c").is_err());
+        let names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names.len(), 2);
     }
 }

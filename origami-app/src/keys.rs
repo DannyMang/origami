@@ -331,10 +331,16 @@ impl Origami {
                         .map(quote)
                         .collect::<Vec<_>>()
                         .join(" ");
-                    let _ = origami_lang::save(&dir.join("export.sh"), format!("ffmpeg {line}\n"));
-                    return self.note = "wrote export.sh".into();
+                    let sh = dir.join("export.sh");
+                    return self.vet(sh.clone(), window, cx, move |this, both, _| {
+                        let sh = both.unwrap_or(sh);
+                        let _ = origami_lang::save(&sh, format!("ffmpeg {line}\n"));
+                        this.note = format!("wrote {}", sh.file_name().unwrap_or_default().to_string_lossy());
+                    });
                 }
-                self.send(out, Opts::default(), cx);
+                self.vet(dir.join(name), window, cx, move |this, both, cx| {
+                    this.send(both.map_or(out, |b| b.to_string_lossy().to_string()), Opts::default(), cx)
+                });
             }
             t => match secs(t) {
                 Some(t) => self.seek(t),
@@ -404,6 +410,49 @@ mod tests {
         thread::sleep(Duration::from_millis(500));
         origami_engine::halt();
         assert!(stuck.join().unwrap().is_err() && from.elapsed() < Duration::from_secs(10));
+    }
+
+    // `:export` onto a file that already exists, here footage the script does not read, asks the Export
+    // dialog's question first, Cancel leaving the file alone and Keep Both exporting beside it,
+    // `:export --dry-run` asks the same before replacing an export.sh, and a new name exports at once.
+    #[gpui::test]
+    fn export_command_asks_before_replacing(cx: &mut gpui::TestAppContext) {
+        let _one = crate::ship::tests::ONE.lock();
+        let dir = env::temp_dir().join("origami-replace-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("edit.js"), "settings({ size: [64, 36] })\ncolor('#203040').for(1)").unwrap();
+        fs::write(dir.join("take.mp4"), "footage").unwrap();
+        fs::write(dir.join("export.sh"), "mine").unwrap();
+        let tl = origami_lang::eval(&dir.join("edit.js"), false, origami_engine::footprint).unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            (app.script, app.tl) = (dir.join("edit.js"), Arc::new(tl));
+            app
+        });
+        let run = |cx: &mut gpui::VisualTestContext, cmd: &str, answer: &str| {
+            view.update_in(cx, |o, window, cx| {
+                o.export = None;
+                o.run(cmd, window, cx)
+            });
+            let asked = cx.pending_prompt().map(|p| p.0);
+            if asked.is_some() {
+                cx.simulate_prompt_answer(answer);
+            }
+            cx.run_until_parked();
+            let job = view.update(cx, |o, _| o.export.as_ref().map(|j| j.lock().unwrap().0.clone()));
+            (asked, job)
+        };
+        let exists = |name: &str| Some(format!("\u{201c}{name}\u{201d} already exists"));
+        assert_eq!(run(cx, "export take.mp4", "Cancel"), (exists("take.mp4"), None));
+        let both = format!("exported {}", dir.join("take 2.mp4").display());
+        assert_eq!(run(cx, "export take.mp4", "Keep Both"), (exists("take.mp4"), Some(both)));
+        assert_eq!(run(cx, "export --dry-run", "Cancel"), (exists("export.sh"), None));
+        assert_eq!(fs::read_to_string(dir.join("export.sh")).unwrap(), "mine");
+        run(cx, "export --dry-run", "Replace");
+        assert!(fs::read_to_string(dir.join("export.sh")).unwrap().starts_with("ffmpeg "));
+        assert_eq!(run(cx, "export new.mp4", "Cancel").0, None);
+        assert!(dir.join("new.mp4").exists() && fs::read(dir.join("take.mp4")).unwrap() == b"footage");
     }
 
     // Clicking the timecode should copy a time that, pasted into .at(...), starts on the frame shown,
