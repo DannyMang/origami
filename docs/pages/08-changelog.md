@@ -10,6 +10,7 @@ What changed in each version of Origami. The launch screen shows the version you
 - A video used as a matte is no longer heard, in the preview or the export. Before, its sound was mixed in unless you added `.mute()`.
 - `at` and `shift` on a matte now move it from the start of its clip, so a matte can come in later than its clip. Before, they were ignored and the matte always started with its clip.
 - Effect values outside what the effect can draw are brought inside its range, and the status bar says so, naming the line: `lens` past 170 either way, keys and functions of time included, `levels` with white at or below black, `noise` outside 0 to 1, a `fractal`, `roughen` or `displace` size or scale under 1, and a negative `roughen` border or sharpness. Before, they were used as written: `lens(180)`, a `roughen` or `displace` size of 0 and a `fractal` scale of 0 made the clip vanish or turn black, a negative sharpness hollowed a shape into a ragged frame, and `levels(0.6, 0.4)` was a hard cut with no warning.
+- Autocomplete and the help shown when you hover a call now know `path`, `merge`, `matte`, `blend`, `fps`, `duotone` and the seven picture effects (`lens`, `blur`, `levels`, `noise`, `fractal`, `roughen`, `displace`), each with a one-line description. `merge` is offered only after a `stack` or `cat`, and the picture methods are not offered on a `sound`.
 
 ### Nov 21
 
