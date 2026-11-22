@@ -1691,12 +1691,18 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
     }
 
     // A name every object inherits, such as valueOf, toString or constructor, is not a clip method:
-    // calling one fails like any unknown method instead of silently dropping or copying the clip.
+    // calling one fails like any unknown method, which the error names when it is the only unknown call
+    // on its line, instead of silently dropping or copying the clip.
     #[test]
     fn inherited_names_are_not_clip_methods() {
         let dir = scratch("inherited");
-        let unknown = fails(&dir, "text('z')\ntext('a').nope()");
-        assert_eq!(unknown, "line 2: TypeError: not a callable function");
+        let unknown =
+            |name: &str| format!("line 2: {name} is not a clip method: check the spelling, or the script may need a newer Origami");
+        assert_eq!(fails(&dir, "text('z')\ntext('a').for(2).nope(1)"), unknown("nope"));
+        assert_eq!(
+            fails(&dir, "text('z')\ntext('a').nope().nada()"),
+            "line 2: TypeError: not a callable function"
+        );
         for name in [
             "valueOf",
             "toString",
@@ -1706,7 +1712,7 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
             "isPrototypeOf",
             "__proto__",
         ] {
-            assert_eq!(fails(&dir, &format!("text('z')\ntext('a').{name}()")), unknown, "{name}");
+            assert_eq!(fails(&dir, &format!("text('z')\ntext('a').{name}()")), unknown(name));
         }
     }
 
