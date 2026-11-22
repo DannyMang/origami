@@ -145,24 +145,33 @@ fn blur(px: &[u8], w: usize, r: usize) -> Vec<u8> {
 
 fn depth(px: &[u8], (w, h): (usize, usize), most: f32) -> Vec<f32> {
     let mut d: Vec<f32> = px.chunks_exact(4).map(|p| if p[3] < 128 { 0. } else { most }).collect();
-    let near = |d: &[f32], x: usize, y: usize, ox: i64, oy: i64, step: f32| {
-        let (nx, ny) = (x as i64 + ox, y as i64 + oy);
-        let inside = nx >= 0 && ny >= 0 && nx < w as i64 && ny < h as i64;
-        if inside { d[ny as usize * w + nx as usize] + step } else { step }
-    };
     let diag = std::f32::consts::SQRT_2;
-    for y in 0..h {
-        for x in 0..w {
-            let v = [(-1, 0, 1.), (0, -1, 1.), (-1, -1, diag), (1, -1, diag)].map(|(ox, oy, s)| near(&d, x, y, ox, oy, s));
-            d[y * w + x] = v.into_iter().fold(d[y * w + x], f32::min);
+    let pass = |d: &mut [f32], y: usize, back: bool| {
+        let (before, rest) = d.split_at_mut(y * w);
+        let (row, after) = rest.split_at_mut(w);
+        let done = if back {
+            &after[..w.min(after.len())]
+        } else {
+            &before[before.len().saturating_sub(w)..]
+        };
+        let at = |x: Option<usize>, s: f32| x.and_then(|x| done.get(x)).map_or(s, |v| v + s);
+        for k in 0..w {
+            let (x, near, far) = if back {
+                (w - 1 - k, Some(w - k), (w - 1 - k).checked_sub(1))
+            } else {
+                (k, k.checked_sub(1), Some(k + 1))
+            };
+            let v = [
+                at(Some(x), 1.),
+                at(near, diag),
+                at(far, diag),
+                near.and_then(|n| row.get(n)).map_or(1., |v| v + 1.),
+            ];
+            row[x] = v.into_iter().fold(row[x], f32::min);
         }
-    }
-    for y in (0..h).rev() {
-        for x in (0..w).rev() {
-            let v = [(1, 0, 1.), (0, 1, 1.), (1, 1, diag), (-1, 1, diag)].map(|(ox, oy, s)| near(&d, x, y, ox, oy, s));
-            d[y * w + x] = v.into_iter().fold(d[y * w + x], f32::min);
-        }
-    }
+    };
+    (0..h).for_each(|y| pass(&mut d, y, false));
+    (0..h).rev().for_each(|y| pass(&mut d, y, true));
     d
 }
 
@@ -270,6 +279,17 @@ mod tests {
             [1, 2, 6].map(|r| mark(blur(&px, 5, r))),
             [(9466, 388895), (8457, 340500), (7960, 318820)]
         );
+    }
+
+    // A pixel's depth counts the steps to the nearest clear pixel or the picture's edge, 1 straight and the
+    // square root of 2 diagonally, up to the given most.
+    #[test]
+    fn depth_counts_steps_to_clear_pixels() {
+        let px: Vec<u8> = (0..30).flat_map(|i| [0, 0, 0, if i == 14 { 0 } else { 255 }]).collect();
+        let d: Vec<i32> = depth(&px, (6, 5), 9.).iter().map(|v| (v * 100.).round() as i32).collect();
+        let ring = [100, 141, 100, 141, 200, 100];
+        assert_eq!(d, [[100; 6], ring, [100, 100, 0, 100, 200, 100], ring, [100; 6]].concat());
+        assert_eq!(depth(&[0, 0, 0, 255].repeat(400), (20, 20), 3.)[210], 3.);
     }
 
     // Effects on a picture with no width or no height give it back as it was instead of stopping.
