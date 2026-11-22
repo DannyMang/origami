@@ -416,6 +416,17 @@ pub fn audio_args(tl: &Timeline, t: f64, rate: u32, speed: f64) -> Vec<String> {
     a
 }
 
+pub fn guard(tl: &Timeline, out: &str) -> Result<()> {
+    let id = |p: &Path| fs::metadata(p).map(|m| (m.dev(), m.ino())).ok();
+    if let Some((line, file)) = id(out.as_ref()).and_then(|o| tl.files.iter().find(|(_, f)| id(f) == Some(o))) {
+        bail!(
+            "export to {out} would overwrite {}, which line {line} reads: pick another name",
+            file.display()
+        );
+    }
+    Ok(())
+}
+
 pub fn render(tl: &Timeline, out: &str, o: &Opts, mut progress: impl FnMut(f64)) -> Result<()> {
     if tl.duration <= 0. {
         bail!("nothing to export: the timeline is empty");
@@ -441,13 +452,7 @@ pub fn render(tl: &Timeline, out: &str, o: &Opts, mut progress: impl FnMut(f64))
             c.label
         );
     }
-    let id = |p: &Path| fs::metadata(p).map(|m| (m.dev(), m.ino())).ok();
-    if let Some((line, file)) = id(out.as_ref()).and_then(|o| tl.files.iter().find(|(_, f)| id(f) == Some(o))) {
-        bail!(
-            "export to {out} would overwrite {}, which line {line} reads: pick another name",
-            file.display()
-        );
-    }
+    guard(tl, out)?;
     let (dir, mut salt) = (room(), [0; 8]);
     fs::File::open("/dev/urandom")?.read_exact(&mut salt)?;
     let part = Path::new(out).with_file_name(format!(

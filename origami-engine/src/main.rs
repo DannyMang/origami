@@ -31,6 +31,7 @@ fn main() -> Result<()> {
         }
         ["frame", script, t, out] => {
             let tl = origami_lang::eval(script.as_ref(), flag("--relock"), footprint)?;
+            origami_engine::guard(&tl, out)?;
             let size = format!("{}x{}", tl.size.0, tl.size.1);
             let px = Preview::default().frame(&tl, t.parse()?, (tl.size.0 as usize, tl.size.1 as usize));
             let mut child = origami_lang::start(

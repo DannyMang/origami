@@ -7,6 +7,7 @@ What changed in each version of Origami. The launch screen shows the version you
 ### Nov 22
 
 - Saving can no longer leave your script empty or cut short. Before, a save on a nearly full disk emptied the file first and then ran out of room, and Origami said nothing. Now the new text is written to a separate file and swapped in only once it is whole; if the save fails, the status bar says why, the code stays on screen marked unsaved, and Save on the unsaved-changes question waits instead of closing. A read-only script, which also failed silently, now says so the same way.
+- `origami frame` refuses to write its still over a picture or video the script reads, as exports already did. Before, `origami frame edit.js 1 photo.png` replaced `photo.png` without asking.
 
 ### Nov 21
 
