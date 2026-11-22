@@ -1,16 +1,16 @@
+use lru::LruCache;
 use std::{
-    array,
-    collections::HashMap,
-    fs,
+    array, fs,
+    num::NonZeroUsize,
     os::unix::fs::MetadataExt,
     sync::{Arc, LazyLock, Mutex},
     thread,
     time::SystemTime,
 };
 
-type Files = HashMap<(u64, u64, Option<SystemTime>), Option<Arc<Lut>>>;
+type Files = LruCache<(u64, u64, Option<SystemTime>), Option<Arc<Lut>>>;
 
-static FILES: LazyLock<Mutex<Files>> = LazyLock::new(Mutex::default);
+static FILES: LazyLock<Mutex<Files>> = LazyLock::new(|| Mutex::new(LruCache::new(NonZeroUsize::new(32).unwrap())));
 
 pub type Rgb = [f64; 3];
 
@@ -75,7 +75,7 @@ impl Lut {
         let m = fs::metadata(path).ok()?;
         let key = (m.dev(), m.ino(), m.modified().ok());
         let load = || Self::parse(&origami_lang::load(path.as_ref()).ok()?).map(Arc::new);
-        FILES.lock().unwrap().entry(key).or_insert_with(load).clone()
+        FILES.lock().unwrap().get_or_insert(key, load).clone()
     }
 
     pub fn text(&self) -> String {
@@ -124,5 +124,23 @@ impl Lut {
             }
         });
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A colour table file rewritten again and again reads back its new table each time and keeps at most
+    // 32 readings in memory, not one for every version it ever had.
+    #[test]
+    fn rewritten_cubes_stay_bounded() {
+        let file = crate::tests::scratch("recube").join("look.cube");
+        for i in 0..40 {
+            let lut = Lut::bake(2, |c| c.map(|v| v * i as f64 / 40.));
+            fs::write(&file, lut.text()).unwrap();
+            assert_eq!(Lut::read(&file.to_string_lossy()).as_deref(), Lut::parse(&lut.text()).as_ref());
+        }
+        assert!(FILES.lock().unwrap().len() <= 32);
     }
 }

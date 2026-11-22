@@ -424,7 +424,7 @@ fn media(path: &Path, old: &Lock, new: &mut Lock, relock: bool, rel: &str) -> Re
                         audio: true,
                     })
                 }
-                false => probed.remove(rel).filter(same),
+                false => probed.get(rel).filter(|m| same(m)).cloned(),
             });
             known.map_or_else(|| scan(path, prev, relock, rel), Ok)?
         }
@@ -746,6 +746,7 @@ fn timed(cx: &mut Context, code: &str, path: Option<&Path>) -> Result<JsResult<J
 fn boot() -> Context {
     let mut cx = Context::default();
     cx.runtime_limits_mut().set_loop_iteration_limit(10_000_000);
+    cx.runtime_limits_mut().set_stack_size_limit(1 << 21);
     for (name, f) in [
         (
             js_string!("__probe"),
@@ -2013,6 +2014,31 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
             fails(&dir, src.replace("i.png", "none.png").as_str()),
             "line 4: image(\"none.png\") points to a file that does not exist"
         );
+    }
+
+    // A long generated script with more than ten thousand names defined at its top level evaluates like a
+    // short one instead of stopping with a stack error.
+    #[test]
+    fn many_names_evaluate() {
+        let src: String = (0..12_000).map(|i| format!("const c{i} = {i}\n")).collect();
+        assert_eq!(tl(&(src + "text('x').for(c11999 / 1000)")).duration, 11.999);
+    }
+
+    // A first open reads each new media file once however many clips use it, so a montage cut from a few
+    // new files opens about as fast as one clip of them.
+    #[test]
+    fn new_media_is_read_once() {
+        let dir = media("once");
+        let open = |n: usize| {
+            let src = format!("cat(Array.from({{ length: {n} }}, (_, i) => video('v.mp4').trim(i % 10 / 10, 1)))");
+            fs::write(dir.join("edit.js"), src).unwrap();
+            let _ = fs::remove_file(dir.join("origami.lock"));
+            let from = Instant::now();
+            assert_eq!(eval(&dir.join("edit.js"), false, size).unwrap().clips.len(), n);
+            from.elapsed()
+        };
+        let (one, many) = (open(1), open(200));
+        assert!(many < one * 10, "{one:?} {many:?}");
     }
 
     // A playlist used as media is refused on its line at once, before any program reads it, even when a

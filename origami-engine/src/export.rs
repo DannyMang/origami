@@ -1,4 +1,4 @@
-use crate::preview::{Preview, lead, learn};
+use crate::preview::{Preview, lead, learn, warm};
 use crate::{grade, lut::Lut, shape, text};
 use anyhow::{Result, bail};
 use origami_lang::{Clip, Kind, Timeline, Val, ffmpeg, literal, start, status};
@@ -502,6 +502,7 @@ pub fn render(tl: &Timeline, out: &str, o: &Opts, mut progress: impl FnMut(f64))
             s.spawn(move || {
                 let (mut pv, fps) = (Preview::default(), tl.fps as f64);
                 pv.room = hold(tl, size, k);
+                warm(tl, from);
                 ((from * fps).round() as u32..(to * fps).round() as u32)
                     .try_for_each(|k| send.send(pv.frame(tl, k as f64 / fps, size)).ok())
             });

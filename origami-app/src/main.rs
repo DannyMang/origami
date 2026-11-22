@@ -35,7 +35,7 @@ use gpui::{
 };
 use image::{Frame, RgbaImage};
 use mouse::Grab;
-use origami_engine::{Player, Preview, footprint, halt, learn, peaks, thumb};
+use origami_engine::{Player, Preview, footprint, halt, peaks, thumb, warm};
 use origami_lang::{Clip, Kind, Timeline};
 use std::{
     cell::RefCell,
@@ -161,6 +161,7 @@ struct Origami {
     cued: bool,
     planning: bool,
     assets: HashMap<String, Option<Asset>>,
+    aged: HashMap<String, Option<Asset>>,
     stamps: HashMap<String, Option<(u64, SystemTime)>>,
     jobs: Vec<(String, String, Option<f64>)>,
     loading: usize,
@@ -395,7 +396,7 @@ impl Origami {
                 this.boot = this.boot.filter(|_| want.1 != this.rev);
                 if this.shown.is_none_or(|s| s.1 != want.1) {
                     let tl = this.tl.clone();
-                    cx.background_executor().spawn(async move { learn(&tl, 0.) }).detach();
+                    cx.background_executor().spawn(async move { warm(&tl, 0.) }).detach();
                 }
                 (this.busy, this.shown, this.rough, this.rest) = (false, Some(want), rough, Some(Instant::now()));
                 this.refresh(cx);
@@ -408,9 +409,13 @@ impl Origami {
 
     fn asset(&mut self, key: String, path: &str, t: Option<f64>) -> Option<&Asset> {
         if !self.assets.contains_key(&key) {
-            self.jobs.push((key.clone(), path.into(), t));
+            let kept = self.aged.remove(&key);
+            if kept.is_none() {
+                self.jobs.push((key.clone(), path.into(), t));
+            }
+            self.assets.insert(key.clone(), kept.flatten());
         }
-        self.assets.entry(key).or_default().as_ref()
+        self.assets[&key].as_ref()
     }
 
     fn watch(&mut self, cx: &mut Context<Self>) {
@@ -422,7 +427,9 @@ impl Origami {
         for c in media.filter(|c| seen.insert(&c.src)) {
             let now = fs::metadata(&c.src).and_then(|m| Ok((m.len(), m.modified()?))).ok();
             if self.stamps.insert(c.src.clone(), now).is_some_and(|was| was != now) {
-                self.assets.retain(|k, _| !k.starts_with(&c.src));
+                for assets in [&mut self.assets, &mut self.aged] {
+                    assets.retain(|k, _| !k.starts_with(&c.src));
+                }
                 self.rev += 1;
                 self.mtime = self.mtime.filter(|_| self.dirty);
             }
@@ -475,6 +482,15 @@ impl Origami {
             }
         }
         self.cue(cx);
+        if self.assets.len() > 500 {
+            for (key, asset) in mem::replace(&mut self.aged, mem::take(&mut self.assets)) {
+                match asset {
+                    Some(Asset::Thumb(image)) => cx.drop_image(image, Some(window)),
+                    Some(wave) => drop(self.assets.insert(key, Some(wave))),
+                    None => {}
+                }
+            }
+        }
         if let Some(job) = self.export.clone() {
             let (note, done) = mem::take(&mut *job.lock().unwrap());
             if !note.is_empty() {
@@ -611,6 +627,7 @@ fn fresh(focus: FocusHandle, recent: Vec<PathBuf>) -> Origami {
         cued: false,
         planning: false,
         assets: HashMap::new(),
+        aged: HashMap::new(),
         stamps: HashMap::new(),
         jobs: vec![],
         loading: 0,

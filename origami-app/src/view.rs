@@ -1426,6 +1426,33 @@ mod tests {
         assert_eq!((zoomed[0], zoomed[98]), (first + 1, 64));
     }
 
+    // Thumbnails shown lately are kept, but ones not shown since the timeline last held 500 are let go,
+    // so zooming and scrolling across many clips for hours does not keep growing memory, while a sound's
+    // waveform, which takes long to read, stays.
+    #[gpui::test]
+    fn thumbnails_stay_bounded(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = cx.add_window_view(|_, cx| crate::fresh(cx.focus_handle(), vec![]));
+        let (held, kept) = view.update_in(cx, |o, window, cx| {
+            o.assets.insert("s.wav".into(), Some(crate::Asset::Wave(vec![0.5])));
+            let show = |o: &mut crate::Origami, i: usize| {
+                let key = format!("a.mp4@{i}.0");
+                if o.asset(key.clone(), "a.mp4", Some(i as f64)).is_none() {
+                    o.assets.insert(key, Some(crate::Asset::Thumb(crate::bitmap(vec![0; 64], 4, 4))));
+                }
+            };
+            for i in 1..5000 {
+                show(o, i);
+                show(o, 0);
+                o.jobs.clear();
+                o.tick(window, cx);
+            }
+            let kept = matches!(o.asset("a.mp4@0.0".into(), "a.mp4", Some(0.)), Some(crate::Asset::Thumb(_)))
+                && matches!(o.asset("s.wav".into(), "s.wav", None), Some(crate::Asset::Wave(_)));
+            (o.assets.len() + o.aged.len(), kept && o.jobs.is_empty())
+        });
+        assert!(held <= 1002 && kept, "{held}");
+    }
+
     // The code pane's folds, lint and search hits should be worked out once and kept while nothing
     // they depend on changes, and worked out again when the script, a fold, the error or the search
     // does.

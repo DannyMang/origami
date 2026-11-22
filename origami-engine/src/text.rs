@@ -2,17 +2,19 @@ use fontdue::{
     Font, FontSettings,
     layout::{CoordinateSystem, GlyphPosition, Layout, TextStyle},
 };
+use lru::LruCache;
 use origami_lang::Clip;
 use std::{
-    collections::HashMap,
     fs,
+    num::NonZeroUsize,
     os::unix::fs::MetadataExt,
     sync::{Arc, LazyLock, Mutex},
 };
 
 const SPARE: &str = "/System/Library/Fonts/Supplemental/Arial Unicode.ttf";
 
-static FONTS: LazyLock<Mutex<HashMap<Option<(u64, u64)>, Arc<Font>>>> = LazyLock::new(Mutex::default);
+static FONTS: LazyLock<Mutex<LruCache<Option<(u64, u64)>, Arc<Font>>>> =
+    LazyLock::new(|| Mutex::new(LruCache::new(NonZeroUsize::new(16).unwrap())));
 
 fn face(path: &str) -> Arc<Font> {
     let id = fs::metadata(path)
@@ -22,9 +24,7 @@ fn face(path: &str) -> Arc<Font> {
     let load = |p: &str| Font::from_bytes(fs::read(p).ok()?, FontSettings::default()).ok().map(Arc::new);
     let plain = "/System/Library/Fonts/HelveticaNeue.ttc";
     let mut fonts = FONTS.lock().unwrap();
-    let font = fonts
-        .entry(id)
-        .or_insert_with(|| id.and_then(|_| load(path)).or_else(|| load(plain)).unwrap());
+    let font = fonts.get_or_insert(id, || id.and_then(|_| load(path)).or_else(|| load(plain)).unwrap());
     font.clone()
 }
 
@@ -215,8 +215,27 @@ mod tests {
     // falls back to the default one.
     #[test]
     fn fonts_are_kept_once() {
+        let _tidy = crate::tests::TIDY.read();
         let spelled = "/System/Library/Fonts//Supplemental/./Arial Unicode.ttf";
         assert!(Arc::ptr_eq(&face(SPARE), &face(spelled)));
         assert!(Arc::ptr_eq(&face("/nowhere.ttf"), &face("")));
+    }
+
+    // Titles in many different fonts keep only the 16 fonts used last read in memory, so trying font after
+    // font for hours does not keep growing memory (a large font takes hundreds of megabytes once read).
+    #[test]
+    fn fonts_stay_bounded() {
+        let _tidy = crate::tests::TIDY.write();
+        let dir = fs::read_dir("/System/Library/Fonts/Supplemental")
+            .unwrap()
+            .flatten()
+            .map(|e| e.path());
+        let mut small: Vec<_> = dir
+            .filter(|p| p.extension().is_some_and(|e| e == "ttf") && p.metadata().unwrap().len() < 200_000)
+            .collect();
+        small.sort();
+        let names: Vec<String> = small.iter().take(24).map(|p| p.to_string_lossy().into()).collect();
+        let last = names.iter().map(|n| face(n)).last().unwrap();
+        assert!(names.len() == 24 && FONTS.lock().unwrap().len() <= 16 && Arc::ptr_eq(&last, &face(&names[23])));
     }
 }

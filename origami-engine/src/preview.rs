@@ -163,6 +163,28 @@ pub fn learn(tl: &Timeline, from: f64) {
     study(used.map(|c| c.src.clone()).collect());
 }
 
+pub fn warm(tl: &Timeline, from: f64) {
+    learn(tl, from);
+    let used = tl
+        .clips
+        .iter()
+        .filter(|c| c.end > from && c.kind == Kind::Video && Path::new(&c.src).is_file());
+    let mut seeks: Vec<(String, f64, f64)> = used
+        .filter_map(|c| match probe(&c.src) {
+            (.., late, start, _, false) if late > 0 => Some((c.src.clone(), c.src_in, start)),
+            _ => None,
+        })
+        .filter(|(src, at, _)| !LANDS.lock().unwrap().contains_key(&(src.clone(), at.to_bits())))
+        .collect();
+    seeks.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    seeks.dedup();
+    spread(&mut seeks, 1, |_, part| {
+        for (src, at, start) in part.iter() {
+            lands(src, *at, *start);
+        }
+    });
+}
+
 fn study(mut new: Vec<String>) {
     new.retain(|f| !KNOWN.lock().unwrap().contains_key(f) && Path::new(f).is_file());
     new.sort();
@@ -511,7 +533,26 @@ fn rate(src: &str, fps: f64) -> (f64, f64, f64) {
 struct Decoder {
     child: Option<Child>,
     next: i64,
-    feed: Option<(Receiver<Vec<u8>>, Sender<Vec<u8>>)>,
+    feed: Option<(Receiver<Vec<u8>>, Sender<Vec<u8>>, bool)>,
+}
+
+impl Decoder {
+    fn feed(&mut self, len: usize, n: i64, back: bool) {
+        let Some((pid, mut out)) = self.child.as_mut().and_then(|c| Some((c.id(), c.stdout.take()?))) else {
+            return;
+        };
+        let ((send, feed), (give, take)) = (mpsc::sync_channel(if back { 2 } else { 0 }), mpsc::channel());
+        thread::spawn(move || {
+            (0..n).try_for_each(|_| {
+                let mut px = take.try_recv().unwrap_or_else(|_| vec![0; len]);
+                let seen = watch(pid);
+                out.read_exact(&mut px).ok()?;
+                drop(seen);
+                send.send(px).ok()
+            })
+        });
+        self.feed = Some((feed, give, back));
+    }
 }
 
 impl Drop for Decoder {
@@ -537,6 +578,7 @@ pub struct Preview {
     primed: (Vec<u32>, (usize, usize)),
     pub(crate) room: usize,
     most: usize,
+    shown: usize,
     pub fast: bool,
     pub rough: bool,
 }
@@ -558,6 +600,7 @@ impl Default for Preview {
             primed: Default::default(),
             room,
             most,
+            shown: 0,
             fast: false,
             rough: false,
         }
@@ -636,6 +679,7 @@ impl Preview {
         });
         let lrf = |c: &Clip| Path::new(&c.src).with_extension("LRF").to_string_lossy().into_owned();
         study(tl.clips.iter().filter(shown).flat_map(|c| [c.src.clone(), lrf(c)]).collect());
+        self.shown = tl.clips.iter().filter(shown).count() + 1;
         let mut all = true;
         for c in tl.clips.iter().filter(shown) {
             let (tw, th, ..) = place(c, (pw as f64, ph as f64), k);
@@ -707,7 +751,8 @@ impl Preview {
                         .stderr(Stdio::null()),
                 )
                 .ok()?;
-                self.decoders.drain(..self.decoders.len().saturating_sub(self.most - 1));
+                self.decoders
+                    .drain(..self.decoders.len().saturating_sub(self.most.max(self.shown) - 1));
                 (
                     key.clone(),
                     Decoder {
@@ -723,7 +768,7 @@ impl Preview {
     }
 
     fn evict(&mut self, len: usize) {
-        let feeds = self.decoders.iter().filter(|(_, d)| d.feed.is_some());
+        let feeds = self.decoders.iter().filter(|(_, d)| d.feed.as_ref().is_some_and(|f| f.2));
         let flight: usize = feeds.map(|(k, _)| 3 * k.1 * k.2 * 4).sum();
         while self.held + flight + len > self.room
             && let Some(old) = self.frames.pop_lru()
@@ -741,12 +786,12 @@ impl Preview {
 
     fn drain(&mut self) {
         for i in (0..self.decoders.len()).rev() {
-            while let Some((feed, _)) = &self.decoders[i].1.feed {
+            while let Some((feed, _, true)) = &self.decoders[i].1.feed {
                 match feed.try_recv() {
                     Ok(px) => {
                         let len = px.len();
                         self.keep((self.decoders[i].0.clone(), self.decoders[i].1.next), px);
-                        if let Some((_, give)) = &self.decoders[i].1.feed {
+                        if let Some((_, give, _)) = &self.decoders[i].1.feed {
                             recycle(&mut self.spare, give, len);
                         }
                         self.decoders[i].1.next += 1;
@@ -773,19 +818,8 @@ impl Preview {
         if self.decoder(key, low - 1, from, rate).is_some()
             && self.back
             && let Some((_, d)) = self.decoders.last_mut()
-            && let Some((pid, mut out)) = d.child.as_mut().and_then(|c| Some((c.id(), c.stdout.take()?)))
         {
-            let ((send, feed), (give, take)) = (mpsc::sync_channel(2), mpsc::channel());
-            thread::spawn(move || {
-                (from..low).try_for_each(|_| {
-                    let mut px = take.try_recv().unwrap_or_else(|_| vec![0; len]);
-                    let seen = watch(pid);
-                    out.read_exact(&mut px).ok()?;
-                    drop(seen);
-                    send.send(px).ok()
-                })
-            });
-            d.feed = Some((feed, give));
+            d.feed(len, low - from, true);
         }
     }
 
@@ -806,23 +840,15 @@ impl Preview {
         let (_, mut d) = self.decoders.pop()?;
         let mut again = true;
         while d.next <= k {
-            if let Some((_, give)) = &d.feed {
+            if d.feed.is_none() {
+                d.feed(len, i64::MAX, false);
+            }
+            self.evict(len);
+            if let Some((_, give, _)) = &d.feed {
                 recycle(&mut self.spare, give, len);
             }
-            let px = match &d.feed {
-                Some((feed, _)) => feed.recv().ok(),
-                None => {
-                    self.evict(len);
-                    let mut px = reuse(&mut self.spare, len);
-                    let read = d.child.as_mut().and_then(|c| {
-                        let _seen = watch(c.id());
-                        c.stdout.as_mut()?.read_exact(&mut px).ok()
-                    });
-                    read.map(|_| px)
-                }
-            };
-            let Some(px) = px else {
-                let died = d.feed.is_some() || d.child.take().is_some_and(|mut c| c.wait().is_ok_and(|s| !s.success()));
+            let Some(px) = d.feed.as_ref().and_then(|f| f.0.recv().ok()) else {
+                let died = d.feed.as_ref().is_some_and(|f| f.2) || d.child.take().is_some_and(|mut c| c.wait().is_ok_and(|s| !s.success()));
                 if died && again && self.decoder(key, k, d.next, rate).is_some() {
                     (again, d) = (false, self.decoders.pop()?.1);
                     continue;
@@ -1090,6 +1116,7 @@ impl Preview {
         }
         let mut out = [0, 0, 0, 255].repeat(pw * ph);
         (self.rough, self.back) = (false, !self.fast && t < self.at && self.at - t < 5. / tl.fps as f64);
+        self.shown = tl.clips.iter().filter(|c| c.kind == Kind::Video && c.video && live(c, t)).count() + 1;
         self.at = t;
         let was = std::mem::replace(&mut self.was, (std::mem::take(&mut self.stills), std::mem::take(&mut self.texts)));
         self.spare
@@ -1100,8 +1127,12 @@ impl Preview {
         for c in tl.clips.iter().filter(soon).filter(|c| c.start == next) {
             let (tw, th, ..) = place(c, (pw as f64, ph as f64), k);
             let (key, first, rate) = Self::cell(c, c.start, tl.fps, (tw as usize, th as usize), self.fast);
-            if !self.frames.contains(&(key.clone(), first)) {
-                self.decoder(&key, first, first, rate);
+            if !self.frames.contains(&(key.clone(), first))
+                && self.decoder(&key, first, first, rate).is_some()
+                && let Some((_, d)) = self.decoders.last_mut()
+                && d.feed.is_none()
+            {
+                d.feed(key.1 * key.2 * 4, i64::MAX, false);
             }
         }
         let (fps, back) = (tl.fps as f64, self.back);
@@ -1375,6 +1406,41 @@ mod tests {
         assert!(pv.decoders.iter().any(|(k, _)| k.1 == 64));
     }
 
+    // With more videos on screen than the usual number of decoders, each keeps its own decoder from frame
+    // to frame instead of starting a new ffmpeg for every layer of every frame.
+    #[test]
+    fn every_video_on_screen_keeps_its_decoder() {
+        let file = scratch("wall").join("a.mp4");
+        film(&file, "testsrc=s=64x36:r=30:d=1", &[]);
+        let n = Preview::default().most + 2;
+        let layer = |i: usize| Clip {
+            src: file.to_string_lossy().into(),
+            w: 64,
+            h: 36,
+            scale: Val::Fixed(1. - i as f64 * 0.1),
+            ..clip("video", "")
+        };
+        let tl = Timeline {
+            fps: 30,
+            size: (64, 36),
+            duration: 1.,
+            clips: (0..n).map(layer).collect(),
+            ..Default::default()
+        };
+        let mut pv = Preview::default();
+        let ids = |pv: &Preview| {
+            let mut ids: Vec<u32> = pv.decoders.iter().flat_map(|(_, d)| d.child.as_ref().map(Child::id)).collect();
+            ids.sort();
+            ids
+        };
+        pv.frame(&tl, 0., (64, 36));
+        let first = ids(&pv);
+        for k in 1..20 {
+            pv.frame(&tl, k as f64 / 30., (64, 36));
+        }
+        assert_eq!((first.len(), ids(&pv)), (n, first));
+    }
+
     // A media file replaced on disk under the same name should show its new pictures in a preview
     // that already showed the old ones.
     #[test]
@@ -1545,6 +1611,43 @@ mod tests {
         assert!(seen == (0..90).map(|k| shown(&mut played, k)).collect::<Vec<_>>());
     }
 
+    // Playing forwards should read each video's next frame from ffmpeg while the current one is drawn, so
+    // it is in hand even if ffmpeg stops right after, and show the same pictures as a fresh preview.
+    #[test]
+    fn playing_reads_ahead() {
+        let file = scratch("ahead").join("a.mp4");
+        film(&file, "testsrc=s=256x144:r=30:d=1", &[]);
+        let tl = Timeline {
+            fps: 30,
+            size: (256, 144),
+            duration: 1.,
+            clips: vec![Clip {
+                src: file.to_string_lossy().into(),
+                w: 256,
+                h: 144,
+                end: 1.,
+                ..clip("video", "")
+            }],
+            ..Default::default()
+        };
+        let mut pv = Preview::default();
+        let ids = |pv: &Preview| {
+            pv.decoders
+                .iter()
+                .flat_map(|(_, d)| d.child.as_ref().map(Child::id))
+                .collect::<Vec<_>>()
+        };
+        pv.frame(&tl, 0., (256, 144));
+        let first = ids(&pv);
+        thread::sleep(std::time::Duration::from_millis(500));
+        for c in pv.decoders.iter_mut().flat_map(|(_, d)| d.child.as_mut()) {
+            c.kill().unwrap();
+        }
+        let next = pv.frame(&tl, 1. / 30., (256, 144));
+        assert_eq!((first.len(), ids(&pv)), (1, first));
+        assert!(next == Preview::default().frame(&tl, 1. / 30., (256, 144)));
+    }
+
     // Frames past the end of a file should be left to the decoder that reached it, without starting a
     // new ffmpeg for each one (a new one would read the longer file now under that name).
     #[test]
@@ -1564,6 +1667,43 @@ mod tests {
         let file = scratch("slow").join("a.wav");
         film(&file, "aevalsrc=0.5*sin(t):s=1:d=120", &["-c:a", "pcm_u8"]);
         assert_eq!(peaks(&file.to_string_lossy()).len(), DAY.parse::<usize>().unwrap() * 20);
+    }
+
+    // Warming a timeline works out, all at once and before any frame is drawn, the first frame of every clip
+    // of footage with B-frames, so drawing never stops to start an ffmpeg to find one.
+    #[test]
+    fn warming_finds_every_first_frame() {
+        let file = scratch("warm").join("a.mp4");
+        film(&file, "testsrc=s=64x36:r=30:d=2", &["-bf", "2"]);
+        let path = file.to_string_lossy().into_owned();
+        let clips: Vec<Clip> = (0..6)
+            .map(|i| Clip {
+                src: path.clone(),
+                w: 64,
+                h: 36,
+                start: i as f64 * 0.2,
+                end: (i + 1) as f64 * 0.2,
+                src_in: 0.1 + i as f64 * 0.13,
+                ..clip("video", "")
+            })
+            .collect();
+        let tl = Timeline {
+            fps: 30,
+            size: (64, 36),
+            duration: 1.2,
+            clips,
+            ..Default::default()
+        };
+        let found = |tl: &Timeline| {
+            let lands = LANDS.lock().unwrap();
+            tl.clips
+                .iter()
+                .filter(|c| lands.contains_key(&(path.clone(), c.src_in.to_bits())))
+                .count()
+        };
+        assert!(probe(&path).6 > 0 && found(&tl) == 0);
+        warm(&tl, 0.);
+        assert_eq!(found(&tl), 6);
     }
 
     // A file ffprobe could not read should be asked about again after a few hundred lookups rather
