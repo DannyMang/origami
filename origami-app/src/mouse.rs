@@ -32,6 +32,15 @@ fn carried(home: &Path) -> PathBuf {
     list
 }
 
+fn listed(recent: &[PathBuf]) -> String {
+    let all: Vec<_> = recent
+        .iter()
+        .map(|p| p.to_string_lossy())
+        .filter(|p| !p.contains(['\n', '\r']))
+        .collect();
+    all.join("\n")
+}
+
 fn deep(zoom: f64, duration: f64, fps: f64) -> f64 {
     zoom.clamp(1., (duration * fps / 8.).clamp(1., 64.))
 }
@@ -83,9 +92,9 @@ impl Origami {
         self.recent.retain(|p| *p != path);
         self.recent.insert(0, path.clone());
         self.recent.truncate(6);
-        let (list, all) = (recent(), self.recent.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>());
+        let list = recent();
         let _ = fs::create_dir_all(list.parent().unwrap());
-        let _ = origami_lang::save(&list, all.join("\n"));
+        let _ = origami_lang::save(&list, listed(&self.recent));
         cx.set_menus(menus(&self.recent));
         (self.script, self.mtime, self.t, self.dirty, self.clash) = (path, None, 0., false, false);
         (self.past, self.future, self.cursor, self.top, self.left) = (Default::default(), Default::default(), None, 0., 0.);
@@ -316,6 +325,14 @@ mod tests {
         fs::write(&list, "/c.js").unwrap();
         assert_eq!(fs::read_to_string(carried(&home)).unwrap(), "/c.js");
         assert_eq!(fs::read_to_string(old).unwrap(), "/a.js\n/b.js");
+    }
+
+    // The saved recent list leaves out a script whose path holds a line break, which would read back as
+    // made-up entries, and keeps the others in order.
+    #[test]
+    fn recent_list_skips_line_breaks() {
+        let all = ["/a/edit.js", "/b\n/etc/edit.js", "/c\r/edit.js", "/d/edit.js"].map(PathBuf::from);
+        assert_eq!(listed(&all).lines().collect::<Vec<_>>(), ["/a/edit.js", "/d/edit.js"]);
     }
 
     // Timeline zoom, scroll position and panel sizes should stay inside sensible limits.
