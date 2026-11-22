@@ -213,7 +213,7 @@ pub fn paint(fx: &[Fx], mut px: Arc<Vec<u8>>, size: (usize, usize), k: f64) -> A
     for f in fx.iter().filter(|_| size.0 * size.1 > 0) {
         let made = match f {
             Fx::Lens(fov) if fov.at(0) != 0. => lens(&px, size, fov.at(0)),
-            Fx::Blur(r) if r.at(0) * k >= 0.5 => blur(&px, size.0, (r.at(0) * k).round() as usize),
+            Fx::Blur(r) if r.at(0) * k >= 0.5 => blur(&px, size.0, (r.at(0) * k).round().min(size.0.max(size.1) as f64) as usize),
             Fx::Lens(_) | Fx::Blur(_) => continue,
             Fx::Levels(black, white, alpha) => {
                 let map = |v: u8| ((v as f64 / 255. - black) / (white - black).max(1e-6) * 255.).clamp(0., 255.) as u8;
@@ -290,6 +290,15 @@ mod tests {
         let ring = [100, 141, 100, 141, 200, 100];
         assert_eq!(d, [[100; 6], ring, [100, 100, 0, 100, 200, 100], ring, [100; 6]].concat());
         assert_eq!(depth(&[0, 0, 0, 255].repeat(400), (20, 20), 3.)[210], 3.);
+    }
+
+    // A blur far wider than its picture, even an endless one, finishes at once as the blur as wide as the
+    // picture.
+    #[test]
+    fn huge_blurs_stop_at_the_picture_size() {
+        let px = Arc::new((0..48).map(|i| (i * 37 % 256) as u8).collect::<Vec<_>>());
+        let at = |r: f64| paint(&[Fx::Blur(Val::Fixed(r))], px.clone(), (4, 3), 1.);
+        assert!(at(1e15) == at(4.) && at(f64::INFINITY) == at(4.) && at(4.) != at(3.));
     }
 
     // Effects on a picture with no width or no height give it back as it was instead of stopping.
