@@ -110,3 +110,26 @@ stack(
   line(0.1, 0.5, 0.9, 0.5, { color: "#ffffff", width: 4 }).for(3),
 )
 ```
+
+## path
+
+Draws a filled shape through a list of points. Points are shares of the frame, as for `line`. It needs at least three points and closes itself. Options: color, and `curve: true` to round the corners into a smooth curve that still passes through every point.
+
+```origami
+settings({ size: [640, 360] })
+stack(
+  color("#203040").for(3),
+  path([[0.1, 0.8], [0.25, 0.2], [0.4, 0.8]], { color: "#ffcc00" }).for(3),
+  path([[0.6, 0.5], [0.75, 0.2], [0.9, 0.5], [0.75, 0.8]], { color: "#74ade8", curve: true }).for(3),
+)
+```
+
+Where the outline crosses itself, the overlap is left empty: five points drawn as a star leave a hole in the middle.
+
+Each number in a point also takes keys or a function of time, so the shape can change. Here the top point slides right over two seconds:
+
+```js
+path([[0.3, 0.8], [keys([0, 0.3], [2, 0.7]), 0.2], [0.7, 0.8]])
+```
+
+The [pen tool](editor.html#pen-tool) draws a path by clicking in the picture.

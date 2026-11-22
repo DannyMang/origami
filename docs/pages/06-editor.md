@@ -41,6 +41,20 @@ clip.temperature(-10)
 
 Click the T beside the speed button, or press `t`, then click anywhere in the picture: Origami adds `text("text").at(<playhead>).for(3).pos(x, y)` to your script with its top-left corner at the spot you clicked, and you type the words right there. Enter saves them, Esc removes the new text, and the size slider, colour wheel and dragging in the preview edit it afterwards.
 
+## Pen tool
+
+Click the ✎ beside the T, then click points around a shape in the picture. Click the first point again, after at least three, to close it. Origami writes the shape above the script's last statement as a [path](video.html#path) named `shape`, then `shape2` and so on, as one undo step. Esc, or the ✎ again, cancels.
+
+```js
+const shape = path([
+  [0.25, 0.25], [0.75, 0.25], [0.5, 0.75],
+], { curve: true })
+```
+
+The shape is not shown until you use it: add it to a `stack`, or use it as a [matte](arranging.html#matte) with `clip.matte(shape)`.
+
+Double-click the shape's name in the script to outline it on the picture until Esc. When the shape is on the timeline, the playhead also moves to where it first appears.
+
 ## Edit text on the picture
 
 Double-click any text or caption in the preview to change its words right on the picture; press Enter (or click elsewhere) to save them into the script, Esc to cancel, and Shift+Enter for a new line. This works when the words are written as a quoted string in the `text("...")` call; for words that come from a variable, a template or a captions file, edit the script instead.
