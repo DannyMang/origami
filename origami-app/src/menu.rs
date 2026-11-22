@@ -520,12 +520,14 @@ mod tests {
     }
 
     // Being told to quit without a prompt, as from the Dock or at logout, should keep unsaved code in
-    // Origami's own folder for the next open, while a quit that chose to discard the changes should keep nothing.
+    // Origami's own folder for the next open, while a quit that chose to discard the changes should keep nothing,
+    // not even the copy made while typing.
     #[gpui::test]
     fn forced_quit_keeps_unsaved(cx: &mut TestAppContext) {
         let (view, cx, path) = project(cx, "forced-quit");
         let spare = crate::crash::spare(&path);
-        let _ = fs::remove_file(&spare);
+        fs::create_dir_all(spare.parent().unwrap()).unwrap();
+        fs::write(&spare, format!("{}\0// mine\n", path.display())).unwrap();
         let edit = |o: &mut Origami, _: &mut Context<Origami>| {
             o.lines.push("// mine".into());
             o.dirty = true;

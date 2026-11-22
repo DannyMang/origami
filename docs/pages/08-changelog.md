@@ -11,6 +11,7 @@ What changed in each version of Origami. The launch screen shows the version you
 - A huge `blur`, such as `.blur(1e9)` or a function of time that returns one, no longer freezes the preview and exports. A number over 16384 is lowered to 16384 and the status bar says so, and any blur wider than its picture is drawn as wide as the picture, which looks the same.
 - Picture effects (`roughen`, `blur`, `lens`, `displace`, `noise`, `fractal`, `levels`) now show on text animated letter by letter with `each` or `shown`. Before, they were silently left out of the preview and the export.
 - A script Origami cannot read as text, such as one saved in another editor with a non-UTF-8 accent, one over 16 MB or a folder named `.js`, is no longer opened as an empty page. Before, the editor showed nothing and the next save replaced the whole file with what you had typed. Now Origami says why it was not opened and leaves the file as it was.
+- Code you have typed but not saved now survives a force quit, a frozen Mac or a power cut. Before, it was kept only when Origami crashed or quit normally. Now a copy is kept in Origami's own folder each time the code changes, and the next open brings it back with the keep mine / use disk bar; the copy goes away once the code is saved or the changes are discarded.
 
 ### Nov 21
 

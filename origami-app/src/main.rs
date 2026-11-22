@@ -414,7 +414,10 @@ impl Origami {
         }
         self.watch(cx);
         self.stow(cx);
-        *crash::UNSAVED.lock().unwrap() = self.dirty.then(|| (self.script.clone(), self.text()));
+        crash::mind(
+            &mut crash::UNSAVED.lock().unwrap(),
+            self.dirty.then(|| (self.script.clone(), self.text())),
+        );
         if self.dwell() || self.lit().is_some() {
             cx.notify();
         }
