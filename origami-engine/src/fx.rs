@@ -1,6 +1,6 @@
 use crate::lut::spread;
 use origami_lang::{Fx, Val};
-use std::{f64::consts::FRAC_PI_2, sync::Arc};
+use std::{f64::consts::FRAC_PI_2, sync::Arc, thread};
 
 fn hash(x: i64, y: i64, seed: i64) -> f64 {
     let mut n = (x as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
@@ -79,14 +79,39 @@ fn lens(px: &[u8], (w, h): (usize, usize), fov: f64) -> Vec<u8> {
     })
 }
 
-fn blur(px: &[u8], (w, h): (usize, usize), r: usize) -> Vec<u8> {
+fn down(mut rows: Vec<&mut [f32]>, r: usize, n: f32) {
+    let (h, m) = (rows.len(), rows.first().map_or(0, |row| row.len()));
+    let (mut sum, mut ring) = (vec![0.; m], vec![0.; (r + 1).min(h) * m]);
+    for y in 0..h + r {
+        for i in 0..m {
+            let add = if y < h { rows[y][i] } else { 0. };
+            sum[i] += add - if y > 2 * r { ring[(y - 2 * r - 1) % (r + 1) * m + i] } else { 0. };
+            if y >= r {
+                ring[(y - r) % (r + 1) * m + i] = rows[y - r][i];
+                rows[y - r][i] = sum[i] / n;
+            }
+        }
+    }
+}
+
+fn blur(px: &[u8], w: usize, r: usize) -> Vec<u8> {
     let pre = |p: &[u8]| [0, 1, 2, 3].map(|i| if i < 3 { p[i] as f32 * p[3] as f32 / 255. } else { p[3] as f32 });
-    let (mut a, n) = (px.chunks_exact(4).flat_map(pre).collect::<Vec<f32>>(), (2 * r + 1) as f32);
-    let mut b = vec![0.; a.len()];
+    let (mut a, n, cols) = (
+        vec![0.; px.len()],
+        (2 * r + 1) as f32,
+        (w * 4).div_ceil(thread::available_parallelism().map_or(1, usize::from)),
+    );
+    spread(&mut a, 4, |from, part| {
+        for (d, p) in part.chunks_exact_mut(4).zip(px[from..].chunks_exact(4)) {
+            d.copy_from_slice(&pre(p));
+        }
+    });
     for _ in 0..3 {
-        spread(&mut b, w * 4, |from, rows| {
-            for (y, row) in (from / (w * 4)..).zip(rows.chunks_exact_mut(w * 4)) {
-                let (src, mut sum) = (&a[y * w * 4..][..w * 4], [0.; 4]);
+        spread(&mut a, w * 4, |_, rows| {
+            let mut src = vec![0.; w * 4];
+            for row in rows.chunks_exact_mut(w * 4) {
+                let mut sum = [0.; 4];
+                src.copy_from_slice(row);
                 for x in 0..w + r {
                     for c in 0..4 {
                         sum[c] += if x < w { src[x * 4 + c] } else { 0. } - if x > 2 * r { src[(x - 2 * r - 1) * 4 + c] } else { 0. };
@@ -97,18 +122,25 @@ fn blur(px: &[u8], (w, h): (usize, usize), r: usize) -> Vec<u8> {
                 }
             }
         });
-        let mut sum = vec![0.; w * 4];
-        for y in 0..h + r {
-            for (i, s) in sum.iter_mut().enumerate() {
-                *s += if y < h { b[y * w * 4 + i] } else { 0. } - if y > 2 * r { b[(y - 2 * r - 1) * w * 4 + i] } else { 0. };
-                if y >= r {
-                    a[(y - r) * w * 4 + i] = *s / n;
+        let mut parts: Vec<Vec<&mut [f32]>> = vec![];
+        for row in a.chunks_exact_mut(w * 4) {
+            for (j, part) in row.chunks_mut(cols).enumerate() {
+                match parts.get_mut(j) {
+                    Some(rows) => rows.push(part),
+                    None => parts.push(vec![part]),
                 }
             }
         }
+        thread::scope(|s| parts.into_iter().for_each(|rows| drop(s.spawn(move || down(rows, r, n)))));
     }
     let post = |p: &[f32]| [0, 1, 2, 3].map(|i| if i < 3 && p[3] > 0. { p[i] * 255. / p[3] } else { p[i] }.min(255.) as u8);
-    a.chunks_exact(4).flat_map(post).collect()
+    let mut out = vec![0; px.len()];
+    spread(&mut out, 4, |from, part| {
+        for (d, p) in part.chunks_exact_mut(4).zip(a[from..].chunks_exact(4)) {
+            d.copy_from_slice(&post(p));
+        }
+    });
+    out
 }
 
 fn depth(px: &[u8], (w, h): (usize, usize), most: f32) -> Vec<f32> {
@@ -169,10 +201,10 @@ pub fn now(fx: &[Fx], i: usize) -> Vec<Fx> {
 
 pub fn paint(fx: &[Fx], mut px: Arc<Vec<u8>>, size: (usize, usize), k: f64) -> Arc<Vec<u8>> {
     let whole = |v: &Val| v.at(0) as i64;
-    for f in fx {
+    for f in fx.iter().filter(|_| size.0 * size.1 > 0) {
         let made = match f {
             Fx::Lens(fov) if fov.at(0) != 0. => lens(&px, size, fov.at(0)),
-            Fx::Blur(r) if r.at(0) * k >= 0.5 => blur(&px, size, (r.at(0) * k).round() as usize),
+            Fx::Blur(r) if r.at(0) * k >= 0.5 => blur(&px, size.0, (r.at(0) * k).round() as usize),
             Fx::Lens(_) | Fx::Blur(_) => continue,
             Fx::Levels(black, white, alpha) => {
                 let map = |v: u8| ((v as f64 / 255. - black) / (white - black).max(1e-6) * 255.).clamp(0., 255.) as u8;
@@ -206,4 +238,49 @@ pub fn paint(fx: &[Fx], mut px: Arc<Vec<u8>>, size: (usize, usize), k: f64) -> A
         px = Arc::new(made);
     }
     px
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A blur gives the pixels of blurring every row and then every column three times over with running
+    // sums, also for radii that reach past the picture's edges.
+    #[test]
+    fn blurs_rows_then_columns() {
+        let alpha = |i: usize| {
+            if i % 7 == 3 {
+                0
+            } else if i % 3 > 0 {
+                255
+            } else {
+                i * 29 % 256
+            }
+        };
+        let px: Vec<u8> = (0..20)
+            .flat_map(|i| [i * 37 % 256, (i * 91 + 20) % 256, (i * 53 + 7) % 256, alpha(i)].map(|v| v as u8))
+            .collect();
+        let mark = |v: Vec<u8>| {
+            (
+                v.iter().map(|&b| b as usize).sum::<usize>(),
+                (1..).zip(&v).map(|(i, &b)| i * b as usize).sum::<usize>(),
+            )
+        };
+        assert_eq!(
+            [1, 2, 6].map(|r| mark(blur(&px, 5, r))),
+            [(9466, 388895), (8457, 340500), (7960, 318820)]
+        );
+    }
+
+    // Effects on a picture with no width or no height give it back as it was instead of stopping.
+    #[test]
+    fn empty_pictures_pass_through() {
+        let all = r#"[{"lens":30},{"blur":4},{"levels":[0.1,0.9,false]},{"noise":[0.2,1]},{"fractal":{"scale":50,"seed":1}},
+            {"roughen":{"border":4,"scale":20,"sharp":1,"seed":0}},{"displace":{"amount":10,"size":50,"seed":0}}]"#;
+        let fx: Vec<Fx> = serde_json::from_str(all).unwrap();
+        for size in [(0, 3), (3, 0), (0, 0)] {
+            let px = Arc::new(vec![]);
+            assert!(Arc::ptr_eq(&paint(&fx, px.clone(), size, 1.), &px));
+        }
+    }
 }
