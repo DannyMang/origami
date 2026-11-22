@@ -264,10 +264,13 @@ impl Origami {
     fn load(&mut self, cx: &mut Context<Self>) {
         let read = origami_lang::load(&self.script);
         let gone = read.is_err() && !self.fresh;
-        let disk: Vec<String> = read.unwrap_or_default().lines().map(String::from).collect();
+        let disk: Vec<String> = read.as_deref().unwrap_or_default().lines().map(String::from).collect();
         let differs = disk != self.lines;
         if self.dirty || gone {
             (self.clash, self.dirty) = (differs, differs);
+            if let (true, Ok(text), Some(shelf)) = (differs, read, &self.shelf) {
+                shelf.put(text, Some("changed on disk".into()));
+            }
         } else if differs {
             let old = std::mem::replace(&mut self.lines, disk);
             if !self.fresh {
