@@ -46,7 +46,8 @@ stack(
 
 - On a merged group, `scale`, `pos`, `rotate`, `opacity`, `fade`, `blend`, `matte`, `fps`, the colour methods and the [effects](methods.html#effects) change the whole picture. `scale` and `rotate` work around the middle of the frame.
 - `volume` and `mute` still go to each clip inside. `at` and `shift` move the whole group.
-- Not yet: on a merged group, `speed`, `trim` and `loop` do nothing, and `for` ends its picture early but not the sound of the clips inside.
+- `for` sets how long the group lasts: clips inside that would run longer are cut at its end, sound included. `loop` repeats the whole group.
+- `trim` is for one clip, and `speed` goes before `merge`, as in `stack(a, b).speed(2).merge()`, which speeds up each clip inside. On a merged group either one stops the script with an error on its line.
 
 ## matte
 

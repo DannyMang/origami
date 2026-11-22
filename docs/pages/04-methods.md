@@ -2,7 +2,7 @@
 
 ## trim
 
-Keeps the source between two times.
+Keeps the source between two times. It works on one clip: on a `stack` or `cat` it is an error, so trim the clips inside.
 
 ```origami
 video("clips/funny.mp4").trim("0:02", "0:05")
@@ -10,7 +10,7 @@ video("clips/funny.mp4").trim("0:02", "0:05")
 
 ## for
 
-Sets how long the clip lasts.
+Sets how long the clip lasts. On a `stack` or `cat`, clips inside that would run longer are cut at its end, sound included.
 
 ```origami
 settings({ size: [640, 360] })
@@ -41,7 +41,7 @@ cat(
 
 ## speed
 
-Plays faster or slower.
+Plays faster or slower. On a `stack` or `cat`, each clip inside plays faster or slower on its own. A [merged group](arranging.html#merge) takes it before `merge`: `stack(a, b).speed(2).merge()`.
 
 ```origami
 video("clips/funny.mp4").trim(0, 6).speed(2)
@@ -133,7 +133,7 @@ text("tilted", { size: 96 }).for(3).rotate(-10)
 
 ## loop
 
-Repeats the clip.
+Repeats the clip. On a `stack` or `cat`, the whole group repeats.
 
 ```origami
 video("clips/funny.mp4").trim(0, 1).loop(3)

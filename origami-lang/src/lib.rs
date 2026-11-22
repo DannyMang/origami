@@ -1479,6 +1479,25 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         assert_eq!(span, [(1., 3.), (3., 5.), (0., 5.)]);
     }
 
+    // A stack or merged group given a length with for cuts the clips inside at its end, loop repeats a
+    // whole stack or group, and trim on a stack or speed on a merged group stop with an error on its line.
+    #[test]
+    fn groups_cut_and_repeat() {
+        let t = tl("cat(stack(color('#000').for(4), text('a').at(3)).merge().for(2), stack(rect(9, 9).for(1), text('b')).loop(2))");
+        let span: Vec<_> = t.clips.iter().map(|c| (c.start, c.end)).collect();
+        assert_eq!(span, [(0., 2.), (0., 2.), (2., 3.), (2., 3.), (3., 4.), (3., 4.)]);
+        assert_eq!((t.clips[0].kind, t.clips[4].kind, t.duration), (Kind::Group, Kind::Rect, 4.));
+        let dir = scratch("groups");
+        assert_eq!(
+            fails(&dir, "stack(text('a'))\n  .trim(0, 1)"),
+            "line 2: trim works on one clip, not a stack or cat: trim the clips inside"
+        );
+        assert_eq!(
+            fails(&dir, "stack(text('a')).merge()\n  .speed(2)"),
+            "line 2: speed goes before merge, like stack(a, b).speed(2).merge(), and speeds up each clip inside"
+        );
+    }
+
     // Values that make no sense (a negative length, zero speed, a frame rate of 0, a loop without end,
     // a day-long timeline) and common slips (a number among clips, an unclosed string or bracket, an
     // error thrown by a function of time) should be refused with a message that names the line.

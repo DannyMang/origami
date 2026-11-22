@@ -58,6 +58,7 @@
   const ops = {
     __proto__: null,
     trim: (d, a, b) => {
+      must(!d.kids, 'trim works on one clip, not a stack or cat: trim the clips inside')
       const top = d.total ? Math.ceil(d.total * 1e3) / 1e3 : DAY, i = Math.max(0, Math.min(span('trim', a), top - 0.04))
       return { ...d, in: i, out: Math.min(Math.max(b == null ? d.out : span('trim', b), i + 0.04), top) }
     },
@@ -65,6 +66,7 @@
     at: (d, t) => ({ ...d, at: span('at', t) }),
     shift: (d, s) => ({ ...d, shift: d.shift + span('shift', s) }),
     speed: (d, x) => {
+      must(!d.kids, 'speed goes before merge, like stack(a, b).speed(2).merge(), and speeds up each clip inside')
       must(x > 0, 'speed takes a number above 0')
       return { ...d, speed: d.speed * x }
     },
@@ -311,8 +313,7 @@
   })
   const vid = d => d.kids ? d.kids.some(c => vid(c.$)) : d.video
   const own = d => d.dur ?? (d.out == null ? null : (d.out - d.in) / d.speed)
-  const len = d => {
-    if (!d.kids) return own(d) == null ? null : own(d) * d.loop
+  const once = d => {
     if (d.dur != null) return d.dur
     const k = d.kids.map(c => c.$), end = c => (c.at ?? 0) + c.shift + (len(c) ?? 0)
     const m = d.cat
@@ -320,25 +321,37 @@
       : Math.max(0, ...k.map(end))
     return m > 0 ? m : null
   }
+  const len = d => {
+    if (!d.kids) return own(d) == null ? null : own(d) * d.loop
+    const m = once(d)
+    return m && m * d.loop
+  }
+  const upto = (x, stop) => x > stop + 1e-9 ? stop : x
   const cut = (d, t, n, out) => {
     if (!d.matte) return
     place(d.matte[0], t, n, out, ++N)
     return [N, d.matte[1]]
   }
-  const place = (d, t, fill, out, into = 0) => {
+  const place = (d, t, fill, out, into = 0, stop = Infinity) => {
     if (!d.kids) {
       const n = own(d) ?? fill
-      for (let i = 0; i < d.loop; i++) out.push({ ...d, start: t + i * n, end: t + (i + 1) * n, into, matte: cut(d, t + i * n, n, out) })
+      for (let i = 0; i < d.loop && t + i * n < stop - 1e-9; i++) {
+        const s = t + i * n
+        out.push({ ...d, start: s, end: upto(t + (i + 1) * n, stop), into, matte: cut(d, s, upto(n, stop - s), out) })
+      }
       return
     }
-    const D = len(d) ?? fill
-    if (d.kind) out.push({ ...d, start: t, end: t + D, into, matte: cut(d, t, D, out), id: ++N })
-    if (d.kind) into = N
-    let p = 0
-    for (const c of d.kids.map(c => c.$)) {
-      const seq = d.cat && vid(c), o = (c.at ?? (seq ? p : 0)) + c.shift, n = len(c) ?? (d.cat ? 5 : D - o)
-      place(c, t + o, n, out, into)
-      if (seq) p += n
+    const D = once(d) ?? fill
+    for (let i = 0; i < d.loop && t + i * D < stop - 1e-9; i++) {
+      const s = t + i * D, end = d.dur == null ? stop : upto(s + D, stop)
+      if (d.kind) out.push({ ...d, start: s, end: upto(s + D, stop), into, matte: cut(d, s, upto(D, stop - s), out), id: ++N })
+      const inner = d.kind ? N : into
+      let p = 0
+      for (const c of d.kids.map(c => c.$)) {
+        const seq = d.cat && vid(c), o = (c.at ?? (seq ? p : 0)) + c.shift, n = len(c) ?? (d.cat ? 5 : D - o)
+        place(c, s + o, n, out, inner, end)
+        if (seq) p += n
+      }
     }
   }
   globalThis.__prep = src => {

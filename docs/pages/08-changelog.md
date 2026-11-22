@@ -4,6 +4,10 @@ What changed in each version of Origami. The launch screen shows the version you
 
 ## 0.1.0 (not yet released)
 
+### Nov 22
+
+- `for` on a `stack`, a `cat` or a merged group now cuts the clips inside at its end, sound included, and the video ends there too. Before, a clip inside with its own length, such as a trimmed video, kept playing: a merged group went black but its sound and the timeline ran on, and a plain stack ignored the `for`. `loop` now repeats a whole stack, cat or merged group; before, it did nothing on them. `trim` on a stack or cat and `speed` on a merged group, which did nothing, now stop the script with an error on their line that says what to write instead.
+
 ### Nov 21
 
 - Picture effects (`roughen`, `blur`, `lens`, `displace`, `noise`, `fractal` and `levels`) on an image, shape or text, and on a video stepped to a lower rate with `fps`, are worked out once and kept while the picture and the effect's settings stay the same, instead of again on every frame. A 1080p export of 2 seconds with a roughened 1400×900 image in multiply over video took about 2.2 s and now takes about 0.7 s, and its memory peaked at about 58 MB and now at about 44 MB, because an image or shape whose effect never changes keeps only the finished picture. Playing such a timeline saves about 30 ms a frame for each roughened full-size image. A playing video's effect is still worked out for each new frame, so it holds no extra memory. The pictures are unchanged.
