@@ -6,6 +6,7 @@ What changed in each version of Origami. The launch screen shows the version you
 
 ### Nov 22
 
+- Opening a project shows its code at once, and while it takes longer than a tenth of a second to load, the picture says "loading edit.js" and then "drawing the first frame". Before, the code appeared a moment after the window, with nothing to say the project was still loading. Opening another project no longer leaves the previous project's clips on the timeline while the new one loads, where editing one would have written that change into the new script.
 - `blur` wider than its picture now blurs as wide as the picture, which looks the same, since the picture is already spread out almost clear. Before, a huge radius such as `blur(1e9)` kept every core busy for hours and the frame never showed; it now takes well under a second.
 - A matte made from a merged group, or from a clip that has its own matte, now cuts with that whole clip, with its scale, place, effects and own matte. Before, it used the clips inside the group as if the group were not there, or only the innermost matte.
 - Groups and mattes nest up to 16 deep; one more gives the error "is inside itself or inside more than 16 groups and mattes" on its line. Before, about 150 nested groups took about 1.2 GB and 3 seconds for one 1080p frame, and a hand-written clip object could put a group inside itself, which closed Origami as soon as the frame was drawn. 16 nested groups take about 130 MB.

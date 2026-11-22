@@ -13,7 +13,7 @@ use std::{
     fs, mem,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 pub fn recent() -> PathBuf {
@@ -90,6 +90,10 @@ impl Origami {
         (self.script, self.mtime, self.t, self.dirty, self.clash) = (path, None, 0., false, false);
         (self.past, self.future, self.cursor, self.top, self.left) = (Default::default(), Default::default(), None, 0., 0.);
         (self.folded, self.fresh, self.saves) = (vec![], true, None);
+        (self.tl, self.rev, self.shown, self.boot) = (Arc::default(), self.rev + 1, None, Some(Instant::now()));
+        if let Some(old) = self.image.take() {
+            cx.drop_image(old, None);
+        }
         if self.shelf.as_ref().is_none_or(|s| !s.holds(&self.script)) {
             let old = self.shelf.replace(Arc::new(Shelf::new(&self.script)));
             cx.background_executor()
@@ -113,6 +117,8 @@ impl Origami {
                 self.note = "recovered unsaved changes from last time: keep mine saves them, use disk drops them".into();
             }
         }
+        self.mtime = stamp(&self.script);
+        self.load(cx);
     }
 
     pub fn reset(&mut self) {
@@ -296,7 +302,78 @@ impl Origami {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
+    use gpui::TestAppContext;
+    use std::{cell::RefCell, env, rc::Rc};
+
+    // Opening a script puts its code in the editor at once and drops the clips of the script open
+    // before, a save while it is still being evaluated writes that code back unchanged, and a timeline
+    // evaluated for the script open before never shows under the new one.
+    #[gpui::test]
+    fn opens_with_its_own_code(cx: &mut TestAppContext) {
+        let dir = env::temp_dir().join("origami-open-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("a.js"), dir.join("b.js"));
+        fs::write(&a, "stack(text(\"a\"),\n  text(\"b\"))\n").unwrap();
+        fs::write(&b, "text(\"c\").for(1)\n").unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            app.open(a.clone(), cx);
+            assert_eq!(app.lines, ["stack(text(\"a\"),", "  text(\"b\"))"]);
+            app
+        });
+        cx.run_until_parked();
+        assert_eq!(view.update(cx, |o, _| o.tl.clips.len()), 2);
+        let seen = Rc::new(RefCell::new(vec![]));
+        let log = seen.clone();
+        cx.update(|_, cx| {
+            let note = move |v: gpui::Entity<Origami>, cx: &mut gpui::App| {
+                let o = v.read(cx);
+                log.borrow_mut().push((o.script.clone(), o.tl.clips.len()));
+            };
+            cx.observe(&view, note).detach()
+        });
+        view.update(cx, |o, cx| {
+            o.open(a.clone(), cx);
+            o.open(b.clone(), cx);
+            assert!(o.tl.clips.is_empty() && o.lines == ["text(\"c\").for(1)"] && o.reading);
+            o.store();
+        });
+        assert_eq!(fs::read_to_string(&b).unwrap(), "text(\"c\").for(1)\n");
+        cx.run_until_parked();
+        assert_eq!(view.update(cx, |o, _| (o.tl.clips.len(), o.reading)), (1, false));
+        assert!(!seen.borrow().is_empty() && !seen.borrow().iter().any(|(s, n)| *s == b && *n == 2));
+    }
+
+    // The loading note stays hidden for the first tenth of a second, then names the script while it is
+    // evaluated, and is gone once the first frame is shown or the script turns out to have an error.
+    #[gpui::test]
+    fn tells_what_is_loading(cx: &mut TestAppContext) {
+        let dir = env::temp_dir().join("origami-wait-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (a, bad) = (dir.join("a.js"), dir.join("bad.js"));
+        fs::write(&a, "text(\"a\").for(2)\n").unwrap();
+        fs::write(&bad, "stack(\n").unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            app.open(a.clone(), cx);
+            assert_eq!(app.wait(), None);
+            app.boot = app.boot.map(|b| b - Duration::from_millis(200));
+            assert_eq!(app.wait(), Some("loading a.js".into()));
+            app
+        });
+        cx.run_until_parked();
+        assert!(view.update(cx, |o, _| o.image.is_some() && o.wait().is_none()));
+        view.update(cx, |o, cx| {
+            o.open(bad.clone(), cx);
+            assert!(o.image.is_none());
+            o.boot = o.boot.map(|b| b - Duration::from_millis(200));
+            assert_eq!(o.wait(), Some("loading bad.js".into()));
+        });
+        cx.run_until_parked();
+        assert!(view.update(cx, |o, _| o.wait().is_none() && !o.err.is_empty()));
+    }
 
     // The recent list should live in Application Support, start from the old ~/.origami list the first
     // time, leave that old file alone, and never replace a new list with the old one.

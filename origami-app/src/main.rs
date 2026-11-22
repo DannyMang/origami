@@ -154,6 +154,7 @@ struct Origami {
     rest: Option<Instant>,
     busy: bool,
     reading: bool,
+    boot: Option<Instant>,
     clash: bool,
     player: Option<(Instant, f64, Option<Player>)>,
     cued: bool,
@@ -277,19 +278,23 @@ impl Origami {
         if std::mem::take(&mut self.fresh) {
             self.fold_all(true);
         }
-        let (script, path) = (self.script.clone(), self.script.clone());
+        let (script, job, path) = (self.script.clone(), self.script.clone(), self.script.clone());
         let saved = cx.background_executor().spawn(async move { clock(&path) });
         self.reading = true;
         cx.spawn(async move |this, cx| {
             let tl = cx
                 .background_executor()
-                .spawn(async move { origami_lang::eval(&script, true, footprint) })
+                .spawn(async move { origami_lang::eval(&job, true, footprint) })
                 .await;
             this.update(cx, |this, cx| {
+                if this.script != script {
+                    return;
+                }
                 this.reading = false;
                 match tl {
                     Ok(tl) => {
                         (this.tl, this.rev) = (Arc::new(tl), this.rev + 1);
+                        this.boot = this.boot.filter(|_| this.tl.duration > 0.);
                         this.menu = if this.menu == "clip" { "" } else { this.menu };
                         this.err.clear();
                         this.bad = 0;
@@ -303,6 +308,7 @@ impl Origami {
                         this.refresh(cx);
                     }
                     Err(e) => {
+                        this.boot = None;
                         let text = e.to_string();
                         let text = text.lines().next().unwrap_or_default();
                         this.bad = ["at :", "line "]
@@ -366,6 +372,7 @@ impl Origami {
                 if let Some(old) = this.image.replace(bitmap(px, w, h)) {
                     cx.drop_image(old, None);
                 }
+                this.boot = this.boot.filter(|_| want.1 != this.rev);
                 if this.shown.is_none_or(|s| s.1 != want.1) {
                     let tl = this.tl.clone();
                     cx.background_executor().spawn(async move { learn(&tl, 0.) }).detach();
@@ -423,7 +430,8 @@ impl Origami {
             self.again = true;
             cx.notify();
         }
-        if self.take.is_some() || self.full && (2.0..2.1).contains(&self.stir.elapsed().as_secs_f32()) {
+        let wait = self.boot.is_some_and(|b| (0.1..0.3).contains(&b.elapsed().as_secs_f32()));
+        if wait || self.take.is_some() || self.full && (2.0..2.1).contains(&self.stir.elapsed().as_secs_f32()) {
             cx.notify();
         }
         let was = (self.t, self.player.is_some());
@@ -571,6 +579,7 @@ fn fresh(focus: FocusHandle, recent: Vec<PathBuf>) -> Origami {
         rest: None,
         busy: false,
         reading: false,
+        boot: None,
         clash: false,
         player: None,
         cued: false,

@@ -25,7 +25,7 @@ use std::{
     ops::Range,
     rc::Rc,
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 pub type Scans = (Vec<Region>, Vec<bool>, Vec<Issue>, Vec<(usize, usize, usize)>);
@@ -1024,6 +1024,15 @@ impl Origami {
             )
     }
 
+    pub fn wait(&self) -> Option<String> {
+        self.boot.filter(|b| b.elapsed() > Duration::from_millis(100))?;
+        let name = self.script.file_name().unwrap_or_default().to_string_lossy();
+        Some(match self.reading {
+            true => format!("loading {name}"),
+            false => "drawing the first frame".into(),
+        })
+    }
+
     fn launch(&self, cx: &mut Context<Self>) -> Div {
         let button = |label: &'static str| {
             div()
@@ -1208,7 +1217,11 @@ impl Render for Origami {
             )
             .when((self.pen || self.trace.is_some()) && !self.full, |d| d.cursor_crosshair())
             .overflow_hidden()
-            .child(canvas(seen, show).size_full());
+            .child(canvas(seen, show).size_full())
+            .children(self.wait().map(|said| {
+                let note = div().absolute().inset_0().flex().items_center().justify_center();
+                note.text_color(rgb(DIM)).child(said)
+            }));
         let up = |this: &mut Self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>| {
             this.release();
             cx.notify();
