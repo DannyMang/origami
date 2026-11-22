@@ -120,3 +120,16 @@ fn frames_keep_sources_safe() {
     );
     assert!(frame("still.png").0 && dir.join("still.png").is_file());
 }
+
+// A path that is not valid text, as a shell can pass, gives a plain error instead of a crash.
+#[test]
+fn odd_paths_are_errors() {
+    use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+    let odd = OsStr::from_bytes(b"/nowhere/x\xff.js");
+    let out = Command::new(env!("CARGO_BIN_EXE_origami")).arg("ir").arg(odd).output().unwrap();
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success() && said.starts_with("Error: missing script: /nowhere/x"),
+        "{said}"
+    );
+}

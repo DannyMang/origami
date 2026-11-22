@@ -6,7 +6,7 @@ use crate::{
     text::{self, Glyph},
 };
 use lru::LruCache;
-use origami_lang::{Clip, Kind, Part, Timeline, Val, ffmpeg, ffprobe, output, start, watch};
+use origami_lang::{Clip, Kind, Part, Timeline, Val, ffmpeg, ffprobe, literal, output, start, watch};
 use std::{
     collections::HashMap,
     fs,
@@ -63,7 +63,7 @@ fn lean(path: &str) -> &'static [&'static str] {
 
 fn ask(path: &str, show: &str) -> String {
     let args = ["-v", "error", "-select_streams", "v:0", "-show_entries", show, "-of", "csv=p=0"];
-    let out = output(ffprobe().args(lean(path)).args(args).arg(path)).map(|o| o.stdout);
+    let out = output(ffprobe().args(lean(path)).args(args).args(literal(path)).arg(path)).map(|o| o.stdout);
     String::from_utf8_lossy(&out.unwrap_or_default()).into()
 }
 
@@ -186,13 +186,21 @@ fn raw(args: &[&str], len: usize) -> Option<Vec<u8>> {
 }
 
 fn still(path: &str, t: f64, w: usize, h: usize) -> Option<Vec<u8>> {
-    raw(&["-ss", &t.to_string(), "-i", path, "-vf", &format!("scale={w}:{h}")], w * h * 4)
+    let args = [
+        &["-ss", &t.to_string()],
+        literal(path),
+        &["-i", path, "-vf", &format!("scale={w}:{h}")],
+    ];
+    raw(&args.concat(), w * h * 4)
 }
 
 pub fn thumb(path: &str, t: f64, w: usize, h: usize) -> Option<Vec<u8>> {
     let from = |path: &str| {
-        let ((lead, down, ..), fast) = (probe(path), ["-skip_frame", "nokey", "-ss", &t.to_string(), "-i", path]);
-        raw(&[lead, &fast, &["-vf", &format!("{down}scale={w}:{h}")]].concat(), w * h * 4)
+        let ((lead, down, ..), fast) = (probe(path), ["-skip_frame", "nokey", "-ss", &t.to_string()]);
+        raw(
+            &[lead, &fast, literal(path), &["-i", path, "-vf", &format!("{down}scale={w}:{h}")]].concat(),
+            w * h * 4,
+        )
     };
     let lrf = Path::new(path).with_extension("LRF");
     let side = Some(lrf.to_string_lossy()).filter(|l| l != path && lrf.is_file());
@@ -564,7 +572,8 @@ impl Preview {
             "half" => 4.,
             "quarter" => 2.,
             _ => (8. * wide.min(if still { w } else { 1920. }) / w).ceil().clamp(1., 8.),
-        };
+        }
+        .min((8. * 8192. / w.max(h)).floor());
         (((w * n / 8.) as usize).max(1), ((h * n / 8.) as usize).max(1))
     }
 
@@ -1731,8 +1740,8 @@ mod tests {
     }
 
     // Auto quality renders at the on-screen size in eighths of the timeline and at most 1920 across while
-    // playing, a quality written in the script wins, a tiny timeline still gets a pixel and an empty
-    // picture draws nothing.
+    // playing, a quality written in the script wins up to 8192 pixels on the long side, a tiny timeline
+    // still gets a pixel and an empty picture draws nothing.
     #[test]
     fn sizes_follow_the_screen() {
         let size = |w, h, preview: &str, wide, still| {
@@ -1756,6 +1765,17 @@ mod tests {
             [(1920, 1080), (960, 540), (480, 270)]
         );
         assert_eq!(size(2, 2, "quarter", 100., false), (1, 1));
+        assert_eq!(
+            [
+                (7680, 4320, "full"),
+                (8192, 4320, "full"),
+                (16384, 16384, "full"),
+                (16384, 2, "half"),
+                (16384, 9000, "")
+            ]
+            .map(|(w, h, q)| size(w, h, q, 20000., true)),
+            [(7680, 4320), (8192, 4320), (8192, 8192), (8192, 1), (8192, 4500)]
+        );
         let turned = Clip {
             rotate: Val::Fixed(30.),
             ..clip("rect", "")

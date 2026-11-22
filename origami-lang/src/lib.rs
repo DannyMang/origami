@@ -37,7 +37,7 @@ use std::{
     thread,
     time::{Duration, Instant, UNIX_EPOCH},
 };
-pub use tool::{ffmpeg, ffprobe, missing, output, start, status, watch};
+pub use tool::{ffmpeg, ffprobe, literal, missing, output, start, status, watch};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -380,6 +380,7 @@ fn scan(path: &Path, prev: Option<&Media>, relock: bool, rel: &str) -> Result<Me
         ffprobe()
             .args(["-v", "error", "-of", "json", "-show_entries"])
             .arg("format=duration:stream=codec_type,width,height:stream_side_data=rotation")
+            .args(literal(&path.to_string_lossy()))
             .arg(path),
     )?;
     let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
@@ -1093,9 +1094,12 @@ fn finish(out: &str, kept: Vec<Vec<f32>>, files: Vec<(u32, PathBuf)>, measure: M
     if let Some(c) = tl
         .clips
         .iter()
-        .find(|c| !(c.start >= -DAY && c.end <= DAY && c.speed > 0. && c.speed <= 1e3))
+        .find(|c| !(c.start >= -DAY && c.end <= DAY && c.end >= c.start && c.speed > 0. && c.speed <= 1e3))
     {
         bail!("line {}: {} has a time or speed out of range", c.line, c.label);
+    }
+    if let Some(c) = tl.clips.iter().find(|c| c.kind == Kind::Sound && c.video) {
+        bail!("line {}: {} is a sound, which has no picture to draw", c.line, c.label);
     }
     let mut held: Vec<(u32, &Clip)> = tl
         .clips
@@ -1720,6 +1724,14 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
                 "line 1: a has a time or speed out of range",
             ),
             ("text('a').for(1).speed(1e12)".into(), "line 1: a has a time or speed out of range"),
+            (
+                "const t = text('a')\nt.$.dur = -998\nt".into(),
+                "line 1: t has a time or speed out of range",
+            ),
+            (
+                "const t = text('a')\nObject.assign(t.$, { kind: 'sound', src: '', w: 4294967295, h: 1 })\nt".into(),
+                "line 1: t is a sound, which has no picture to draw",
+            ),
             (
                 "const j = JSON.stringify\nJSON.stringify = v => j({ ...v, size: [4e8, 4e8] })\ntext('a')".into(),
                 "fps 30, size (400000000, 400000000) or length 5 is out of range",

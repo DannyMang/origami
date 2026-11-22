@@ -8,6 +8,7 @@ use crate::{
 use gpui::{Context, Div, Keystroke, MouseButton, MouseDownEvent, SharedString, Window, div, prelude::*, px, rgb};
 use std::{
     fs,
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -80,11 +81,13 @@ impl Origami {
         if name.is_empty() {
             return b.note = "Give the project a name.".into();
         }
-        if path.exists() {
+        if fs::symlink_metadata(&path).is_ok() {
             return b.note = format!("{name} already has a script here: pick another name or folder.");
         }
         self.unsaved(&format!("Save them before creating {name}?"), window, cx, move |this, _, cx| {
-            let made = fs::create_dir_all(path.parent().unwrap()).and_then(|_| fs::write(&path, STARTER));
+            let made = fs::create_dir_all(path.parent().unwrap())
+                .and_then(|_| fs::File::create_new(&path))
+                .and_then(|mut f| f.write_all(STARTER.as_bytes()));
             match (made, &mut this.begin) {
                 (Err(e), Some(b)) => b.note = format!("Could not create it: {e}"),
                 _ => {
@@ -182,7 +185,8 @@ mod tests {
     // cmd+n on the launch screen opens the new project dialog instead of a system panel, in Movies/Origami
     // the first time: typing names the project, picking a folder in the list moves into it,
     // Enter makes the folder with the starter script and opens it, the next opening starts in the folder
-    // last used, a name that already holds a script is refused, and Esc closes the dialog.
+    // last used, a name that already holds a script or a link where the script would go is refused without
+    // writing through the link, and Esc closes the dialog.
     #[gpui::test]
     fn names_and_places_a_project(cx: &mut gpui::TestAppContext) {
         let dir = fs::canonicalize(env::temp_dir()).unwrap().join("origami-begin-test");
@@ -219,6 +223,12 @@ mod tests {
         cx.simulate_keystrokes("enter");
         assert!(view.update(cx, |o, _| o.begin.as_ref().is_some_and(|b| !b.note.is_empty())
             && o.script == script));
+        fs::create_dir_all(dir.join("films/ghost")).unwrap();
+        std::os::unix::fs::symlink(dir.join("planted.js"), dir.join("films/ghost/edit.js")).unwrap();
+        view.update(cx, |o, _| o.begin.as_mut().unwrap().name = "ghost".into());
+        cx.simulate_keystrokes("enter");
+        assert!(view.update(cx, |o, _| o.begin.as_ref().is_some_and(|b| b.note.starts_with("ghost already"))));
+        assert!(!dir.join("planted.js").exists());
         cx.simulate_keystrokes("escape");
         assert!(view.update(cx, |o, _| o.begin.is_none()));
     }

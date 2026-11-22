@@ -608,7 +608,7 @@ fn fresh(focus: FocusHandle, recent: Vec<PathBuf>) -> Origami {
 fn main() {
     crash::guard();
     origami_lang::serve(footprint);
-    let Ok(script) = env::args().nth(1).map(fs::canonicalize).transpose() else {
+    let Ok(script) = env::args_os().nth(1).map(fs::canonicalize).transpose() else {
         return eprintln!("usage: origami-app [script.js]");
     };
     if let Some((path, Err(e))) = script.as_ref().map(|s| (s, origami_lang::load(s))) {

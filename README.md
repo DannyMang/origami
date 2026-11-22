@@ -49,7 +49,7 @@ With no script it opens the launch screen. To make an app you can keep in Applic
 
 ## Your first project
 
-1. Open Origami and press ⌘N. Save the new script as `edit.js` in an empty folder. It shows "hello origami".
+1. Open Origami and click New project on the launch screen, or press ⌘N. Type a name for the project, pick where it goes in the folder list (the first time, it starts in `Movies/Origami`), and press Enter or click Create. Origami makes a folder with that name holding an `edit.js` script and opens it. It shows "hello origami".
 2. Put a video at least 8 seconds long in that folder, at `clips/intro.mp4`, and replace the script with:
 
    ```js

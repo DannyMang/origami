@@ -1,12 +1,13 @@
 use crate::preview::{Preview, lead, learn};
 use crate::{grade, lut::Lut, shape, text};
 use anyhow::{Result, bail};
-use origami_lang::{Clip, Kind, Timeline, Val, ffmpeg, start, status};
+use origami_lang::{Clip, Kind, Timeline, Val, ffmpeg, literal, start, status};
 use std::{
-    env, fs,
-    io::{BufRead, BufReader, Read, Write},
+    env,
+    fs::{self, DirBuilder},
+    io::{self, BufRead, BufReader, ErrorKind, Read, Write},
     iter,
-    os::unix::fs::MetadataExt,
+    os::unix::fs::{DirBuilderExt, MetadataExt},
     path::{Path, PathBuf},
     process::{self, Child, Command, Stdio},
     sync::{
@@ -73,10 +74,16 @@ pub fn halt() {
     live.into_iter().for_each(kill);
 }
 
-fn tether(pid: u32, part: &str) -> Option<Child> {
+fn tether(pid: u32, part: &str, dir: &Path) -> Option<Child> {
     start(
         Command::new("/bin/sh")
-            .args(["-c", "read x; kill -9 \"$0\"; /bin/rm -f -- \"$1\"", &pid.to_string(), part])
+            .args([
+                "-c",
+                "read x; kill -9 \"$0\"; /bin/rm -f -- \"$1\"; /bin/rm -rf -- \"$2\"",
+                &pid.to_string(),
+                part,
+            ])
+            .arg(dir)
             .stdin(Stdio::piped())
             .stderr(Stdio::null()),
     )
@@ -84,9 +91,13 @@ fn tether(pid: u32, part: &str) -> Option<Child> {
 }
 
 fn room() -> PathBuf {
-    let dir = env::temp_dir().join(format!("origami-{}-{}", process::id(), ROOMS.fetch_add(1, Relaxed)));
-    let _ = fs::create_dir_all(&dir);
-    dir
+    loop {
+        let dir = env::temp_dir().join(format!("origami-{}-{}", process::id(), ROOMS.fetch_add(1, Relaxed)));
+        match DirBuilder::new().mode(0o700).create(&dir) {
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
+            _ => return dir,
+        }
+    }
 }
 
 fn tempo(mut s: f64) -> String {
@@ -230,16 +241,10 @@ fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path, (k, (w, h)): (f64, (
         let solid = c.kind == Kind::Color && text::rgba(&c.src)[3] == 255;
         let (video, mut cut) = (video && tw >= 1. && th >= 1., String::new());
         match c.kind {
-            Kind::Image if video => ins.extend(own(&[
-                "-loop",
-                "1",
-                "-t",
-                &len.to_string(),
-                "-protocol_whitelist",
-                "file",
-                "-i",
-                &c.src,
-            ])),
+            Kind::Image if video => {
+                let lead = ["-loop", "1", "-t", &len.to_string(), "-protocol_whitelist", "file"];
+                ins.extend(own(&[&lead, literal(&c.src), &["-i", &c.src]].concat()))
+            }
             Kind::Text | Kind::Rect | Kind::Line | Kind::Path | Kind::Color if video && !solid => {
                 let file = dir.join(format!("text-{i}.bgra")).to_string_lossy().to_string();
                 let _ = fs::write(&file, shape::image(c, size, k, 0).0);
@@ -468,13 +473,21 @@ pub fn render(tl: &Timeline, out: &str, o: &Opts, mut progress: impl FnMut(f64))
             .stdin(if pipe { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped()),
-    )?;
+    )
+    .inspect_err(|_| drop(fs::remove_dir_all(&dir)))?;
     let (pipe, pid, stuck) = (child.stdin.take(), child.id(), &AtomicBool::new(false));
+    let (mut said, dir) = (child.stderr.take().unwrap(), dir.as_path());
     LIVE.lock().unwrap().push(pid);
-    thread::scope(|s| {
+    let err = thread::scope(|s| {
+        let err = s.spawn(move || {
+            let mut err = vec![];
+            let _ = said.by_ref().take(1 << 20).read_to_end(&mut err);
+            let _ = io::copy(&mut said, &mut io::sink());
+            err
+        });
         let (beat, pulse) = mpsc::channel();
         s.spawn(move || {
-            let tie = tether(pid, part);
+            let tie = tether(pid, part, dir);
             if iter::repeat_with(|| pulse.recv_timeout(STALL)).find_map(Result::err) == Some(RecvTimeoutError::Timeout) {
                 stuck.store(true, Relaxed);
                 kill(pid);
@@ -499,10 +512,10 @@ pub fn render(tl: &Timeline, out: &str, o: &Opts, mut progress: impl FnMut(f64))
                 progress((us / 1e6 / (to - from)).clamp(0., 1.));
             }
         }
+        err.join().unwrap_or_default()
     });
     LIVE.lock().unwrap().retain(|p| *p != pid);
-    let mut err = String::new();
-    child.stderr.take().unwrap().read_to_string(&mut err)?;
+    let err = String::from_utf8_lossy(&err);
     let done = child.wait()?.success();
     let _ = fs::remove_dir_all(dir);
     if !done || stuck.load(Relaxed) {
@@ -791,20 +804,98 @@ mod tests {
         assert_eq!(e, format!("export of {out} stopped: ffmpeg made no progress for 5 seconds"));
     }
 
-    // An export's ffmpeg should be killed, and the hidden file it was writing removed, soon after its tie
-    // to the program is cut, which the system does when the program dies, even by force quit.
+    // An export's ffmpeg should be killed, and the hidden file it was writing and its temporary folder
+    // removed, soon after its tie to the program is cut, which the system does when the program dies, even
+    // by force quit.
     #[test]
     fn dies_with_the_program() {
         let part = scratch("tether").join(".00ff.it's \"$HOME\" $(x).mp4");
+        let dir = part.with_file_name("origami-1-2");
         fs::write(&part, "half").unwrap();
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("text-0.bgra"), "layer").unwrap();
         let args = ["-v", "error", "-re", "-f", "lavfi", "-i", "color=d=60", "-f", "null", "-"];
         let mut ff = start(ffmpeg().args(args)).unwrap();
-        drop(tether(ff.id(), &part.to_string_lossy()));
+        drop(tether(ff.id(), &part.to_string_lossy(), &dir));
         let gone = (0..500).any(|_| {
             thread::sleep(Duration::from_millis(10));
-            ff.try_wait().unwrap().is_some() && !part.exists()
+            ff.try_wait().unwrap().is_some() && !part.exists() && !dir.exists()
         });
         let _ = ff.kill();
         assert!(gone);
+    }
+
+    // Each export's temporary folder is a new one that only its owner can open, never a folder or link
+    // that already had its name.
+    #[test]
+    fn rooms_are_private_and_new() {
+        use std::os::unix::fs::PermissionsExt;
+        let _tidy = TIDY.write();
+        let taken = env::temp_dir().join(format!("origami-{}-{}", process::id(), ROOMS.load(Relaxed)));
+        let away = scratch("room");
+        std::os::unix::fs::symlink(&away, &taken).unwrap();
+        let dir = room();
+        let mode = fs::symlink_metadata(&dir).unwrap().permissions().mode() & 0o777;
+        let kept = (taken.is_symlink(), fs::read_dir(&away).unwrap().count());
+        fs::remove_file(&taken).unwrap();
+        fs::remove_dir(&dir).unwrap();
+        assert_eq!((dir != taken, mode, kept), (true, 0o700, (true, 0)));
+    }
+
+    // A video whose every frame is unreadable floods ffmpeg's error output, and its export should end at
+    // once with ffmpeg's own error instead of waiting forever on a full pipe.
+    #[test]
+    fn unreadable_video_fails_at_once() {
+        let _tidy = TIDY.read();
+        let dir = scratch("noisy");
+        film(
+            &dir.join("good.mp4"),
+            "testsrc=s=64x36:r=60:d=10",
+            &["-pix_fmt", "yuv420p", "-movflags", "+faststart"],
+        );
+        let mut data = fs::read(dir.join("good.mp4")).unwrap();
+        let at = data.windows(4).position(|w| w == b"mdat").unwrap() + 4;
+        data[at..].fill(0xff);
+        fs::write(dir.join("bad.mp4"), data).unwrap();
+        fs::write(dir.join("edit.js"), "settings({ size: [64, 36], fps: 60 })\nvideo('bad.mp4')").unwrap();
+        let tl = origami_lang::eval(&dir.join("edit.js"), true, footprint).unwrap();
+        let out = dir.join("out.mp4").to_string_lossy().to_string();
+        let ((done, ended), job) = (mpsc::channel(), (tl, out.clone()));
+        thread::spawn(move || done.send(render(&job.0, &job.1, &Opts::default(), |_| {}).unwrap_err().to_string()));
+        let e = ended.recv_timeout(Duration::from_secs(60)).unwrap();
+        assert!(e.starts_with(&format!("export of {out} failed: ")), "{e}");
+    }
+
+    // A still image named with a frame number pattern, such as a%d.png, shows that very file in the
+    // export, the preview and the timeline thumbnail, at its own size, not a numbered neighbour like a1.png.
+    #[test]
+    fn numbered_names_show_their_own_picture() {
+        let _tidy = TIDY.read();
+        let dir = scratch("numbered");
+        film(&dir.join("w.png"), "color=white:s=16x16", &["-frames:v", "1"]);
+        film(&dir.join("a1.png"), "color=black:s=8x8", &["-frames:v", "1"]);
+        fs::rename(dir.join("w.png"), dir.join("a%d.png")).unwrap();
+        fs::write(dir.join("edit.js"), "settings({ size: [16, 16] })\nimage('a%d.png').for(1)").unwrap();
+        let tl = origami_lang::eval(&dir.join("edit.js"), true, footprint).unwrap();
+        let [src, out] = ["a%d.png", "out.mp4"].map(|f| dir.join(f).to_string_lossy().to_string());
+        render(&tl, &out, &Opts::default(), |_| {}).unwrap();
+        let args = [
+            "-v",
+            "error",
+            "-i",
+            &out,
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "gray",
+            "-",
+        ];
+        let made = origami_lang::output(ffmpeg().args(args)).unwrap().stdout;
+        let shown = Preview::default().frame(&tl, 0.5, (16, 16));
+        let thumb = crate::thumb(&src, 0., 16, 16).unwrap();
+        let white = [made[8 * 16 + 8], shown[(8 * 16 + 8) * 4], thumb[(8 * 16 + 8) * 4]].map(|v| v > 200);
+        assert_eq!((tl.clips[0].w, white), (16, [true; 3]));
     }
 }

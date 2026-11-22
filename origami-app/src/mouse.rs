@@ -32,6 +32,15 @@ fn carried(home: &Path) -> PathBuf {
     list
 }
 
+fn listed(recent: &[PathBuf]) -> String {
+    let all: Vec<_> = recent
+        .iter()
+        .map(|p| p.to_string_lossy())
+        .filter(|p| !p.contains(['\n', '\r']))
+        .collect();
+    all.join("\n")
+}
+
 fn deep(zoom: f64, duration: f64, fps: f64) -> f64 {
     zoom.clamp(1., (duration * fps / 8.).clamp(1., 64.))
 }
@@ -83,9 +92,9 @@ impl Origami {
         self.recent.retain(|p| *p != path);
         self.recent.insert(0, path.clone());
         self.recent.truncate(6);
-        let (list, all) = (recent(), self.recent.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>());
+        let list = recent();
         let _ = fs::create_dir_all(list.parent().unwrap());
-        let _ = origami_lang::save(&list, all.join("\n"));
+        let _ = origami_lang::save(&list, listed(&self.recent));
         cx.set_menus(menus(&self.recent));
         (self.script, self.mtime, self.t, self.dirty, self.clash) = (path, None, 0., false, false);
         (self.past, self.future, self.cursor, self.top, self.left) = (Default::default(), Default::default(), None, 0., 0.);
@@ -162,7 +171,7 @@ impl Origami {
 
     fn reshape(&mut self, grab: &Grab, c: &Clip, dt: f64) {
         let (a, b, d, len) = (c.src_in, c.src_in + (c.end - c.start) * c.speed, dt * c.speed, c.end - c.start);
-        let top = if c.total > 0. { c.total } else { f64::MAX };
+        let top = if c.total > 0. { c.total.max(0.04) } else { f64::MAX };
         let trim = |a: f64, b: f64| {
             let a = a.clamp(0., top - 0.04);
             format!("{:.3}, {:.3}", a, b.clamp(a + 0.04, top))
@@ -320,6 +329,14 @@ mod tests {
         fs::write(&list, "/c.js").unwrap();
         assert_eq!(fs::read_to_string(carried(&home)).unwrap(), "/c.js");
         assert_eq!(fs::read_to_string(old).unwrap(), "/a.js\n/b.js");
+    }
+
+    // The saved recent list leaves out a script whose path holds a line break, which would read back as
+    // made-up entries, and keeps the others in order.
+    #[test]
+    fn recent_list_skips_line_breaks() {
+        let all = ["/a/edit.js", "/b\n/etc/edit.js", "/c\r/edit.js", "/d/edit.js"].map(PathBuf::from);
+        assert_eq!(listed(&all).lines().collect::<Vec<_>>(), ["/a/edit.js", "/d/edit.js"]);
     }
 
     // Timeline zoom, scroll position and panel sizes should stay inside sensible limits.
@@ -606,6 +623,29 @@ mod tests {
             o.release();
             assert_eq!(o.past.len(), 0);
         });
+    }
+
+    // Trimming a sound shorter than the shortest trim, such as a 20 ms click, from either end keeps the
+    // trim at that shortest length from the file's start instead of stopping Origami.
+    #[gpui::test]
+    fn short_media_trims(cx: &mut gpui::TestAppContext) {
+        let click = env::temp_dir().join("origami-click-test.wav");
+        let made = origami_lang::ffmpeg()
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "sine=d=0.02"])
+            .arg(&click)
+            .status();
+        assert!(made.unwrap().success());
+        let src = "sound(\"origami-click-test.wav\")";
+        let (view, cx) = window(cx, "click", src);
+        for grab in [Grab::Left, Grab::Right] {
+            let line = view.update(cx, |o, _| {
+                let c = o.tl.clips[0].clone();
+                o.lines = vec![src.into()];
+                o.reshape(&grab, &c, 0.5);
+                o.lines[0].clone()
+            });
+            assert_eq!(line, format!("{src}.trim(0.000, 0.040)"));
+        }
     }
 
     // A named clip used inside a stack on another line should still trim and move from the
