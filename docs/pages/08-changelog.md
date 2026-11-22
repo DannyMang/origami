@@ -7,6 +7,7 @@ What changed in each version of Origami. The launch screen shows the version you
 ### Nov 22
 
 - A timeline that shows more videos at once than Origami kept decoders for (four on a Mac with 8 GB of memory, six on larger ones), such as a wall of 12 picture-in-picture videos, now keeps one decoder for each video on screen instead of starting ffmpeg again for every layer of every frame. A 4-second 1080p export with 12 videos, 14 titles and 14 moving shapes used about 179 seconds of processor time and now about 17. The pictures are unchanged.
+- In footage with B-frames, which most cameras and phones record, Origami looks up where each clip's first frame is with a short ffmpeg run. An export now does this for every clip at once, on all cores, before it draws the first frame, and the preview does it in the background after each change, instead of one clip at a time as playback reaches it. Playing across a cut no longer pauses for it, and a montage of 300 cuts of 0.2 seconds waited about 30 seconds in total for these lookups during its export and now about 4 seconds at its start (measured while the Mac was busy with other work). The pictures are unchanged.
 
 ### Nov 21
 

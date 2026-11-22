@@ -163,6 +163,28 @@ pub fn learn(tl: &Timeline, from: f64) {
     study(used.map(|c| c.src.clone()).collect());
 }
 
+pub fn warm(tl: &Timeline, from: f64) {
+    learn(tl, from);
+    let used = tl
+        .clips
+        .iter()
+        .filter(|c| c.end > from && c.kind == Kind::Video && Path::new(&c.src).is_file());
+    let mut seeks: Vec<(String, f64, f64)> = used
+        .filter_map(|c| match probe(&c.src) {
+            (.., late, start, _, false) if late > 0 => Some((c.src.clone(), c.src_in, start)),
+            _ => None,
+        })
+        .filter(|(src, at, _)| !LANDS.lock().unwrap().contains_key(&(src.clone(), at.to_bits())))
+        .collect();
+    seeks.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    seeks.dedup();
+    spread(&mut seeks, 1, |_, part| {
+        for (src, at, start) in part.iter() {
+            lands(src, *at, *start);
+        }
+    });
+}
+
 fn study(mut new: Vec<String>) {
     new.retain(|f| !KNOWN.lock().unwrap().contains_key(f) && Path::new(f).is_file());
     new.sort();
@@ -1580,6 +1602,43 @@ mod tests {
         let file = scratch("slow").join("a.wav");
         film(&file, "aevalsrc=0.5*sin(t):s=1:d=120", &["-c:a", "pcm_u8"]);
         assert_eq!(peaks(&file.to_string_lossy()).len(), DAY.parse::<usize>().unwrap() * 20);
+    }
+
+    // Warming a timeline works out, all at once and before any frame is drawn, the first frame of every clip
+    // of footage with B-frames, so drawing never stops to start an ffmpeg to find one.
+    #[test]
+    fn warming_finds_every_first_frame() {
+        let file = scratch("warm").join("a.mp4");
+        film(&file, "testsrc=s=64x36:r=30:d=2", &["-bf", "2"]);
+        let path = file.to_string_lossy().into_owned();
+        let clips: Vec<Clip> = (0..6)
+            .map(|i| Clip {
+                src: path.clone(),
+                w: 64,
+                h: 36,
+                start: i as f64 * 0.2,
+                end: (i + 1) as f64 * 0.2,
+                src_in: 0.1 + i as f64 * 0.13,
+                ..clip("video", "")
+            })
+            .collect();
+        let tl = Timeline {
+            fps: 30,
+            size: (64, 36),
+            duration: 1.2,
+            clips,
+            ..Default::default()
+        };
+        let found = |tl: &Timeline| {
+            let lands = LANDS.lock().unwrap();
+            tl.clips
+                .iter()
+                .filter(|c| lands.contains_key(&(path.clone(), c.src_in.to_bits())))
+                .count()
+        };
+        assert!(probe(&path).6 > 0 && found(&tl) == 0);
+        warm(&tl, 0.);
+        assert_eq!(found(&tl), 6);
     }
 
     // A file ffprobe could not read should be asked about again after a few hundred lookups rather

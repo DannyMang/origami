@@ -35,7 +35,7 @@ use gpui::{
 };
 use image::{Frame, RgbaImage};
 use mouse::Grab;
-use origami_engine::{Player, Preview, footprint, halt, learn, peaks, thumb};
+use origami_engine::{Player, Preview, footprint, halt, peaks, thumb, warm};
 use origami_lang::{Clip, Kind, Timeline};
 use std::{
     cell::RefCell,
@@ -368,7 +368,7 @@ impl Origami {
                 }
                 if this.shown.is_none_or(|s| s.1 != want.1) {
                     let tl = this.tl.clone();
-                    cx.background_executor().spawn(async move { learn(&tl, 0.) }).detach();
+                    cx.background_executor().spawn(async move { warm(&tl, 0.) }).detach();
                 }
                 (this.busy, this.shown, this.rough, this.rest) = (false, Some(want), rough, Some(Instant::now()));
                 this.refresh(cx);
