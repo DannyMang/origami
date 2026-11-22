@@ -296,10 +296,18 @@ impl Origami {
 
     pub fn switch(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let name = place(&path).0;
-        let Some(path) = fs::canonicalize(&path).ok().filter(|p| p.extension().is_some_and(|e| e == "js")) else {
-            let detail = format!("{name} was not opened: it is missing or not a .js script.");
-            let ok = [PromptButton::ok("OK")];
-            return drop(window.prompt(PromptLevel::Warning, "Origami opens .js scripts", Some(&detail), &ok, cx));
+        let read = fs::canonicalize(&path)
+            .ok()
+            .filter(|p| p.extension().is_some_and(|e| e == "js"))
+            .ok_or("it is missing or not a .js script".to_string())
+            .and_then(|p| origami_lang::load(&p).map(|_| p).map_err(|e| e.to_string()));
+        let path = match read {
+            Ok(path) => path,
+            Err(why) => {
+                let detail = format!("{name} was not opened: {why}.");
+                let ok = [PromptButton::ok("OK")];
+                return drop(window.prompt(PromptLevel::Warning, "Origami opens .js scripts", Some(&detail), &ok, cx));
+            }
         };
         if self.take.is_some() {
             return self.note = "finish the voiceover before opening another script".into();
@@ -529,12 +537,14 @@ mod tests {
     }
 
     // Being told to quit without a prompt, as from the Dock or at logout, should keep unsaved code in
-    // Origami's own folder for the next open, while a quit that chose to discard the changes should keep nothing.
+    // Origami's own folder for the next open, while a quit that chose to discard the changes should keep nothing,
+    // not even the copy made while typing.
     #[gpui::test]
     fn forced_quit_keeps_unsaved(cx: &mut TestAppContext) {
         let (view, cx, path) = project(cx, "forced-quit");
         let spare = crate::crash::spare(&path);
-        let _ = fs::remove_file(&spare);
+        fs::create_dir_all(spare.parent().unwrap()).unwrap();
+        fs::write(&spare, format!("{}\0// mine\n", path.display())).unwrap();
         let edit = |o: &mut Origami, _: &mut Context<Origami>| {
             o.lines.push("// mine".into());
             o.dirty = true;
@@ -552,7 +562,7 @@ mod tests {
 
     // Opening another script from Open Recent, the Open dialog or Finder with unsaved changes should ask first:
     // Cancel keeps the edits, Discard opens the other script and leaves the file on disk as it was, and a
-    // file that is not a .js script is refused.
+    // file that is not a .js script, or a script that cannot be read as text, is refused and left as it was.
     #[gpui::test]
     fn opening_keeps_unsaved(cx: &mut TestAppContext) {
         let (view, cx, path) = project(cx, "open-unsaved");
@@ -581,6 +591,46 @@ mod tests {
         view.update_in(cx, |o, window, cx| o.switch(path.with_file_name("clip.mp4"), window, cx));
         assert_eq!(cx.pending_prompt().map(|p| p.0), Some("Origami opens .js scripts".into()));
         cx.simulate_prompt_answer("OK");
+        let (latin, bytes) = (path.with_file_name("latin.js"), b"// caf\xe9\nstack(text(\"a\").for(1))\n");
+        fs::write(&latin, bytes).unwrap();
+        cx.dispatch_action(Reopen(latin.clone()));
+        let why = "latin.js was not opened: stream did not contain valid UTF-8.";
+        assert_eq!(cx.pending_prompt().map(|p| p.1), Some(why.into()));
+        cx.simulate_prompt_answer("OK");
+        cx.run_until_parked();
+        assert_eq!(view.update(cx, |o, _| o.script.clone()), other);
+        assert_eq!(fs::read(&latin).unwrap(), bytes);
+    }
+
+    // A save that cannot be written, here onto a read-only script, keeps the code on screen marked unsaved
+    // and says why, Save on the unsaved changes question then stays instead of opening another script, and
+    // once the file can be written again cmd+s saves it and takes the message away.
+    #[gpui::test]
+    fn failed_save_stays_unsaved(cx: &mut TestAppContext) {
+        use std::os::unix::fs::PermissionsExt;
+        let (view, cx, path) = project(cx, "failed-save");
+        let (disk, other) = (fs::read_to_string(&path).unwrap(), path.with_file_name("other.js"));
+        fs::write(&other, "stack(text(\"b\").for(1))\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+        view.update(cx, |o, _| {
+            o.lines.push("// mine".into());
+            o.store();
+        });
+        let shown = |cx: &mut VisualTestContext| view.update(cx, |o, _| (o.script.clone(), o.dirty, o.note.clone()));
+        let failed = (
+            path.clone(),
+            true,
+            "could not save edit.js: Permission denied (os error 13)".to_string(),
+        );
+        assert_eq!(shown(cx), failed);
+        cx.dispatch_action(Reopen(other));
+        cx.simulate_prompt_answer("Save");
+        cx.run_until_parked();
+        assert_eq!((shown(cx), fs::read_to_string(&path).unwrap()), (failed, disk));
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        cx.simulate_keystrokes("cmd-s");
+        assert!(fs::read_to_string(&path).unwrap().ends_with("// mine\n"));
+        assert_eq!(shown(cx), (path, false, String::new()));
     }
 
     // Check for Updates says when it could not check instead of claiming the newest version; when Origami

@@ -90,6 +90,10 @@ impl Origami {
         (self.script, self.mtime, self.t, self.dirty, self.clash) = (path, None, 0., false, false);
         (self.past, self.future, self.cursor, self.top, self.left) = (Default::default(), Default::default(), None, 0., 0.);
         (self.folded, self.fresh, self.saves) = (vec![], true, None);
+        (self.tl, self.rev, self.shown) = (Arc::default(), self.rev + 1, None);
+        if let Some(old) = self.image.take() {
+            cx.drop_image(old, None);
+        }
         if self.shelf.as_ref().is_none_or(|s| !s.holds(&self.script)) {
             let old = self.shelf.replace(Arc::new(Shelf::new(&self.script)));
             cx.background_executor()

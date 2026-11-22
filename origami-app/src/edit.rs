@@ -104,7 +104,9 @@ impl Origami {
             let text = self.text();
             if let Err(e) = origami_lang::save(&self.script, &text) {
                 self.dirty = true;
-                self.note = format!("cannot save {}: {e}", place(&self.script).0);
+                self.note = format!("could not save {}: {e}", place(&self.script).0);
+            } else if self.note.starts_with("could not save") {
+                self.note.clear();
             }
             self.shelve(text);
         }
@@ -609,13 +611,13 @@ mod tests {
         open(0o555).unwrap();
         view.update(cx, |o, _| o.change(|o| o.lines = vec!["t".into()]));
         let shown = view.update(cx, |o, _| (o.dirty, o.note.clone()));
-        assert!(shown.0 && shown.1.starts_with("cannot save edit.js: "), "{shown:?}");
+        assert!(shown.0 && shown.1.starts_with("could not save edit.js: "), "{shown:?}");
         view.update_in(cx, |o, window, cx| {
             o.unsaved("Save them?", window, cx, |o, _, _| o.note = "went on".into())
         });
         cx.simulate_prompt_answer("Save");
         cx.run_until_parked();
-        let kept = view.update(cx, |o, _| (o.dirty, o.note.starts_with("cannot save")));
+        let kept = view.update(cx, |o, _| (o.dirty, o.note.starts_with("could not save")));
         open(0o755).unwrap();
         assert_eq!((kept, fs::read_to_string(&path).unwrap()), ((true, true), "stack()\n".into()));
         view.update(cx, |o, _| o.store());

@@ -534,6 +534,45 @@ pub mod tests {
         assert!(fs::metadata(&out).unwrap().modified().unwrap() > before);
     }
 
+    // A script that cannot be worked out, opened after another one, shows and exports nothing of the other
+    // script: its timeline is empty and Export says there is nothing to export instead of writing the other
+    // script's film under this one's name.
+    #[gpui::test]
+    fn exports_nothing_of_another_script(cx: &mut gpui::TestAppContext) {
+        let _one = ONE.lock();
+        let dir = env::temp_dir().join("origami-ship-test").join("stale");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (good, bad) = (dir.join("good.js"), dir.join("bad.js"));
+        let _ = fs::remove_file(crash::kept(&bad, "export"));
+        fs::write(&good, "settings({ size: [64, 36] })\ncolor('#ff0000').for(1)").unwrap();
+        fs::write(&bad, "stack(\n  text('a'.for(1),\n").unwrap();
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            app.open(good.clone(), cx);
+            window.focus(&app.focus);
+            app
+        });
+        let settle = |cx: &mut gpui::VisualTestContext| {
+            cx.run_until_parked();
+            view.update(cx, |o, cx| o.watch(cx));
+            cx.run_until_parked();
+        };
+        settle(cx);
+        assert_eq!(view.update(cx, |o, _| o.tl.duration), 1.);
+        view.update(cx, |o, cx| o.open(bad.clone(), cx));
+        settle(cx);
+        view.update(cx, |o, _| {
+            assert!(!o.err.is_empty() && o.tl.clips.is_empty() && o.image.is_none());
+            o.ask();
+        });
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        let job = view.update(cx, |o, _| o.export.clone().unwrap());
+        assert_eq!(job.lock().unwrap().0, "nothing to export: the timeline is empty");
+        assert!(!dir.join("stale.mp4").exists());
+    }
+
     // A remembered destination shipped inside a downloaded project, such as a web address in its
     // .origami folder, or choices remembered for another script under the same name, are ignored and
     // the dialog offers the file next to the script, and a remembered size or quality the dialog does

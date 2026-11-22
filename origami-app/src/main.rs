@@ -264,10 +264,13 @@ impl Origami {
     fn load(&mut self, cx: &mut Context<Self>) {
         let read = origami_lang::load(&self.script);
         let gone = read.is_err() && !self.fresh;
-        let disk: Vec<String> = read.unwrap_or_default().lines().map(String::from).collect();
+        let disk: Vec<String> = read.as_deref().unwrap_or_default().lines().map(String::from).collect();
         let differs = disk != self.lines;
         if self.dirty || gone {
             (self.clash, self.dirty) = (differs, differs);
+            if let (true, Ok(text), Some(shelf)) = (differs, read, &self.shelf) {
+                shelf.put(text, Some("changed on disk".into()));
+            }
         } else if differs {
             let old = std::mem::replace(&mut self.lines, disk);
             if !self.fresh {
@@ -414,7 +417,10 @@ impl Origami {
         }
         self.watch(cx);
         self.stow(cx);
-        *crash::UNSAVED.lock().unwrap() = self.dirty.then(|| (self.script.clone(), self.text()));
+        crash::mind(
+            &mut crash::UNSAVED.lock().unwrap(),
+            self.dirty.then(|| (self.script.clone(), self.text())),
+        );
         if self.dwell() || self.lit().is_some() {
             cx.notify();
         }
@@ -605,6 +611,9 @@ fn main() {
     let Ok(script) = env::args().nth(1).map(fs::canonicalize).transpose() else {
         return eprintln!("usage: origami-app [script.js]");
     };
+    if let Some((path, Err(e))) = script.as_ref().map(|s| (s, origami_lang::load(s))) {
+        return eprintln!("{} was not opened: {e}", path.display());
+    }
     let script = script.unwrap_or_default();
     thread::spawn(Player::warm);
     let app = Application::new();

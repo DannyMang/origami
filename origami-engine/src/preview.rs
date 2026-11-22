@@ -312,6 +312,17 @@ fn blit(
     }
 }
 
+fn straight(mut px: Vec<u8>) -> Vec<u8> {
+    spread(&mut px, 4, |_, part| {
+        for p in part.chunks_exact_mut(4).filter(|p| p[3] > 0 && p[3] < 255) {
+            for i in 0..3 {
+                p[i] = (p[i] as u32 * 255 / p[3] as u32).min(255) as u8;
+            }
+        }
+    });
+    px
+}
+
 fn nudge(px: &[u8], w: usize, (fx, fy): (f64, f64)) -> Vec<u8> {
     let (mut out, n, cut) = (px.to_vec(), w * 4, |f: f64| (f as usize, (f.fract() * 256.) as u32));
     let ((kx, a), (ky, b), h) = (cut(fx), cut(fy), px.len() / n.max(1));
@@ -823,14 +834,7 @@ impl Preview {
         if c.kind == Kind::Group {
             let mut px = vec![0; size.0 * size.1 * 4];
             self.draw(&mut px, tl, t, size, k, c.id);
-            spread(&mut px, 4, |_, part| {
-                for p in part.chunks_exact_mut(4).filter(|p| p[3] > 0 && p[3] < 255) {
-                    for i in 0..3 {
-                        p[i] = (p[i] as u32 * 255 / p[3] as u32).min(255) as u8;
-                    }
-                }
-            });
-            let px = Arc::new(px);
+            let px = Arc::new(straight(px));
             let px = c.grade.as_ref().map_or(px.clone(), |g| grade::paint(g, px, size, vec![]));
             return Some((fx::paint(&fx::now(&c.fx, i), px, size, k), size, (x as i64, y as i64)));
         }
@@ -918,6 +922,17 @@ impl Preview {
                 blit(out, (pw, ph), &px, (sw, sh), q, turn, mid(sw, sh), a, mul);
             }
             return;
+        }
+        if !c.fx.is_empty() {
+            let mut own = vec![0; out.len()];
+            let bare = Clip {
+                fx: vec![],
+                blend: String::new(),
+                ..c.clone()
+            };
+            self.moved(&mut own, &bare, t, tl, (pw, ph), k, i, 1.);
+            let px = fx::paint(&fx::now(&c.fx, i), Arc::new(straight(own)), (pw, ph), k);
+            return blit(out, (pw, ph), &px, (pw, ph), 1., 0., (w / 2., h / 2.), a, mul);
         }
         let key = format!(
             "{}|{}|{}|{}|{}|{}|{:?}",
@@ -1831,6 +1846,34 @@ mod tests {
         }
         let same: Vec<bool> = made.windows(2).map(|w| Arc::ptr_eq(&w[0], &w[1])).collect();
         assert_eq!((made.len(), same), (4, vec![true, false, true]));
+    }
+
+    // A picture effect on text drawn letter by letter, as each and shown draw it, changes its letters as it
+    // does on text drawn whole instead of being left out.
+    #[test]
+    fn letters_take_effects() {
+        let ink = |fx: &str, shown: f64| {
+            let tl = Timeline {
+                fps: 4,
+                size: (200, 100),
+                duration: 1.,
+                clips: vec![Clip {
+                    src: "HH".into(),
+                    size: 60.,
+                    color: "#ffffff".into(),
+                    shown: Val::Fixed(shown),
+                    fx: serde_json::from_str(fx).unwrap(),
+                    ..clip("text", "")
+                }],
+                ..Default::default()
+            };
+            let px = Preview::default().frame(&tl, 0., (200, 100));
+            px.chunks(4).filter(|p| p[0] > 250 && p[1] > 250 && p[2] > 250).count()
+        };
+        let grey = r#"[{"fractal":{"scale":20,"seed":0}}]"#;
+        let (whole, letters) = (ink("[]", 1.), ink("[]", 0.99));
+        assert!(whole > 400 && letters > 400, "{whole} {letters}");
+        assert!(ink(grey, 1.) < whole / 8 && ink(grey, 0.99) < letters / 8);
     }
 
     // A still whose effect never changes keeps only its finished picture from frame to frame, not the

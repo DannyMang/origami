@@ -2041,6 +2041,15 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         }
     }
 
+    // A blur wider than the widest picture is lowered to 16384 with a note naming its line, while a
+    // smaller one is kept as written.
+    #[test]
+    fn lowers_huge_blurs() {
+        let t = tl("text('a').blur(4)\n  .blur(1e9)");
+        assert_eq!(t.clips[0].fx, [Fx::Blur(Val::Fixed(4.)), Fx::Blur(Val::Fixed(16384.))]);
+        assert_eq!(t.note, "line 2: blur 1000000000 is lowered to 16384, the widest a picture can be");
+    }
+
     // An odd frame size should be rounded to even numbers, with a note naming its line when the line
     // is known.
     #[test]
@@ -2100,5 +2109,41 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         assert!(save(&file, "c").is_err());
         let names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
         assert_eq!(names.len(), 2);
+    }
+
+    // A save writes a whole new file and swaps it in, so the old file is never cut short and nothing is
+    // left beside it, keeps the file's permissions, replaces a link instead of writing through it, and
+    // refuses a read-only file, a folder or a missing folder, leaving each as it was.
+    #[test]
+    fn saves_by_swapping_in_a_whole_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("save");
+        let path = dir.join("edit.js");
+        fs::write(&path, "old\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+        let mut held = fs::File::open(&path).unwrap();
+        save(&path, "new\n").unwrap();
+        let mut was = String::new();
+        held.read_to_string(&mut was).unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            (was.as_str(), fs::read_to_string(&path).unwrap().as_str(), mode),
+            ("old\n", "new\n", 0o640)
+        );
+        fs::write(dir.join("keep.js"), "k\n").unwrap();
+        fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(dir.join("keep.js"), &path).unwrap();
+        save(&path, "mine\n").unwrap();
+        assert_eq!(fs::read_to_string(dir.join("keep.js")).unwrap(), "k\n");
+        assert!(!path.is_symlink() && fs::read_to_string(&path).unwrap() == "mine\n");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+        fs::create_dir(dir.join("folder.js")).unwrap();
+        for p in [path.clone(), dir.join("folder.js"), dir.join("gone/edit.js")] {
+            assert!(save(&p, "lost\n").is_err(), "{}", p.display());
+        }
+        assert_eq!(fs::read_to_string(&path).unwrap(), "mine\n");
+        let mut left: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+        left.sort();
+        assert_eq!(left, ["edit.js", "folder.js", "keep.js"]);
     }
 }

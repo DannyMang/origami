@@ -900,6 +900,33 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), "A\nmine\nC\n");
     }
 
+    // A script changed by another program while the code on screen is unsaved keeps the other program's
+    // text as a version marked changed on disk, so keeping mine over it and saving again soon after
+    // still leaves a way back to it.
+    #[gpui::test]
+    fn keeps_what_changed_on_disk(cx: &mut TestAppContext) {
+        let (view, cx, path) = open(cx, "disk", &[&["a", "b"]]);
+        view.update(cx, |o, _| (o.lines[1], o.dirty) = ("mine".into(), true));
+        fs::write(&path, "a\ntheirs\n").unwrap();
+        view.update(cx, |o, cx| o.watch(cx));
+        cx.run_until_parked();
+        view.update(cx, |o, cx| {
+            assert!(o.clash);
+            (o.clash, o.lines[1]) = (false, "mine 2".into());
+            o.store();
+            o.stow(cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "a\nmine 2\n");
+        let shelf = view.update(cx, |o, _| o.shelf.clone().unwrap());
+        let kept: Vec<_> = shelf.list().iter().map(|e| (e.what.clone(), shelf.read(e))).collect();
+        let theirs = ("changed on disk".to_string(), owned(&["a", "theirs"]));
+        assert!(
+            kept.contains(&theirs) && kept.last().unwrap().1 == owned(&["a", "mine 2"]),
+            "{kept:?}"
+        );
+    }
+
     // A version or a version list still loading when another script opens never lands in that
     // script's history list.
     #[gpui::test]

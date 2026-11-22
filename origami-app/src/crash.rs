@@ -57,10 +57,25 @@ fn stash(script: &Path, text: &str) {
     let _ = origami_lang::save(&spare, format!("{}\0{text}", script.to_string_lossy()));
 }
 
+pub fn mind(kept: &mut Option<(PathBuf, String)>, now: Option<(PathBuf, String)>) {
+    match (&now, &*kept) {
+        _ if *kept == now => return,
+        (Some((script, text)), _) => stash(script, text),
+        (None, Some((script, _))) => {
+            let _ = fs::remove_file(spare(script));
+        }
+        _ => {}
+    }
+    *kept = now;
+}
+
 impl Origami {
     pub fn keep(&mut self, _: &mut Context<Self>) -> Ready<()> {
-        if self.dirty {
-            stash(&self.script, &self.text());
+        match self.dirty {
+            true => stash(&self.script, &self.text()),
+            false => {
+                let _ = fs::remove_file(spare(&self.script));
+            }
         }
         if let Some(s) = &self.shelf {
             s.drain(true, Duration::from_millis(240));
@@ -164,6 +179,26 @@ mod tests {
         fs::write(spare(&script), format!("{}\0text(\"d\")\n", dir.join("other.js").display())).unwrap();
         view.update(cx, |o, cx| o.open(script.clone(), cx));
         assert!(!view.update(cx, |o, _| o.dirty) && spare(&script).exists());
+    }
+
+    // Unsaved code is copied to Origami's own folder each time it changes, so a force quit or power cut
+    // leaves it for the next open, and the copy is removed once nothing is left unsaved.
+    #[test]
+    fn minds_unsaved() {
+        let dir = env::temp_dir().join("origami-mind-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("edit.js");
+        fs::write(&script, "a\n").unwrap();
+        let _ = fs::remove_file(spare(&script));
+        let (mut kept, kept_text) = (None, |s: &Path| fs::read_to_string(spare(s)).ok());
+        for text in ["ab\n", "abc\n"] {
+            mind(&mut kept, Some((script.clone(), text.into())));
+            assert_eq!(kept_text(&script), Some(format!("{}\0{text}", script.display())));
+        }
+        mind(&mut kept, None);
+        assert_eq!((kept_text(&script), kept), (None, None));
+        assert_eq!(fs::read_to_string(&script).unwrap(), "a\n");
     }
 
     // Quitting while another program holds the script's history lock gives up within a quarter of a
