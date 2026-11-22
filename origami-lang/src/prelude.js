@@ -6,9 +6,14 @@
   const digits = /^\d+$/, share = /^[\d.]+%$/, written = 'keys are written keys([0, 0], ["50%", 1], [-0.5, 0])', named = /(?:const|let|var)\s+(\w+)\s*=/, made = 'video sound image text captions caption color', bare = 'keys rect line path add mul cat stack settings delay bezier'
   const DAY = 86400, run = Symbol(), calm = Symbol()
   const must = (ok, say) => { if (!ok) throw new Error(at ? `line ${at}: ${say}` : say) }
-  const fin = (k, v) => {
+  const fit = (k, v, lo = -Infinity, hi = Infinity) => {
+    const x = typeof v === 'number' ? Math.min(Math.max(v, lo), hi) : v
+    if (x !== v) note = `line ${at}: ${k} ${v} is ${x > v ? 'raised' : 'lowered'} to ${x}, the ${x > v ? 'least' : 'most'} it takes`
+    return x
+  }
+  const fin = (k, v, lo, hi) => {
     if (!Number.isFinite(v)) throw new Error(`line ${at}: ${k} takes a number`)
-    return v
+    return fit(k, v, lo, hi)
   }
   const opts = (k, o, names) => names.forEach(n => fin(`${k} ${n}`, o[n] ?? 0))
   const dotted = (k, p) => must(__dots(p), `${k} takes points of two numbers, like [[0, 0], [0.5, 0.6], [1, 1]]`)
@@ -105,19 +110,23 @@
       must(['alpha', 'alphaInverted', 'luma', 'lumaInverted'].includes(how), 'matte is "alpha", "alphaInverted", "luma" or "lumaInverted"')
       return { ...d, matte: [m.$, how] }
     },
-    lens: (d, fov) => fx(d, { lens: anim('lens', fov) }),
+    lens: (d, fov) => fx(d, { lens: fit('lens', anim('lens', fov), -170, 170) }),
     blur: (d, r) => fx(d, { blur: anim('blur', r) }),
     levels: (d, black, white, channel = 'rgb') => {
       must(['rgb', 'alpha'].includes(channel), 'levels is written levels(0.2, 0.8) or levels(0.2, 0.8, "alpha")')
-      return fx(d, { levels: [fin('levels', black), fin('levels', white), channel === 'alpha'] })
+      const b = fin('levels black', black, 0, 0.99)
+      return fx(d, { levels: [b, fin('levels white', white, Math.round(b * 100 + 1) / 100, 1), channel === 'alpha'] })
     },
-    noise: (d, amount, seed = 0) => fx(d, { noise: [fin('noise', amount), anim('noise', seed)] }),
-    fractal: (d, o = {}) => fx(d, { fractal: { scale: fin('fractal scale', o.scale ?? 100), seed: anim('fractal seed', o.seed ?? 0) } }),
+    noise: (d, amount, seed = 0) => fx(d, { noise: [fin('noise', amount, 0, 1), anim('noise', seed)] }),
+    fractal: (d, o = {}) => fx(d, { fractal: { scale: fin('fractal scale', o.scale ?? 100, 1), seed: anim('fractal seed', o.seed ?? 0) } }),
     roughen: (d, o = {}) => fx(d, {
-      roughen: { border: fin('roughen border', o.border ?? 8), scale: fin('roughen scale', o.scale ?? 100), sharp: fin('roughen sharpness', o.sharpness ?? 1), seed: anim('roughen seed', o.seed ?? 0) },
+      roughen: {
+        border: fin('roughen border', o.border ?? 8, 0), scale: fin('roughen scale', o.scale ?? 100, 1), sharp: fin('roughen sharpness', o.sharpness ?? 1, 0),
+        seed: anim('roughen seed', o.seed ?? 0),
+      },
     }),
     displace: (d, o = {}) => fx(d, {
-      displace: { amount: anim('displace amount', o.amount ?? 50), size: fin('displace size', o.size ?? 100), seed: anim('displace seed', o.seed ?? 0) },
+      displace: { amount: anim('displace amount', o.amount ?? 50), size: fin('displace size', o.size ?? 100, 1), seed: anim('displace seed', o.seed ?? 0) },
     }),
     merge: d => {
       must(d.kids, 'merge is for a stack or cat')
