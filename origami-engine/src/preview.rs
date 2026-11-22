@@ -514,7 +514,26 @@ fn rate(src: &str, fps: f64) -> (f64, f64, f64) {
 struct Decoder {
     child: Option<Child>,
     next: i64,
-    feed: Option<(Receiver<Vec<u8>>, Sender<Vec<u8>>)>,
+    feed: Option<(Receiver<Vec<u8>>, Sender<Vec<u8>>, bool)>,
+}
+
+impl Decoder {
+    fn feed(&mut self, len: usize, n: i64, back: bool) {
+        let Some((pid, mut out)) = self.child.as_mut().and_then(|c| Some((c.id(), c.stdout.take()?))) else {
+            return;
+        };
+        let ((send, feed), (give, take)) = (mpsc::sync_channel(if back { 2 } else { 0 }), mpsc::channel());
+        thread::spawn(move || {
+            (0..n).try_for_each(|_| {
+                let mut px = take.try_recv().unwrap_or_else(|_| vec![0; len]);
+                let seen = watch(pid);
+                out.read_exact(&mut px).ok()?;
+                drop(seen);
+                send.send(px).ok()
+            })
+        });
+        self.feed = Some((feed, give, back));
+    }
 }
 
 impl Drop for Decoder {
@@ -729,7 +748,7 @@ impl Preview {
     }
 
     fn evict(&mut self, len: usize) {
-        let feeds = self.decoders.iter().filter(|(_, d)| d.feed.is_some());
+        let feeds = self.decoders.iter().filter(|(_, d)| d.feed.as_ref().is_some_and(|f| f.2));
         let flight: usize = feeds.map(|(k, _)| 3 * k.1 * k.2 * 4).sum();
         while self.held + flight + len > self.room
             && let Some(old) = self.frames.pop_lru()
@@ -747,12 +766,12 @@ impl Preview {
 
     fn drain(&mut self) {
         for i in (0..self.decoders.len()).rev() {
-            while let Some((feed, _)) = &self.decoders[i].1.feed {
+            while let Some((feed, _, true)) = &self.decoders[i].1.feed {
                 match feed.try_recv() {
                     Ok(px) => {
                         let len = px.len();
                         self.keep((self.decoders[i].0.clone(), self.decoders[i].1.next), px);
-                        if let Some((_, give)) = &self.decoders[i].1.feed {
+                        if let Some((_, give, _)) = &self.decoders[i].1.feed {
                             recycle(&mut self.spare, give, len);
                         }
                         self.decoders[i].1.next += 1;
@@ -779,19 +798,8 @@ impl Preview {
         if self.decoder(key, low - 1, from, rate).is_some()
             && self.back
             && let Some((_, d)) = self.decoders.last_mut()
-            && let Some((pid, mut out)) = d.child.as_mut().and_then(|c| Some((c.id(), c.stdout.take()?)))
         {
-            let ((send, feed), (give, take)) = (mpsc::sync_channel(2), mpsc::channel());
-            thread::spawn(move || {
-                (from..low).try_for_each(|_| {
-                    let mut px = take.try_recv().unwrap_or_else(|_| vec![0; len]);
-                    let seen = watch(pid);
-                    out.read_exact(&mut px).ok()?;
-                    drop(seen);
-                    send.send(px).ok()
-                })
-            });
-            d.feed = Some((feed, give));
+            d.feed(len, low - from, true);
         }
     }
 
@@ -812,23 +820,15 @@ impl Preview {
         let (_, mut d) = self.decoders.pop()?;
         let mut again = true;
         while d.next <= k {
-            if let Some((_, give)) = &d.feed {
+            if d.feed.is_none() {
+                d.feed(len, i64::MAX, false);
+            }
+            self.evict(len);
+            if let Some((_, give, _)) = &d.feed {
                 recycle(&mut self.spare, give, len);
             }
-            let px = match &d.feed {
-                Some((feed, _)) => feed.recv().ok(),
-                None => {
-                    self.evict(len);
-                    let mut px = reuse(&mut self.spare, len);
-                    let read = d.child.as_mut().and_then(|c| {
-                        let _seen = watch(c.id());
-                        c.stdout.as_mut()?.read_exact(&mut px).ok()
-                    });
-                    read.map(|_| px)
-                }
-            };
-            let Some(px) = px else {
-                let died = d.feed.is_some() || d.child.take().is_some_and(|mut c| c.wait().is_ok_and(|s| !s.success()));
+            let Some(px) = d.feed.as_ref().and_then(|f| f.0.recv().ok()) else {
+                let died = d.feed.as_ref().is_some_and(|f| f.2) || d.child.take().is_some_and(|mut c| c.wait().is_ok_and(|s| !s.success()));
                 if died && again && self.decoder(key, k, d.next, rate).is_some() {
                     (again, d) = (false, self.decoders.pop()?.1);
                     continue;
@@ -1103,8 +1103,12 @@ impl Preview {
         for c in tl.clips.iter().filter(soon).filter(|c| c.start == next) {
             let (tw, th, ..) = place(c, (pw as f64, ph as f64), k);
             let (key, first, rate) = Self::cell(c, c.start, tl.fps, (tw as usize, th as usize), self.fast);
-            if !self.frames.contains(&(key.clone(), first)) {
-                self.decoder(&key, first, first, rate);
+            if !self.frames.contains(&(key.clone(), first))
+                && self.decoder(&key, first, first, rate).is_some()
+                && let Some((_, d)) = self.decoders.last_mut()
+                && d.feed.is_none()
+            {
+                d.feed(key.1 * key.2 * 4, i64::MAX, false);
             }
         }
         let (fps, back) = (tl.fps as f64, self.back);
@@ -1581,6 +1585,43 @@ mod tests {
         }
         seen.extend((40..90).map(|k| shown(&mut cut, k)));
         assert!(seen == (0..90).map(|k| shown(&mut played, k)).collect::<Vec<_>>());
+    }
+
+    // Playing forwards should read each video's next frame from ffmpeg while the current one is drawn, so
+    // it is in hand even if ffmpeg stops right after, and show the same pictures as a fresh preview.
+    #[test]
+    fn playing_reads_ahead() {
+        let file = scratch("ahead").join("a.mp4");
+        film(&file, "testsrc=s=256x144:r=30:d=1", &[]);
+        let tl = Timeline {
+            fps: 30,
+            size: (256, 144),
+            duration: 1.,
+            clips: vec![Clip {
+                src: file.to_string_lossy().into(),
+                w: 256,
+                h: 144,
+                end: 1.,
+                ..clip("video", "")
+            }],
+            ..Default::default()
+        };
+        let mut pv = Preview::default();
+        let ids = |pv: &Preview| {
+            pv.decoders
+                .iter()
+                .flat_map(|(_, d)| d.child.as_ref().map(Child::id))
+                .collect::<Vec<_>>()
+        };
+        pv.frame(&tl, 0., (256, 144));
+        let first = ids(&pv);
+        thread::sleep(std::time::Duration::from_millis(500));
+        for c in pv.decoders.iter_mut().flat_map(|(_, d)| d.child.as_mut()) {
+            c.kill().unwrap();
+        }
+        let next = pv.frame(&tl, 1. / 30., (256, 144));
+        assert_eq!((first.len(), ids(&pv)), (1, first));
+        assert!(next == Preview::default().frame(&tl, 1. / 30., (256, 144)));
     }
 
     // Frames past the end of a file should be left to the decoder that reached it, without starting a
