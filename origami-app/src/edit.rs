@@ -102,7 +102,10 @@ impl Origami {
         self.dirty = self.clash;
         if !self.clash {
             let text = self.text();
-            let _ = origami_lang::save(&self.script, &text);
+            if let Err(e) = origami_lang::save(&self.script, &text) {
+                self.dirty = true;
+                self.note = format!("could not save {}: {e}", crate::menu::place(&self.script).0);
+            }
             self.shelve(text);
         }
     }
