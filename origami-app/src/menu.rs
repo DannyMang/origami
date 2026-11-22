@@ -321,8 +321,10 @@ impl Origami {
                     this.clash = false;
                     this.store();
                 }
-                if pick < 2 {
-                    then(this, window, cx);
+                match pick {
+                    0 if this.dirty => cx.notify(),
+                    0 | 1 => then(this, window, cx),
+                    _ => {}
                 }
             })
         })

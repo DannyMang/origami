@@ -4,6 +4,10 @@ What changed in each version of Origami. The launch screen shows the version you
 
 ## 0.1.0 (not yet released)
 
+### Nov 22
+
+- A save that cannot be written, such as onto a full disk or a read-only drive, now keeps your changes on screen as unsaved and says why in the status bar, and Save when Origami asks about unsaved changes then stays open instead of closing and losing them. Before, the failure was silent. Saves are also written to a hidden file beside the script and moved into place, so a save cut short leaves the last saved script whole instead of half written; the file keeps its permissions and Finder tags. The same goes for `origami.lock` and Origami's own files.
+
 ### Nov 21
 
 - Picture effects (`roughen`, `blur`, `lens`, `displace`, `noise`, `fractal` and `levels`) on an image, shape or text, and on a video stepped to a lower rate with `fps`, are worked out once and kept while the picture and the effect's settings stay the same, instead of again on every frame. A 1080p export of 2 seconds with a roughened 1400×900 image in multiply over video took about 2.2 s and now takes about 0.7 s, and its memory peaked at about 58 MB and now at about 44 MB, because an image or shape whose effect never changes keeps only the finished picture. Playing such a timeline saves about 30 ms a frame for each roughened full-size image. A playing video's effect is still worked out for each new frame, so it holds no extra memory. The pictures are unchanged.
