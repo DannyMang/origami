@@ -364,8 +364,8 @@
     const head = m.split('\n')[0].replace(/ \((unknown at |script:|native\)).*/, '').replace(/^Error: /, '')
       .replace(/^RuntimeLimitError.*/, 'script took too long: a loop, or a function that calls itself, never ends')
     const row = /\bline \d/.test(head) ? 0 : /unterminated string/.test(head) ? loose() : /abrupt end/.test(head) ? tail() : (m.match(/\n.*script:(\d+):/) ?? m.match(/script:(\d+):/))?.[1]
-    const odd = [...(__src.split('\n')[row - 1] ?? '').matchAll(/\.\s*(\w+)\s*\(/g)].map(c => c[1]).filter(k => !(k in ops))
-    const what = head === 'TypeError: not a callable function' && odd.length === 1 ? `${odd[0]} is not a clip method: check the spelling, or the script may need a newer Origami` : head
+    const odd = head === 'TypeError: not a callable function' ? [...(__src.split('\n')[row - 1] ?? '').matchAll(/\.\s*(\w+)\s*\(/g)].map(c => c[1]).filter(k => !(k in ops)) : []
+    const what = odd.length === 1 ? `${odd[0]} is not a clip method: check the spelling, or the script may need a newer Origami` : head
     return row ? `line ${row}: ${what}` : head
   }
   const frames = d => Math.max(1, Math.ceil(d * S.fps - 1e-6))
