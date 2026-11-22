@@ -306,8 +306,8 @@ mod tests {
     use std::{cell::RefCell, env, rc::Rc};
 
     // Opening a script puts its code in the editor at once and drops the clips of the script open
-    // before, a save while it is still being evaluated writes that code back unchanged, and a timeline
-    // evaluated for the script open before never shows under the new one.
+    // before, a save while it is still being evaluated writes that code back unchanged, an export then
+    // writes nothing, and a timeline evaluated for the script open before never shows under the new one.
     #[gpui::test]
     fn opens_with_its_own_code(cx: &mut TestAppContext) {
         let dir = env::temp_dir().join("origami-open-test");
@@ -338,9 +338,13 @@ mod tests {
             o.open(b.clone(), cx);
             assert!(o.tl.clips.is_empty() && o.lines == ["text(\"c\").for(1)"] && o.reading);
             o.store();
+            o.send(dir.join("b.mp4").to_string_lossy().into(), Default::default(), cx);
         });
         assert_eq!(fs::read_to_string(&b).unwrap(), "text(\"c\").for(1)\n");
         cx.run_until_parked();
+        let shipped = view.update(cx, |o, _| o.export.as_ref().map(|j| j.lock().unwrap().0.clone()));
+        assert_eq!(shipped.as_deref(), Some("nothing to export: the timeline is empty"));
+        assert!(!dir.join("b.mp4").exists());
         assert_eq!(view.update(cx, |o, _| (o.tl.clips.len(), o.reading)), (1, false));
         assert!(!seen.borrow().is_empty() && !seen.borrow().iter().any(|(s, n)| *s == b && *n == 2));
     }
