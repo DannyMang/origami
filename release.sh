@@ -58,7 +58,8 @@ else
   ./bundle.sh
   sum=$(shasum -a 256 dist/Origami.dmg | cut -d' ' -f1)
   awk -v h="## $version ($date)" '$0 == h { on = 1; next } /^## / { on = 0 } on' "$log" > dist/notes.md
-  printf '\nOrigami is not signed with an Apple Developer ID yet: the README says how to open it the first time.\n\nSHA-256 of Origami.dmg: %s\n' "$sum" >> dist/notes.md
+  [ -n "${SIGN_ID:-}" ] || printf '\nOrigami is not signed with an Apple Developer ID yet: the README says how to open it the first time.\n' >> dist/notes.md
+  printf '\nSHA-256 of Origami.dmg: %s\n' "$sum" >> dist/notes.md
 fi
 
 cat <<EOF

@@ -1,5 +1,5 @@
 use crate::{
-    lut::{Lut, Rgb, spread},
+    lut::{Lut, Rgb, spread, stamp},
     text,
 };
 use lru::LruCache;
@@ -112,6 +112,8 @@ fn pipe(g: &Grade) -> impl Fn(Rgb) -> Rgb + '_ {
         .hsl_secondary
         .as_ref()
         .map(|s| (s, hsv([0, 1, 2].map(|i| text::rgba(&s.color)[i] as f64 / 255.))));
+    let ink = |c: &String| [0, 1, 2].map(|i| text::rgba(c)[i] as f64 / 255.);
+    let duo = g.duotone.as_ref().map(|(dark, light)| (ink(dark), ink(light)));
     move |mut c| {
         if let Some(lut) = &input {
             c = lut.sample(c);
@@ -154,13 +156,18 @@ fn pipe(g: &Grade) -> impl Fn(Rgb) -> Rgb + '_ {
             let fixed = saturate(contrast(lit, s.contrast), s.saturation / 100.);
             c = blend(c, fixed, mask);
         }
+        if let Some((dark, light)) = &duo {
+            let y = luma(c).clamp(0., 1.);
+            c = array::from_fn(|i| dark[i] + (light[i] - dark[i]) * y);
+        }
         c.map(|v| v.clamp(0., 1.))
     }
 }
 
 pub fn lut(g: &Grade) -> Option<Arc<Lut>> {
+    let files = [g.input_lut.as_deref(), g.look.as_ref().map(|l| l.0.as_str())].map(|f| f.and_then(stamp));
     let key = format!(
-        "{:?}",
+        "{:?}{files:?}",
         Grade {
             vignette: None,
             ..g.clone()
@@ -274,7 +281,7 @@ mod tests {
 
     // A colour table saved as a .cube file should read back the same and is read once however its path
     // is spelled, a size so large that its cube overflows is refused, a look at strength 0 should change
-    // nothing, and at 100 should apply in full.
+    // nothing, at 100 should apply in full, and a file edited afterwards should grade with its new table.
     #[test]
     fn cube_round_trips_and_look_blends() {
         let lut = Lut::bake(5, |[r, g, b]| [b, r * 0.5, g * g]);
@@ -298,6 +305,9 @@ mod tests {
         let c = [0.25, 0.5, 0.75];
         let (full, [r, g, b]) = (pipe(&look(100.))(c), lut.sample(c));
         assert!((full[0] - r).abs() < 1e-6 && (full[1] - g).abs() < 1e-6 && (full[2] - b).abs() < 1e-6);
+        let was = super::lut(&look(100.)).unwrap();
+        std::fs::write(&file, Lut::bake(5, |c| c.map(|v| v * 0.5)).text()).unwrap();
+        assert_ne!(super::lut(&look(100.)).unwrap(), was);
     }
 
     // Applying a colour table to a whole picture should give exactly the bytes that sampling the

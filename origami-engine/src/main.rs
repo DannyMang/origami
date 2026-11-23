@@ -4,7 +4,7 @@ use std::{env, io::Write, process::Stdio};
 
 fn main() -> Result<()> {
     origami_lang::serve(footprint);
-    let args: Vec<String> = env::args().skip(1).collect();
+    let args: Vec<String> = env::args_os().skip(1).map(|a| a.to_string_lossy().into()).collect();
     let flag = |f: &str| args.iter().any(|a| a == f);
     let pos: Vec<&str> = args.iter().map(String::as_str).filter(|a| !a.starts_with("--")).collect();
     match pos[..] {
@@ -31,6 +31,7 @@ fn main() -> Result<()> {
         }
         ["frame", script, t, out] => {
             let tl = origami_lang::eval(script.as_ref(), flag("--relock"), footprint)?;
+            origami_engine::guard(&tl, out)?;
             let size = format!("{}x{}", tl.size.0, tl.size.1);
             let px = Preview::default().frame(&tl, t.parse()?, (tl.size.0 as usize, tl.size.1 as usize));
             let mut child = origami_lang::start(

@@ -57,7 +57,7 @@ pub fn drag(text: &str, from: usize, kind: Kind, to: [Option<f64>; 2], (t, len, 
 fn loose(c: &Clip) -> bool {
     c.video
         && match c.kind {
-            Kind::Text | Kind::Rect | Kind::Line => true,
+            Kind::Text | Kind::Rect | Kind::Line | Kind::Path => true,
             Kind::Color | Kind::Sound => false,
             _ => c.scale != Val::Fixed(1.) || c.pos != (None, None),
         }
@@ -243,5 +243,7 @@ stack(shot, tag, keyed, both, note)";
         );
         assert_eq!(on(7, Kind::Text, [None, None], 0.), "");
         assert_eq!(on(4, Kind::Text, [Some(0.27), Some(0.4)], 3.), "");
+        let shape = "const shape = path([\n  [0.25, 0.25], [0.75, 0.25], [0.5, 0.75],\n], { curve: true })";
+        assert_eq!(drag(shape, 0, Kind::Path, to, (0., 6., 30.)), format!("{shape}.pos(0.3, 0.62)"));
     }
 }

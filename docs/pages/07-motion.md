@@ -124,7 +124,7 @@ A picture of what follows what. One box per clip lists its animated, connected a
 
 ## Drag in the preview
 
-Click text, a shape, or a video or image that is scaled or placed, to select it. Drag it to move it.
+Click text, a shape (`rect`, `line` or `path`), or a video or image that is scaled or placed, to select it. Drag it to move it.
 
 - With no keys, the drag rewrites `.pos(x, y)`. With keys, it sets the key at the playhead, or adds one. A connected axis stays as it is.
 - The selected clip shows a thin box. When its position has keys, a dotted line shows its path, with a dot for each key.

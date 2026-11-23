@@ -321,7 +321,9 @@ impl Origami {
             (s.mark, s.diff, s.pick) = (Some(format!("\u{21ba} restored {when}")), None, None);
         }
         self.change(|this| this.lines = lines);
-        self.note = format!("restored {when} as a new save \u{b7} cmd+z undoes it");
+        if !self.dirty {
+            self.note = format!("restored {when} as a new save \u{b7} cmd+z undoes it");
+        }
     }
 
     pub fn wipe(&mut self, cx: &mut Context<Self>) {
@@ -845,7 +847,7 @@ mod tests {
         for (n, lines) in versions.iter().enumerate() {
             save(&shelf, lines, now() - 100 * (versions.len() - n) as u64, None);
         }
-        cx.update(|cx| crate::menu::install(cx, &[]));
+        cx.update(crate::menu::install);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut app = crate::fresh(cx.focus_handle(), vec![]);
             app.open(path.clone(), cx);
@@ -896,6 +898,33 @@ mod tests {
         cx.simulate_keystrokes("cmd-z");
         assert_eq!(view.update(cx, |o, _| o.lines.clone()), shown);
         assert_eq!(fs::read_to_string(&path).unwrap(), "A\nmine\nC\n");
+    }
+
+    // A script changed by another program while the code on screen is unsaved keeps the other program's
+    // text as a version marked changed on disk, so keeping mine over it and saving again soon after
+    // still leaves a way back to it.
+    #[gpui::test]
+    fn keeps_what_changed_on_disk(cx: &mut TestAppContext) {
+        let (view, cx, path) = open(cx, "disk", &[&["a", "b"]]);
+        view.update(cx, |o, _| (o.lines[1], o.dirty) = ("mine".into(), true));
+        fs::write(&path, "a\ntheirs\n").unwrap();
+        view.update(cx, |o, cx| o.watch(cx));
+        cx.run_until_parked();
+        view.update(cx, |o, cx| {
+            assert!(o.clash);
+            (o.clash, o.lines[1]) = (false, "mine 2".into());
+            o.store();
+            o.stow(cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "a\nmine 2\n");
+        let shelf = view.update(cx, |o, _| o.shelf.clone().unwrap());
+        let kept: Vec<_> = shelf.list().iter().map(|e| (e.what.clone(), shelf.read(e))).collect();
+        let theirs = ("changed on disk".to_string(), owned(&["a", "theirs"]));
+        assert!(
+            kept.contains(&theirs) && kept.last().unwrap().1 == owned(&["a", "mine 2"]),
+            "{kept:?}"
+        );
     }
 
     // A version or a version list still loading when another script opens never lands in that

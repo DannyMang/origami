@@ -29,6 +29,7 @@ pub struct Grade {
     pub sat_vs_sat: Points,
     pub wheel: Wheels,
     pub hsl_secondary: Option<Secondary>,
+    pub duotone: Option<(String, String)>,
     pub vignette: Option<Vignette>,
 }
 

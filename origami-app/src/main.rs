@@ -1,3 +1,4 @@
+mod begin;
 mod clip;
 mod complete;
 mod crash;
@@ -14,6 +15,7 @@ mod mouse;
 mod peek;
 mod pen;
 mod pulse;
+mod quill;
 mod release;
 mod saves;
 mod scene;
@@ -33,7 +35,7 @@ use gpui::{
 };
 use image::{Frame, RgbaImage};
 use mouse::Grab;
-use origami_engine::{Player, Preview, footprint, halt, learn, peaks, thumb};
+use origami_engine::{Player, Preview, footprint, halt, peaks, thumb, warm};
 use origami_lang::{Clip, Kind, Timeline};
 use std::{
     cell::RefCell,
@@ -42,7 +44,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     rc::Rc,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, mpsc},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -152,30 +154,40 @@ struct Origami {
     rest: Option<Instant>,
     busy: bool,
     reading: bool,
+    boot: Option<(Instant, bool)>,
     clash: bool,
+    sealed: bool,
     player: Option<(Instant, f64, Option<Player>)>,
     cued: bool,
     planning: bool,
     assets: HashMap<String, Option<Asset>>,
+    aged: HashMap<String, Option<Asset>>,
     stamps: HashMap<String, Option<(u64, SystemTime)>>,
     jobs: Vec<(String, String, Option<f64>)>,
     loading: usize,
     export: Option<Arc<Mutex<(String, bool)>>>,
     ship: Option<ship::Ship>,
+    begin: Option<begin::Begin>,
     shelf: Option<Arc<shelf::Shelf>>,
     saves: Option<saves::Saves>,
     shelving: bool,
     take: Option<voice::Take>,
     pen: bool,
+    trace: Option<Vec<(f64, f64)>>,
+    glow: Option<(Instant, usize, usize)>,
+    ghost: Option<Vec<(f64, f64)>>,
     words: Option<words::Words>,
     mic: Option<String>,
     mics: Vec<String>,
     stir: Instant,
-    latest: Option<(String, String)>,
+    latest: Option<release::Update>,
     focus: FocusHandle,
 }
 
 static SAVED: Mutex<(u64, String)> = Mutex::new((u64::MAX, String::new()));
+
+type Early = (PathBuf, Option<SystemTime>, mpsc::Receiver<anyhow::Result<Timeline>>);
+static EARLY: Mutex<Option<Early>> = Mutex::new(None);
 
 fn clock(script: &Path) -> String {
     let mtime = fs::metadata(script).and_then(|m| m.modified()).ok();
@@ -257,11 +269,15 @@ impl Origami {
 
     fn load(&mut self, cx: &mut Context<Self>) {
         let read = origami_lang::load(&self.script);
+        self.sealed = read.is_err() && fs::metadata(&self.script).is_ok();
         let gone = read.is_err() && !self.fresh;
-        let disk: Vec<String> = read.unwrap_or_default().lines().map(String::from).collect();
+        let disk: Vec<String> = read.as_deref().unwrap_or_default().lines().map(String::from).collect();
         let differs = disk != self.lines;
         if self.dirty || gone {
             (self.clash, self.dirty) = (differs, differs);
+            if let (true, Ok(text), Some(shelf)) = (differs, read, &self.shelf) {
+                shelf.put(text, Some("changed on disk".into()));
+            }
         } else if differs {
             let old = std::mem::replace(&mut self.lines, disk);
             if !self.fresh {
@@ -273,46 +289,26 @@ impl Origami {
         }
         let (script, path) = (self.script.clone(), self.script.clone());
         let saved = cx.background_executor().spawn(async move { clock(&path) });
-        self.reading = true;
+        let early = EARLY.lock().unwrap().take_if(|e| e.0 == script && e.1 == self.mtime);
+        match early.as_ref().and_then(|e| e.2.try_recv().ok()) {
+            Some(tl) => self.took(tl, cx),
+            None => self.reading = true,
+        }
+        let wait = self.reading;
         cx.spawn(async move |this, cx| {
-            let tl = cx
-                .background_executor()
-                .spawn(async move { origami_lang::eval(&script, true, footprint) })
-                .await;
-            this.update(cx, |this, cx| {
-                this.reading = false;
-                match tl {
-                    Ok(tl) => {
-                        (this.tl, this.rev) = (Arc::new(tl), this.rev + 1);
-                        this.menu = if this.menu == "clip" { "" } else { this.menu };
-                        this.err.clear();
-                        this.bad = 0;
-                        if let Some(gone) = origami_lang::missing() {
-                            this.note = gone;
-                        }
-                        let sel = this.sel;
-                        this.seek(this.t);
-                        this.sel = sel;
-                        this.redraft(cx);
-                        this.refresh(cx);
+            if wait {
+                let job = script.clone();
+                let eval = async move {
+                    let got = early.and_then(|e| e.2.recv().ok());
+                    got.unwrap_or_else(|| origami_lang::eval(&job, true, footprint))
+                };
+                let tl = cx.background_executor().spawn(eval).await;
+                this.update(cx, |this, cx| {
+                    if this.script == script {
+                        this.took(tl, cx);
                     }
-                    Err(e) => {
-                        let text = e.to_string();
-                        let text = text.lines().next().unwrap_or_default();
-                        this.bad = ["at :", "line "]
-                            .iter()
-                            .find_map(|k| {
-                                let rest = &text[text.find(k)? + k.len()..];
-                                rest[..rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len())].parse().ok()
-                            })
-                            .unwrap_or(0);
-                        this.err = text.split(" (").next().unwrap_or_default().trim_start_matches("Error: ").into();
-                        this.unfold((this.bad as usize).saturating_sub(1));
-                    }
-                }
-                this.watch(cx);
-                cx.notify();
-            })?;
+                })?;
+            }
             let saved = saved.await;
             this.update(cx, |this, cx| {
                 if this.saved != saved {
@@ -322,6 +318,43 @@ impl Origami {
             })
         })
         .detach();
+    }
+
+    fn took(&mut self, tl: anyhow::Result<Timeline>, cx: &mut Context<Self>) {
+        self.reading = false;
+        match tl {
+            Ok(tl) => {
+                (self.tl, self.rev) = (Arc::new(tl), self.rev + 1);
+                self.boot = self.boot.filter(|_| self.tl.duration > 0.);
+                self.menu = if self.menu == "clip" { "" } else { self.menu };
+                self.err.clear();
+                self.bad = 0;
+                if let Some(gone) = origami_lang::missing() {
+                    self.note = gone;
+                }
+                let sel = self.sel;
+                self.seek(self.t);
+                self.sel = sel;
+                self.redraft(cx);
+                self.refresh(cx);
+            }
+            Err(e) => {
+                self.boot = None;
+                let text = e.to_string();
+                let text = text.lines().next().unwrap_or_default();
+                self.bad = ["at :", "line "]
+                    .iter()
+                    .find_map(|k| {
+                        let rest = &text[text.find(k)? + k.len()..];
+                        rest[..rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len())].parse().ok()
+                    })
+                    .unwrap_or(0);
+                self.err = text.split(" (").next().unwrap_or_default().trim_start_matches("Error: ").into();
+                self.unfold((self.bad as usize).saturating_sub(1));
+            }
+        }
+        self.watch(cx);
+        cx.notify();
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) -> bool {
@@ -360,9 +393,10 @@ impl Origami {
                 if let Some(old) = this.image.replace(bitmap(px, w, h)) {
                     cx.drop_image(old, None);
                 }
+                this.boot = this.boot.filter(|_| want.1 != this.rev);
                 if this.shown.is_none_or(|s| s.1 != want.1) {
                     let tl = this.tl.clone();
-                    cx.background_executor().spawn(async move { learn(&tl, 0.) }).detach();
+                    cx.background_executor().spawn(async move { warm(&tl, 0.) }).detach();
                 }
                 (this.busy, this.shown, this.rough, this.rest) = (false, Some(want), rough, Some(Instant::now()));
                 this.refresh(cx);
@@ -375,9 +409,13 @@ impl Origami {
 
     fn asset(&mut self, key: String, path: &str, t: Option<f64>) -> Option<&Asset> {
         if !self.assets.contains_key(&key) {
-            self.jobs.push((key.clone(), path.into(), t));
+            let kept = self.aged.remove(&key);
+            if kept.is_none() {
+                self.jobs.push((key.clone(), path.into(), t));
+            }
+            self.assets.insert(key.clone(), kept.flatten());
         }
-        self.assets.entry(key).or_default().as_ref()
+        self.assets[&key].as_ref()
     }
 
     fn watch(&mut self, cx: &mut Context<Self>) {
@@ -385,11 +423,19 @@ impl Origami {
         let media = tl
             .clips
             .iter()
-            .filter(|c| matches!(c.kind, Kind::Video | Kind::Sound | Kind::Image));
-        for c in media.filter(|c| seen.insert(&c.src)) {
-            let now = fs::metadata(&c.src).and_then(|m| Ok((m.len(), m.modified()?))).ok();
-            if self.stamps.insert(c.src.clone(), now).is_some_and(|was| was != now) {
-                self.assets.retain(|k, _| !k.starts_with(&c.src));
+            .filter(|c| matches!(c.kind, Kind::Video | Kind::Sound | Kind::Image))
+            .map(|c| &c.src);
+        let looks = tl
+            .clips
+            .iter()
+            .flat_map(|c| &c.grade)
+            .flat_map(|g| g.input_lut.iter().chain(g.look.iter().map(|l| &l.0)));
+        for src in media.chain(looks).filter(|s| seen.insert(*s)) {
+            let now = fs::metadata(src).and_then(|m| Ok((m.len(), m.modified()?))).ok();
+            if self.stamps.insert(src.clone(), now).is_some_and(|was| was != now) {
+                for assets in [&mut self.assets, &mut self.aged] {
+                    assets.retain(|k, _| !k.starts_with(src));
+                }
                 self.rev += 1;
                 self.mtime = self.mtime.filter(|_| self.dirty);
             }
@@ -408,8 +454,11 @@ impl Origami {
         }
         self.watch(cx);
         self.stow(cx);
-        *crash::UNSAVED.lock().unwrap() = self.dirty.then(|| (self.script.clone(), self.text()));
-        if self.dwell() {
+        crash::mind(
+            &mut crash::UNSAVED.lock().unwrap(),
+            self.dirty.then(|| (self.script.clone(), self.text())),
+        );
+        if self.dwell() || self.lit().is_some() {
             cx.notify();
         }
         self.gaze(cx);
@@ -417,7 +466,9 @@ impl Origami {
             self.again = true;
             cx.notify();
         }
-        if self.take.is_some() || self.full && (2.0..2.1).contains(&self.stir.elapsed().as_secs_f32()) {
+        let wait = self.boot.is_some_and(|b| !b.1 && b.0.elapsed() > Duration::from_millis(100));
+        self.boot = self.boot.map(|b| (b.0, b.1 || wait));
+        if wait || self.take.is_some() || self.full && (2.0..2.1).contains(&self.stir.elapsed().as_secs_f32()) {
             cx.notify();
         }
         let was = (self.t, self.player.is_some());
@@ -437,6 +488,15 @@ impl Origami {
             }
         }
         self.cue(cx);
+        if self.assets.len() > 500 {
+            for (key, asset) in mem::replace(&mut self.aged, mem::take(&mut self.assets)) {
+                match asset {
+                    Some(Asset::Thumb(image)) => cx.drop_image(image, Some(window)),
+                    Some(wave) => drop(self.assets.insert(key, Some(wave))),
+                    None => {}
+                }
+            }
+        }
         if let Some(job) = self.export.clone() {
             let (note, done) = mem::take(&mut *job.lock().unwrap());
             if !note.is_empty() {
@@ -448,7 +508,8 @@ impl Origami {
         if !self.refresh(cx) && was != (self.t, self.player.is_some()) {
             cx.notify();
         }
-        while self.loading < 4
+        while self.boot.is_none()
+            && self.loading < 4
             && let Some(i) = self.jobs.iter().rposition(|j| j.2.is_some()).or(self.jobs.len().checked_sub(1))
         {
             let (key, path, t) = self.jobs.remove(i);
@@ -565,21 +626,28 @@ fn fresh(focus: FocusHandle, recent: Vec<PathBuf>) -> Origami {
         rest: None,
         busy: false,
         reading: false,
+        boot: None,
         clash: false,
+        sealed: false,
         player: None,
         cued: false,
         planning: false,
         assets: HashMap::new(),
+        aged: HashMap::new(),
         stamps: HashMap::new(),
         jobs: vec![],
         loading: 0,
         export: None,
         ship: None,
+        begin: None,
         shelf: None,
         saves: None,
         shelving: false,
         take: None,
         pen: false,
+        trace: None,
+        glow: None,
+        ghost: None,
         words: None,
         mic: None,
         mics: vec![],
@@ -592,10 +660,18 @@ fn fresh(focus: FocusHandle, recent: Vec<PathBuf>) -> Origami {
 fn main() {
     crash::guard();
     origami_lang::serve(footprint);
-    let Ok(script) = env::args().nth(1).map(fs::canonicalize).transpose() else {
+    let Ok(script) = env::args_os().nth(1).map(fs::canonicalize).transpose() else {
         return eprintln!("usage: origami-app [script.js]");
     };
+    if let Some((path, Err(e))) = script.as_ref().map(|s| (s, origami_lang::load(s))) {
+        return eprintln!("{} was not opened: {e}", path.display());
+    }
     let script = script.unwrap_or_default();
+    if !script.as_os_str().is_empty() {
+        let ((tell, heard), job) = (mpsc::channel(), script.clone());
+        *EARLY.lock().unwrap() = Some((script.clone(), fs::metadata(&script).and_then(|m| m.modified()).ok(), heard));
+        thread::spawn(move || drop(tell.send(origami_lang::eval(&job, true, footprint))));
+    }
     thread::spawn(Player::warm);
     let app = Application::new();
     app.on_open_urls(|urls| {
@@ -610,7 +686,7 @@ fn main() {
             .lines()
             .map(PathBuf::from)
             .collect();
-        menu::install(cx, &recent);
+        menu::install(cx);
         let options = WindowOptions {
             titlebar: Some(TitlebarOptions {
                 title: Some("origami".into()),
@@ -649,21 +725,19 @@ fn main() {
                     }
                 })
                 .detach();
-                cx.spawn(async move |this, cx| {
+                cx.spawn_in(window, async move |this, cx| {
                     let latest = cx.background_executor().spawn(async {
                         pulse::launch();
                         release::latest()
                     });
                     let latest = latest.await;
-                    this.update(cx, |this, cx| {
-                        this.latest = latest;
-                        cx.notify();
-                    })
+                    this.update_in(cx, |this, window, cx| this.offer(latest, false, window, cx))
                 })
                 .detach();
                 let mut app = fresh(focus, recent);
-                if !script.as_os_str().is_empty() {
-                    app.open(script, cx);
+                match script.as_os_str().is_empty() {
+                    true => app.hoist(cx),
+                    false => app.open(script, cx),
                 }
                 app
             })

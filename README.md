@@ -49,7 +49,7 @@ With no script it opens the launch screen. To make an app you can keep in Applic
 
 ## Your first project
 
-1. Open Origami and press ⌘N. Save the new script as `edit.js` in an empty folder. It shows "hello origami".
+1. Open Origami and click New project on the launch screen, or press ⌘N. Type a name for the project, pick where it goes in the folder list (the first time, it starts in `Movies/Origami`), and press Enter or click Create. Origami makes a folder with that name holding an `edit.js` script and opens it. It shows "hello origami".
 2. Put a video at least 8 seconds long in that folder, at `clips/intro.mp4`, and replace the script with:
 
    ```js
@@ -89,13 +89,13 @@ Read them online, with every example rendered, at https://origami-docs.veri-web.
 Your scripts, footage and exports stay on your Mac. Origami keeps:
 
 - `origami.lock` next to each script, which records the media the script uses.
-- Saved versions of each script, unsaved code kept after a crash, your export choices, the Open Recent list and your answer about reports, in `~/Library/Application Support/Origami`.
+- Saved versions of each script, unsaved code kept after a crash, your export choices, the Open Recent list, the folder you last made a project in and your answer about reports, in `~/Library/Application Support/Origami`.
 - A crash log in `~/Library/Logs/Origami`.
 
-What it sends, in short (the [Privacy](docs/pages/00-intro.md#privacy) section has the full list):
+What it sends, in short:
 
-- **Update check.** Each time it opens, Origami downloads one small file from GitHub to see if a newer version is out. It sends nothing about you or your project. Start it with `ORIGAMI_NO_UPDATE_CHECK=1` to turn this off.
-- **Usage and crash reports, only if you say yes.** The launch screen asks once. Nothing is sent before you click Yes or after you click No thanks. After a yes, a few anonymous events go to PostHog, such as "app opened" and "exported", with a random install id and no script contents, file names, paths or user name. Origami › Share Usage and Crash Reports turns them off, and `ORIGAMI_NO_TELEMETRY=1` sends nothing and never asks.
+- **Update check.** Each time it opens, Origami downloads one small file from GitHub to see if a newer version is out. It sends nothing about you or your project; GitHub sees the request come from your internet address, as with any download. Start it with `ORIGAMI_NO_UPDATE_CHECK=1` to turn this off.
+- **Usage and crash reports, only if you say yes.** The launch screen asks once. Nothing is sent before you click Yes or after you click No thanks. After a yes, a few anonymous events go to PostHog, such as "app opened" and "exported", with a random install id and no script contents, file names, paths or user name. Each carries the Origami and macOS versions and the kind of chip; "exported" adds the format, size, length and whether it worked, and a crash report only the kind of error and the file and line in Origami's own code where it happened. Origami › Share Usage and Crash Reports turns them off, and `ORIGAMI_NO_TELEMETRY=1` sends nothing and never asks.
 - `ORIGAMI_NO_TELEMETRY` and `ORIGAMI_NO_UPDATE_CHECK` only apply when Origami is started from a terminal that sets them, such as `ORIGAMI_NO_TELEMETRY=1 /Applications/Origami.app/Contents/MacOS/origami-app`; opening it from the Dock or Finder does not read them.
 - **Built from source:** a copy you build yourself never asks and never sends reports, unless you add your own PostHog key. It still checks for updates unless you turn that off.
 - **Microphone:** used only while you record a voiceover.
@@ -110,7 +110,13 @@ What it sends, in short (the [Privacy](docs/pages/00-intro.md#privacy) section h
 
 ## Report a bug
 
-Open an issue at [github.com/DannyMang/origami/issues](https://github.com/DannyMang/origami/issues) with your macOS version, the Origami version shown on the launch screen, what you did and what happened, and the smallest script that shows it. If Origami crashed, attach `~/Library/Logs/Origami/origami.log` after checking it for anything private.
+Open an issue at [github.com/DannyMang/origami/issues](https://github.com/DannyMang/origami/issues) with your macOS version, the Origami version shown on the launch screen, what you did and what happened, and the smallest script that shows it. If Origami crashed, attach `~/Library/Logs/Origami/origami.log` after checking it for anything private; if it quit without writing there, attach the newest `origami-app` report in `~/Library/Logs/DiagnosticReports` instead, checked the same way.
+
+Report security problems privately, as [SECURITY.md](SECURITY.md) describes, not in an issue.
+
+## Uninstall
+
+Quit Origami and drag it from Applications to the Trash. To remove what it keeps, also delete `~/Library/Application Support/Origami` (saved versions, recovered code, export choices, Open Recent and your answer about reports) and `~/Library/Logs/Origami`. Your scripts, the `origami.lock` beside each one, your footage and your exports stay where they are.
 
 ## Licence
 

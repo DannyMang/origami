@@ -17,24 +17,30 @@ use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
-    env, fmt, fs,
+    env,
+    ffi::{CString, c_char, c_void},
+    fmt, fs,
     io::{self, Read, Seek, SeekFrom, Write},
     mem,
-    os::unix::fs::MetadataExt,
+    os::unix::{
+        ffi::OsStrExt,
+        fs::{MetadataExt, OpenOptionsExt},
+    },
     panic,
     path::{Path, PathBuf},
     pin::pin,
-    process::{Child, ChildStdin, Command, Stdio},
+    process::{self, Child, ChildStdin, Command, Stdio},
+    ptr,
     sync::{
         Arc, Mutex, OnceLock, PoisonError,
-        atomic::{AtomicBool, Ordering::Relaxed},
+        atomic::{AtomicBool, AtomicU64, Ordering::Relaxed},
         mpsc::{self, RecvTimeoutError},
     },
     task::{self, Poll, Waker},
     thread,
     time::{Duration, Instant, UNIX_EPOCH},
 };
-pub use tool::{ffmpeg, ffprobe, missing, output, start, status, watch};
+pub use tool::{ffmpeg, ffprobe, literal, missing, output, start, status, watch};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -46,6 +52,8 @@ pub enum Kind {
     Color,
     Rect,
     Line,
+    Path,
+    Group,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -137,6 +145,18 @@ impl Val {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Fx {
+    Lens(Val),
+    Blur(Val),
+    Levels(f64, f64, bool),
+    Noise(f64, Val),
+    Fractal { scale: f64, seed: Val },
+    Roughen { border: f64, scale: f64, sharp: f64, seed: Val },
+    Displace { amount: Val, size: f64, seed: Val },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Part {
     pub from: usize,
     pub to: usize,
@@ -190,6 +210,22 @@ pub struct Clip {
     pub shown: Val,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parts: Vec<Part>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub blend: String,
+    #[serde(default)]
+    pub step: f64,
+    #[serde(default)]
+    pub id: u32,
+    #[serde(default)]
+    pub into: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matte: Option<(u32, String)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fx: Vec<Fx>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub points: Vec<(Val, Val)>,
+    #[serde(default)]
+    pub curve: bool,
 }
 
 impl Clip {
@@ -347,6 +383,7 @@ fn scan(path: &Path, prev: Option<&Media>, relock: bool, rel: &str) -> Result<Me
         ffprobe()
             .args(["-v", "error", "-of", "json", "-show_entries"])
             .arg("format=duration:stream=codec_type,width,height:stream_side_data=rotation")
+            .args(literal(&path.to_string_lossy()))
             .arg(path),
     )?;
     let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
@@ -390,7 +427,7 @@ fn media(path: &Path, old: &Lock, new: &mut Lock, relock: bool, rel: &str) -> Re
                         audio: true,
                     })
                 }
-                false => probed.remove(rel).filter(same),
+                false => probed.get(rel).filter(|m| same(m)).cloned(),
             });
             known.map_or_else(|| scan(path, prev, relock, rel), Ok)?
         }
@@ -490,10 +527,27 @@ fn stray(c: &Clip, opened: impl Fn(&str) -> bool) -> Option<String> {
 }
 
 pub fn save(path: &Path, data: impl AsRef<[u8]>) -> io::Result<()> {
-    if fs::symlink_metadata(path).is_ok_and(|m| !m.is_file()) {
-        fs::remove_file(path)?;
+    static PARTS: AtomicU64 = AtomicU64::new(0);
+    let old = fs::symlink_metadata(path).ok().filter(|m| m.is_file());
+    if old.is_some() {
+        fs::OpenOptions::new().write(true).custom_flags(NONBLOCK_NOFOLLOW).open(path)?;
     }
-    fs::write(path, data)
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let part = path.with_file_name(format!(".{name}.{}-{}", process::id(), PARTS.fetch_add(1, Relaxed)));
+    let _ = fs::remove_file(&part);
+    let wrote = fs::File::create_new(&part).and_then(|mut f| {
+        if let Some(m) = &old {
+            f.set_permissions(m.permissions())?;
+            let c = |p: &Path| CString::new(p.as_os_str().as_bytes()).unwrap_or_default();
+            unsafe { copyfile(c(path).as_ptr(), c(&part).as_ptr(), ptr::null_mut(), ACL_XATTR_NOFOLLOW) };
+        }
+        f.write_all(data.as_ref())?;
+        fs::rename(&part, path)
+    });
+    if wrote.is_err() {
+        let _ = fs::remove_file(&part);
+    }
+    wrote
 }
 
 pub fn load(path: &Path) -> io::Result<String> {
@@ -695,6 +749,7 @@ fn timed(cx: &mut Context, code: &str, path: Option<&Path>) -> Result<JsResult<J
 fn boot() -> Context {
     let mut cx = Context::default();
     cx.runtime_limits_mut().set_loop_iteration_limit(10_000_000);
+    cx.runtime_limits_mut().set_stack_size_limit(1 << 21);
     for (name, f) in [
         (
             js_string!("__probe"),
@@ -725,9 +780,13 @@ static SERVING: AtomicBool = AtomicBool::new(false);
 type Helper = (Child, ChildStdin, mpsc::Receiver<Vec<u8>>);
 static HELPER: Mutex<Option<Helper>> = Mutex::new(None);
 
+const ACL_XATTR_NOFOLLOW: u32 = 1 | 4 | 1 << 18;
+const NONBLOCK_NOFOLLOW: i32 = 0x4 | 0x100;
+
 unsafe extern "C" {
     fn proc_pid_rusage(pid: i32, flavor: i32, info: *mut [u64; 12]) -> i32;
     fn _exit(code: i32) -> !;
+    fn copyfile(from: *const c_char, to: *const c_char, state: *mut c_void, flags: u32) -> i32;
 }
 
 fn heft(pid: u32) -> u64 {
@@ -1040,9 +1099,32 @@ fn finish(out: &str, kept: Vec<Vec<f32>>, files: Vec<(u32, PathBuf)>, measure: M
     if let Some(c) = tl
         .clips
         .iter()
-        .find(|c| !(c.start >= -DAY && c.end <= DAY && c.speed > 0. && c.speed <= 1e3))
+        .find(|c| !(c.start >= -DAY && c.end <= DAY && c.end >= c.start && c.speed > 0. && c.speed <= 1e3))
     {
         bail!("line {}: {} has a time or speed out of range", c.line, c.label);
+    }
+    if let Some(c) = tl.clips.iter().find(|c| c.kind == Kind::Sound && c.video) {
+        bail!("line {}: {} is a sound, which has no picture to draw", c.line, c.label);
+    }
+    let mut held: Vec<(u32, &Clip)> = tl
+        .clips
+        .iter()
+        .flat_map(|c| {
+            let group = (c.kind == Kind::Group).then_some(c.id);
+            group.into_iter().chain(c.matte.as_ref().map(|m| m.0)).map(move |id| (id, c))
+        })
+        .collect();
+    held.sort_by_key(|h| h.0);
+    let mut deep = BTreeMap::new();
+    for (id, c) in held {
+        let d = deep.get(&c.into).map_or(1, |d| d + 1);
+        if id <= c.into || d > 16 || deep.insert(id, d).is_some() {
+            bail!(
+                "line {}: {} is inside itself or inside more than 16 groups and mattes",
+                c.line,
+                c.label
+            );
+        }
     }
     let opened: BTreeSet<&Path> = files.iter().map(|(_, f)| f.as_path()).collect();
     if let Some(e) = tl.clips.iter().find_map(|c| stray(c, |f| opened.contains(Path::new(f)))) {
@@ -1060,6 +1142,14 @@ fn finish(out: &str, kept: Vec<Vec<f32>>, files: Vec<(u32, PathBuf)>, measure: M
             c.line,
             c.label
         );
+    }
+    for f in tl.clips.iter_mut().flat_map(|c| &mut c.fx) {
+        if let Fx::Lens(Val::Frames(n, s)) = f
+            && s.iter().any(|v| v.abs() > 170.)
+        {
+            s.iter_mut().for_each(|v| *v = v.clamp(-170., 170.));
+            tl.note = format!("line {n}: lens goes past 170 either way and is held at 170, the most it takes");
+        }
     }
     tl.files = files;
     Ok(tl)
@@ -1449,6 +1539,77 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         assert_eq!(span, [(1., 3.), (3., 5.), (0., 5.)]);
     }
 
+    // A stack or merged group given a length with for cuts the clips inside at its end, loop repeats a
+    // whole stack or group, and trim on a stack or speed on a merged group stop with an error on its line.
+    #[test]
+    fn groups_cut_and_repeat() {
+        let t = tl("cat(stack(color('#000').for(4), text('a').at(3)).merge().for(2), stack(rect(9, 9).for(1), text('b')).loop(2))");
+        let span: Vec<_> = t.clips.iter().map(|c| (c.start, c.end)).collect();
+        assert_eq!(span, [(0., 2.), (0., 2.), (2., 3.), (2., 3.), (3., 4.), (3., 4.)]);
+        assert_eq!((t.clips[0].kind, t.clips[4].kind, t.duration), (Kind::Group, Kind::Rect, 4.));
+        let dir = scratch("groups");
+        assert_eq!(
+            fails(&dir, "stack(text('a'))\n  .trim(0, 1)"),
+            "line 2: trim works on one clip, not a stack or cat: trim the clips inside"
+        );
+        assert_eq!(
+            fails(&dir, "stack(text('a')).merge()\n  .speed(2)"),
+            "line 2: speed goes before merge, like stack(a, b).speed(2).merge(), and speeds up each clip inside"
+        );
+    }
+
+    // Every clip of a matte is silent, and the matte's own at and shift move it from the start of the
+    // clip it cuts.
+    #[test]
+    fn mattes_are_silent_and_movable() {
+        let t = tl("stack(text('a').for(3).at(1).volume(2).matte(stack(rect(9, 9).for(1).volume(3)).shift(0.5)))");
+        let span: Vec<_> = t.clips.iter().map(|c| (c.kind, c.start, c.end, c.gain)).collect();
+        assert_eq!(span, [(Kind::Rect, 1.5, 2.5, 0.), (Kind::Text, 1., 4., 2.)]);
+    }
+
+    // An effect value outside what the effect can draw, keys included, is brought to the nearest value
+    // it takes with a note naming its line, while values inside are kept and NaN or Infinity stop the script.
+    #[test]
+    fn effects_stay_in_range() {
+        let t = tl(
+            "rect(9, 9).lens(180).levels(0.6, 0.4).levels(1, 1).noise(-0.5).fractal({ scale: 0 })
+  .roughen({ border: -1, scale: 0, sharpness: -1 }).displace({ size: 0 }).lens(-1e9)",
+        );
+        let want = r#"[{"lens":170.0},{"levels":[0.6,0.61,false]},{"levels":[0.99,1.0,false]},{"noise":[0.0,0.0]},{"fractal":{"scale":1.0,"seed":0.0}},{"roughen":{"border":0.0,"scale":1.0,"sharp":0.0,"seed":0.0}},{"displace":{"amount":50.0,"size":1.0,"seed":0.0}},{"lens":-170.0}]"#;
+        assert_eq!(serde_json::to_string(&t.clips[0].fx).unwrap(), want);
+        for (src, note) in [
+            ("lens(180)", "lens 180 is lowered to 170, the most it takes"),
+            ("lens(-1e9)", "lens -1000000000 is raised to -170, the least it takes"),
+            ("levels(0.6, 0.4)", "levels white 0.4 is raised to 0.61, the least it takes"),
+            (
+                "roughen({ sharpness: -1 })",
+                "roughen sharpness -1 is raised to 0, the least it takes",
+            ),
+            ("displace({ size: 0 })", "displace size 0 is raised to 1, the least it takes"),
+            (
+                "lens(keys([0, 0], [1, -200]))",
+                "lens goes past 170 either way and is held at 170, the most it takes",
+            ),
+        ] {
+            assert_eq!(tl(&format!("rect(9, 9).for(1)\n  .{src}")).note, format!("line 2: {note}"));
+        }
+        let Fx::Lens(v) = &tl("rect(9, 9).for(1).lens(keys([0, 0], [1, -200]))").clips[0].fx[0] else {
+            panic!()
+        };
+        assert_eq!((v.at(15), v.at(29)), (-100., -170.));
+        let t = tl("rect(9, 9).lens(30).levels(0.2, 0.8).roughen({ border: 0, sharpness: 0 }).noise(1)");
+        assert_eq!((t.clips[0].fx[1].clone(), t.note.as_str()), (Fx::Levels(0.2, 0.8, false), ""));
+        let dir = scratch("effects");
+        assert_eq!(
+            fails(&dir, "rect(9, 9)\n  .roughen({ scale: NaN })"),
+            "line 2: roughen scale takes a number"
+        );
+        assert_eq!(
+            fails(&dir, "rect(9, 9)\n  .lens(Infinity)"),
+            "line 2: lens takes a number or a function of time"
+        );
+    }
+
     // Values that make no sense (a negative length, zero speed, a frame rate of 0, a loop without end,
     // a day-long timeline) and common slips (a number among clips, an unclosed string or bracket, an
     // error thrown by a function of time) should be refused with a message that names the line.
@@ -1569,6 +1730,14 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
             ),
             ("text('a').for(1).speed(1e12)".into(), "line 1: a has a time or speed out of range"),
             (
+                "const t = text('a')\nt.$.dur = -998\nt".into(),
+                "line 1: t has a time or speed out of range",
+            ),
+            (
+                "const t = text('a')\nObject.assign(t.$, { kind: 'sound', src: '', w: 4294967295, h: 1 })\nt".into(),
+                "line 1: t is a sound, which has no picture to draw",
+            ),
+            (
                 "const j = JSON.stringify\nJSON.stringify = v => j({ ...v, size: [4e8, 4e8] })\ntext('a')".into(),
                 "fps 30, size (400000000, 400000000) or length 5 is out of range",
             ),
@@ -1638,12 +1807,18 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
     }
 
     // A name every object inherits, such as valueOf, toString or constructor, is not a clip method:
-    // calling one fails like any unknown method instead of silently dropping or copying the clip.
+    // calling one fails like any unknown method, which the error names when it is the only unknown call
+    // on its line, instead of silently dropping or copying the clip.
     #[test]
     fn inherited_names_are_not_clip_methods() {
         let dir = scratch("inherited");
-        let unknown = fails(&dir, "text('z')\ntext('a').nope()");
-        assert_eq!(unknown, "line 2: TypeError: not a callable function");
+        let unknown =
+            |name: &str| format!("line 2: {name} is not a clip method: check the spelling, or the script may need a newer Origami");
+        assert_eq!(fails(&dir, "text('z')\ntext('a').for(2).nope(1)"), unknown("nope"));
+        assert_eq!(
+            fails(&dir, "text('z')\ntext('a').nope().nada()"),
+            "line 2: TypeError: not a callable function"
+        );
         for name in [
             "valueOf",
             "toString",
@@ -1653,7 +1828,7 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
             "isPrototypeOf",
             "__proto__",
         ] {
-            assert_eq!(fails(&dir, &format!("text('z')\ntext('a').{name}()")), unknown, "{name}");
+            assert_eq!(fails(&dir, &format!("text('z')\ntext('a').{name}()")), unknown(name));
         }
     }
 
@@ -1845,6 +2020,31 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         );
     }
 
+    // A long generated script with more than ten thousand names defined at its top level evaluates like a
+    // short one instead of stopping with a stack error.
+    #[test]
+    fn many_names_evaluate() {
+        let src: String = (0..12_000).map(|i| format!("const c{i} = {i}\n")).collect();
+        assert_eq!(tl(&(src + "text('x').for(c11999 / 1000)")).duration, 11.999);
+    }
+
+    // A first open reads each new media file once however many clips use it, so a montage cut from a few
+    // new files opens about as fast as one clip of them.
+    #[test]
+    fn new_media_is_read_once() {
+        let dir = media("once");
+        let open = |n: usize| {
+            let src = format!("cat(Array.from({{ length: {n} }}, (_, i) => video('v.mp4').trim(i % 10 / 10, 1)))");
+            fs::write(dir.join("edit.js"), src).unwrap();
+            let _ = fs::remove_file(dir.join("origami.lock"));
+            let from = Instant::now();
+            assert_eq!(eval(&dir.join("edit.js"), false, size).unwrap().clips.len(), n);
+            from.elapsed()
+        };
+        let (one, many) = (open(1), open(200));
+        assert!(many < one * 10, "{one:?} {many:?}");
+    }
+
     // A playlist used as media is refused on its line at once, before any program reads it, even when a
     // shipped origami.lock already lists it.
     #[test]
@@ -1926,6 +2126,51 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         }
     }
 
+    // A matte holds its whole clip, so a merged group used as a matte keeps its own scale and a matte
+    // that has its own matte is drawn inside the first.
+    #[test]
+    fn mattes_hold_their_whole_clip() {
+        let t = tl("rect(64, 36).matte(stack(rect(20, 20)).merge().scale(0.5))");
+        let g = t.clips.iter().find(|c| c.kind == Kind::Group).unwrap();
+        assert_eq!(t.clips.iter().find_map(|c| c.matte.clone()), Some((g.into, "alpha".into())));
+        let t = tl("rect(64, 36).matte(rect(20, 20).matte(rect(9, 9)))");
+        let mid = t.clips.iter().find(|c| c.w == 20).unwrap();
+        assert_eq!(t.clips.iter().find(|c| c.w == 64).unwrap().matte.as_ref().unwrap().0, mid.into);
+    }
+
+    // Groups and mattes nest up to 16 deep; one more, a group that holds itself or two groups with
+    // the same number stop the script with an error on the line of the clip that holds them.
+    #[test]
+    fn nesting_is_bounded() {
+        let dir = scratch("nest");
+        let deep = |n: usize, wrap: &str| format!("let g = rect(9, 9)\nfor (let i = 0; i < {n}; i++)\n  g = {wrap}\ng");
+        let (group, matte) = ("stack(g).merge()", "rect(9, 9).matte(g)");
+        assert!(run(&dir, &deep(16, group)).is_ok() && run(&dir, &deep(16, matte)).is_ok());
+        let made = "const g = { kind: 'group', src: '', in: 0, out: 1, speed: 1, gain: 1, fade: [0, 0], scale: 1, opacity: 1, rotate: 0, shown: 1, shift: 0, loop: 1, video: true, audio: false, label: 'g', line: 3 }\n";
+        for (src, n, label) in [
+            (deep(17, group), 3, "group"),
+            (deep(17, matte), 3, "rect"),
+            (format!("{made}\n;({{ $: {{ ...g, id: 0 }} }})"), 3, "g"),
+            (
+                format!("{made}\nstack({{ $: {{ ...g, id: 7 }} }}, {{ $: {{ ...g, id: 7 }} }})"),
+                3,
+                "g",
+            ),
+        ] {
+            let want = format!("line {n}: {label} is inside itself or inside more than 16 groups and mattes");
+            assert_eq!(fails(&dir, &src), want);
+        }
+    }
+
+    // A blur wider than the widest picture is lowered to 16384 with a note naming its line, while a
+    // smaller one is kept as written.
+    #[test]
+    fn lowers_huge_blurs() {
+        let t = tl("text('a').blur(4)\n  .blur(1e9)");
+        assert_eq!(t.clips[0].fx, [Fx::Blur(Val::Fixed(4.)), Fx::Blur(Val::Fixed(16384.))]);
+        assert_eq!(t.note, "line 2: blur 1000000000 is lowered to 16384, the widest a picture can be");
+    }
+
     // An odd frame size should be rounded to even numbers, with a note naming its line when the line
     // is known.
     #[test]
@@ -1949,5 +2194,77 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         let all = fonts();
         assert!(all.contains(&"Menlo".to_string()) && all.iter().all(|n| face(Path::new("/nowhere"), n).is_some()));
         assert!(all.windows(2).all(|w| w[0] != w[1]));
+    }
+
+    // A save writes a hidden file beside the old one and moves it into place, keeping the old file's
+    // permissions and extended attributes; a read-only file is left as it was, a link or pipe in its place
+    // is replaced instead of written through, and a save that fails leaves no hidden file behind.
+    #[test]
+    fn saves_whole_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("save");
+        let (file, other) = (dir.join("edit.js"), dir.join("other"));
+        let xattr = |args: &[&str]| output(Command::new("/usr/bin/xattr").args(args).arg(&file)).unwrap();
+        fs::write(&file, "old").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o640)).unwrap();
+        xattr(&["-w", "origami.test", "kept"]);
+        let inode = fs::metadata(&file).unwrap().ino();
+        save(&file, "new").unwrap();
+        let after = fs::metadata(&file).unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "new");
+        assert_eq!((after.ino() != inode, after.permissions().mode() & 0o777), (true, 0o640));
+        assert_eq!(xattr(&["-p", "origami.test"]).stdout, b"kept\n");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o440)).unwrap();
+        assert!(save(&file, "newer").is_err() && fs::read_to_string(&file).unwrap() == "new");
+        fs::remove_file(&file).unwrap();
+        fs::write(&other, "keep").unwrap();
+        std::os::unix::fs::symlink(&other, &file).unwrap();
+        save(&file, "a").unwrap();
+        assert!(!file.is_symlink() && fs::read_to_string(&other).unwrap() == "keep");
+        fs::remove_file(&file).unwrap();
+        assert!(status(Command::new("mkfifo").arg(&file)).unwrap().success());
+        save(&file, "b").unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "b");
+        fs::remove_file(&file).unwrap();
+        fs::create_dir(&file).unwrap();
+        assert!(save(&file, "c").is_err());
+        let names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names.len(), 2);
+    }
+
+    // A save writes a whole new file and swaps it in, so the old file is never cut short and nothing is
+    // left beside it, keeps the file's permissions, replaces a link instead of writing through it, and
+    // refuses a read-only file, a folder or a missing folder, leaving each as it was.
+    #[test]
+    fn saves_by_swapping_in_a_whole_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("save");
+        let path = dir.join("edit.js");
+        fs::write(&path, "old\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+        let mut held = fs::File::open(&path).unwrap();
+        save(&path, "new\n").unwrap();
+        let mut was = String::new();
+        held.read_to_string(&mut was).unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            (was.as_str(), fs::read_to_string(&path).unwrap().as_str(), mode),
+            ("old\n", "new\n", 0o640)
+        );
+        fs::write(dir.join("keep.js"), "k\n").unwrap();
+        fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(dir.join("keep.js"), &path).unwrap();
+        save(&path, "mine\n").unwrap();
+        assert_eq!(fs::read_to_string(dir.join("keep.js")).unwrap(), "k\n");
+        assert!(!path.is_symlink() && fs::read_to_string(&path).unwrap() == "mine\n");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+        fs::create_dir(dir.join("folder.js")).unwrap();
+        for p in [path.clone(), dir.join("folder.js"), dir.join("gone/edit.js")] {
+            assert!(save(&p, "lost\n").is_err(), "{}", p.display());
+        }
+        assert_eq!(fs::read_to_string(&path).unwrap(), "mine\n");
+        let mut left: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+        left.sort();
+        assert_eq!(left, ["edit.js", "folder.js", "keep.js"]);
     }
 }

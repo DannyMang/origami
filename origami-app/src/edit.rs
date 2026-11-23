@@ -1,6 +1,6 @@
-use crate::Origami;
+use crate::{Origami, menu::place};
 use gpui::{Context, Pixels, Point, Window};
-use std::mem;
+use std::{mem, time::Instant};
 
 fn reach(wide: f32, room: f32) -> f32 {
     (wide - room + 40.).max(0.)
@@ -99,10 +99,15 @@ impl Origami {
     }
 
     pub fn store(&mut self) {
-        self.dirty = self.clash;
-        if !self.clash {
+        self.dirty = self.clash || self.sealed;
+        if !self.dirty {
             let text = self.text();
-            let _ = origami_lang::save(&self.script, &text);
+            if let Err(e) = origami_lang::save(&self.script, &text) {
+                self.dirty = true;
+                self.note = format!("could not save {}: {e}", place(&self.script).0);
+            } else if self.note.starts_with("could not save") {
+                self.note.clear();
+            }
             self.shelve(text);
         }
     }
@@ -181,12 +186,23 @@ impl Origami {
         Some(at)
     }
 
+    pub fn flash(&mut self, row: usize, rows: usize) {
+        self.glow = Some((Instant::now(), row, rows));
+    }
+
+    pub fn lit(&self) -> Option<(f32, usize, usize)> {
+        let (since, row, rows) = self.glow?;
+        let left = 1. - since.elapsed().as_secs_f32() / 2.;
+        (left > 0.).then_some((left, row, rows))
+    }
+
     pub fn write(&mut self, word: &str) {
         let code = format!("{word}(\"{word}\").at({:.2}).for(3)", self.t);
         if let Some(row) = self.add(&code, false) {
             let col = self.lines[row].find('"').map_or(0, |i| i + 1);
             self.cursor = Some((row, col));
             self.reveal(row);
+            self.flash(row, 1);
         }
     }
 
@@ -572,5 +588,42 @@ mod tests {
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         let kept = (fs::read_to_string(dir.join("keep.js")).unwrap(), fs::read_to_string(&path).unwrap());
         assert_eq!((kept, path.is_symlink(), mode), (("k\n".into(), "t\n".into()), false, 0o640));
+    }
+
+    // A save that cannot be written, here into a folder made read-only, keeps the code on screen as
+    // unsaved with the reason in the status bar and leaves the file as it was, and Save in the
+    // unsaved-changes question then stays put instead of going on to close or open another script.
+    #[gpui::test]
+    fn failed_save_keeps_changes(cx: &mut TestAppContext) {
+        let dir = std::env::temp_dir().join("origami-unsaved-test");
+        let open = |mode| fs::set_permissions(&dir, fs::Permissions::from_mode(mode));
+        let _ = open(0o755);
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("edit.js");
+        fs::write(&path, "stack()\n").unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            app.open(path.clone(), cx);
+            app
+        });
+        settle(&view, cx);
+        open(0o555).unwrap();
+        view.update(cx, |o, _| o.change(|o| o.lines = vec!["t".into()]));
+        let shown = view.update(cx, |o, _| (o.dirty, o.note.clone()));
+        assert!(shown.0 && shown.1.starts_with("could not save edit.js: "), "{shown:?}");
+        view.update_in(cx, |o, window, cx| {
+            o.unsaved("Save them?", window, cx, |o, _, _| o.note = "went on".into())
+        });
+        cx.simulate_prompt_answer("Save");
+        cx.run_until_parked();
+        let kept = view.update(cx, |o, _| (o.dirty, o.note.starts_with("could not save")));
+        open(0o755).unwrap();
+        assert_eq!((kept, fs::read_to_string(&path).unwrap()), ((true, true), "stack()\n".into()));
+        view.update(cx, |o, _| o.store());
+        assert_eq!(
+            (view.update(cx, |o, _| o.dirty), fs::read_to_string(&path).unwrap()),
+            (false, "t\n".into())
+        );
     }
 }

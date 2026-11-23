@@ -35,7 +35,7 @@ pub const ATTRS: [(&str, &str, f64, f64, f64, usize); 10] = [
 ];
 pub const STILL: [&str; 4] = ["size", "width", "height", "radius"];
 pub const FOLLOWS: [&str; 6] = ["x", "y", "scale", "rotate", "opacity", "shown"];
-const MAKERS: [(&str, Kind); 7] = [
+const MAKERS: [(&str, Kind); 8] = [
     ("video", Kind::Video),
     ("image", Kind::Image),
     ("text", Kind::Text),
@@ -43,6 +43,7 @@ const MAKERS: [(&str, Kind); 7] = [
     ("color", Kind::Color),
     ("rect", Kind::Rect),
     ("line", Kind::Line),
+    ("path", Kind::Path),
 ];
 const SOFT: [f64; 4] = [0.33, 0., 0.67, 1.];
 

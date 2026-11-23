@@ -74,3 +74,62 @@ stack(cat(t, rect(300, 80, { radius: 9 }).for(1).loop(2)), tag, line(0, 0, 1, 1)
         "{said}"
     );
 }
+
+// A still written onto a picture or video the script reads, or through a link to one, is refused naming
+// the line that reads it and leaves the file whole, while a still onto a new name is written.
+#[test]
+fn frames_keep_sources_safe() {
+    let dir = env::temp_dir().join("origami-engine-frame");
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    for (input, file) in [("color=red:s=64x36:d=1", "pic.png"), ("color=blue:s=64x36:d=1", "v.mp4")] {
+        let made = origami_lang::status(
+            origami_lang::ffmpeg()
+                .args(["-v", "error", "-f", "lavfi", "-i", input, "-frames:v", "1"])
+                .arg(dir.join(file)),
+        );
+        assert!(made.unwrap().success());
+    }
+    std::os::unix::fs::symlink(dir.join("v.mp4"), dir.join("link.mp4")).unwrap();
+    fs::write(
+        dir.join("edit.js"),
+        "settings({ size: [64, 36] })\nstack(image('pic.png').for(1),\n  video('v.mp4'))",
+    )
+    .unwrap();
+    let before = [fs::read(dir.join("pic.png")).unwrap(), fs::read(dir.join("v.mp4")).unwrap()];
+    let frame = |out: &str| {
+        let made = Command::new(env!("CARGO_BIN_EXE_origami"))
+            .arg("frame")
+            .arg(dir.join("edit.js"))
+            .arg("0")
+            .arg(dir.join(out))
+            .output()
+            .unwrap();
+        (made.status.success(), String::from_utf8_lossy(&made.stderr).into_owned())
+    };
+    for (out, line) in [("pic.png", 2), ("v.mp4", 3), ("link.mp4", 3)] {
+        let (done, said) = frame(out);
+        assert!(
+            !done && said.contains("would overwrite") && said.contains(&format!("which line {line} reads")),
+            "{said}"
+        );
+    }
+    assert_eq!(
+        [fs::read(dir.join("pic.png")).unwrap(), fs::read(dir.join("v.mp4")).unwrap()],
+        before
+    );
+    assert!(frame("still.png").0 && dir.join("still.png").is_file());
+}
+
+// A path that is not valid text, as a shell can pass, gives a plain error instead of a crash.
+#[test]
+fn odd_paths_are_errors() {
+    use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+    let odd = OsStr::from_bytes(b"/nowhere/x\xff.js");
+    let out = Command::new(env!("CARGO_BIN_EXE_origami")).arg("ir").arg(odd).output().unwrap();
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success() && said.starts_with("Error: missing script: /nowhere/x"),
+        "{said}"
+    );
+}

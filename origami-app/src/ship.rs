@@ -52,7 +52,7 @@ fn free(path: &Path) -> PathBuf {
         .unwrap()
 }
 
-fn home(path: &Path) -> String {
+pub fn home(path: &Path) -> String {
     let p = path.to_string_lossy().to_string();
     match env::var("HOME") {
         Ok(h) if p.starts_with(&h) => format!("~{}", &p[h.len()..]),
@@ -103,11 +103,11 @@ fn group(chips: Vec<Div>) -> Div {
         .children(chips)
 }
 
-fn hint(text: &str) -> Div {
+pub fn hint(text: &str) -> Div {
     div().text_size(px(11.)).text_color(rgb(DIM)).child(text.to_string())
 }
 
-fn row(label: &str, body: Div) -> Div {
+pub fn row(label: &str, body: Div) -> Div {
     div()
         .flex()
         .gap(px(16.))
@@ -122,7 +122,7 @@ fn row(label: &str, body: Div) -> Div {
         .child(body.flex_1().min_w_0().flex().flex_col().items_start().gap(px(6.)))
 }
 
-fn button(label: &str, main: bool) -> Div {
+pub fn button(label: &str, main: bool) -> Div {
     div()
         .h(px(30.))
         .px(px(16.))
@@ -134,6 +134,58 @@ fn button(label: &str, main: bool) -> Div {
         .when(main, |d| d.bg(rgb(BLUE)).text_color(rgb(INK)))
         .when(!main, |d| d.border_1().border_color(rgb(BORDER)).hover(|s| s.bg(rgb(BAR))))
         .child(label.to_string())
+}
+
+pub fn frame(title: &str, head: String, body: Div, foot: Div, shut: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static) -> Div {
+    let panel = div()
+        .w(px(600.))
+        .flex()
+        .flex_col()
+        .bg(rgb(PANEL))
+        .border_1()
+        .border_color(rgb(BORDER))
+        .rounded(px(10.))
+        .occlude()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .px(px(24.))
+                .pt(px(20.))
+                .pb(px(16.))
+                .border_b_1()
+                .border_color(rgb(BORDER))
+                .child(
+                    div()
+                        .text_size(px(15.))
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .child(title.to_string()),
+                )
+                .child(div().text_size(px(12.)).text_color(rgb(MUTED)).child(head)),
+        )
+        .child(body.flex().flex_col().gap(px(18.)).px(px(24.)).py(px(20.)))
+        .child(
+            foot.flex()
+                .items_center()
+                .gap(px(10.))
+                .px(px(24.))
+                .py(px(14.))
+                .border_t_1()
+                .border_color(rgb(BORDER)),
+        );
+    div()
+        .absolute()
+        .inset_0()
+        .flex()
+        .justify_center()
+        .items_start()
+        .pt(px(96.))
+        .bg(rgba(0x13161ba6))
+        .occlude()
+        .on_mouse_down(MouseButton::Left, shut)
+        .child(panel)
 }
 
 impl Origami {
@@ -173,9 +225,48 @@ impl Origami {
     }
 
     pub fn go(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(path) = self.ship.as_ref().map(|s| s.path.clone()).filter(|p| p.exists()) else {
-            return self.ship_out(None, cx);
+        let Some(path) = self.ship.as_ref().map(|s| s.path.clone()) else {
+            return;
         };
+        self.vet(path, window, cx, |this, out, cx| this.ship_out(out, cx));
+    }
+
+    pub fn vet(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        then: impl FnOnce(&mut Self, Option<PathBuf>, &mut Context<Self>) + 'static,
+    ) {
+        if self.err.is_empty() || self.tl.clips.is_empty() {
+            return self.spare(path, window, cx, then);
+        }
+        let ask = format!("{}\n\nExport the last version that worked?", self.err);
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            "The script has an error",
+            Some(&ask),
+            &["Export", "Cancel"],
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            if matches!(answer.await, Ok(0)) {
+                let _ = this.update_in(cx, |this, window, cx| this.spare(path, window, cx, then));
+            }
+        })
+        .detach();
+    }
+
+    fn spare(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        then: impl FnOnce(&mut Self, Option<PathBuf>, &mut Context<Self>) + 'static,
+    ) {
+        if !path.exists() {
+            return then(self, None, cx);
+        }
         let both = free(&path);
         let ask = format!("Replace it, or keep it and save this export as \u{201c}{}\u{201d}?", named(&both));
         let answer = window.prompt(
@@ -189,8 +280,8 @@ impl Origami {
             let pick = answer.await;
             let _ = this.update(cx, |this, cx| {
                 match pick {
-                    Ok(0) => this.ship_out(None, cx),
-                    Ok(1) => this.ship_out(Some(both), cx),
+                    Ok(0) => then(this, None, cx),
+                    Ok(1) => then(this, Some(both), cx),
                     _ => return,
                 }
                 cx.notify();
@@ -340,11 +431,6 @@ impl Origami {
             Codec::ProRes => "Large files for editing further in another app, saved as .mov.",
         };
         let body = div()
-            .flex()
-            .flex_col()
-            .gap(px(18.))
-            .px(px(24.))
-            .py(px(20.))
             .child(row("Save as", div().child(saving).child(hint(&home(&s.path)))))
             .child(row(
                 "Resolution",
@@ -373,14 +459,11 @@ impl Origami {
                         .child(div().text_size(px(11.)).text_color(rgb(DIM)).child("AAC 256 kb/s")),
                 ),
             ));
+        let shut = |this: &mut Self, _: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>| {
+            this.ship = None;
+            cx.notify();
+        };
         let foot = div()
-            .flex()
-            .items_center()
-            .gap(px(10.))
-            .px(px(24.))
-            .py(px(14.))
-            .border_t_1()
-            .border_color(rgb(BORDER))
             .child(
                 div()
                     .flex_1()
@@ -390,62 +473,13 @@ impl Origami {
                     .child(format!("\u{2248} {mb:.0} MB \u{b7} {w}\u{d7}{h} \u{b7} {}", stamp(to - from)))
                     .child(hint("Remembered for this project")),
             )
-            .child(button("Cancel", false).on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    this.ship = None;
-                    cx.notify();
-                }),
-            ))
+            .child(button("Cancel", false).on_mouse_down(MouseButton::Left, cx.listener(shut)))
             .child(
                 button("Export", true)
                     .child(div().text_size(px(11.)).child("\u{21b5}"))
                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| this.go(window, cx))),
             );
-        let panel = div()
-            .w(px(600.))
-            .flex()
-            .flex_col()
-            .bg(rgb(PANEL))
-            .border_1()
-            .border_color(rgb(BORDER))
-            .rounded(px(10.))
-            .occlude()
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(4.))
-                    .px(px(24.))
-                    .pt(px(20.))
-                    .pb(px(16.))
-                    .border_b_1()
-                    .border_color(rgb(BORDER))
-                    .child(div().text_size(px(15.)).font_weight(gpui::FontWeight::BOLD).child("Export"))
-                    .child(div().text_size(px(12.)).text_color(rgb(MUTED)).child(head)),
-            )
-            .child(body)
-            .child(foot);
-        Some(
-            div()
-                .absolute()
-                .inset_0()
-                .flex()
-                .justify_center()
-                .items_start()
-                .pt(px(96.))
-                .bg(rgba(0x13161ba6))
-                .occlude()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, _, _, cx| {
-                        this.ship = None;
-                        cx.notify();
-                    }),
-                )
-                .child(panel),
-        )
+        Some(frame("Export", head, body, foot, cx.listener(shut)))
     }
 }
 
@@ -524,6 +558,45 @@ pub mod tests {
         assert!(dir.join("trip 2.mov").exists() && fs::metadata(&out).unwrap().modified().unwrap() == before);
         assert_eq!(again(cx, "Replace"), (false, true));
         assert!(fs::metadata(&out).unwrap().modified().unwrap() > before);
+    }
+
+    // A script that cannot be worked out, opened after another one, shows and exports nothing of the other
+    // script: its timeline is empty and Export says there is nothing to export instead of writing the other
+    // script's film under this one's name.
+    #[gpui::test]
+    fn exports_nothing_of_another_script(cx: &mut gpui::TestAppContext) {
+        let _one = ONE.lock();
+        let dir = env::temp_dir().join("origami-ship-test").join("stale");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (good, bad) = (dir.join("good.js"), dir.join("bad.js"));
+        let _ = fs::remove_file(crash::kept(&bad, "export"));
+        fs::write(&good, "settings({ size: [64, 36] })\ncolor('#ff0000').for(1)").unwrap();
+        fs::write(&bad, "stack(\n  text('a'.for(1),\n").unwrap();
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            app.open(good.clone(), cx);
+            window.focus(&app.focus);
+            app
+        });
+        let settle = |cx: &mut gpui::VisualTestContext| {
+            cx.run_until_parked();
+            view.update(cx, |o, cx| o.watch(cx));
+            cx.run_until_parked();
+        };
+        settle(cx);
+        assert_eq!(view.update(cx, |o, _| o.tl.duration), 1.);
+        view.update(cx, |o, cx| o.open(bad.clone(), cx));
+        settle(cx);
+        view.update(cx, |o, _| {
+            assert!(!o.err.is_empty() && o.tl.clips.is_empty() && o.image.is_none());
+            o.ask();
+        });
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        let job = view.update(cx, |o, _| o.export.clone().unwrap());
+        assert_eq!(job.lock().unwrap().0, "nothing to export: the timeline is empty");
+        assert!(!dir.join("stale.mp4").exists());
     }
 
     // A remembered destination shipped inside a downloaded project, such as a web address in its

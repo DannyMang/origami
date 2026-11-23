@@ -5,6 +5,7 @@ use crate::{
     keys::stamp,
     lint::Issue,
     menu::place,
+    quill::trail,
     release::VERSION,
     stage::{draw, letterbox},
     words::mark,
@@ -24,7 +25,7 @@ use std::{
     ops::Range,
     rc::Rc,
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 pub type Scans = (Vec<Region>, Vec<bool>, Vec<Issue>, Vec<(usize, usize, usize)>);
@@ -160,11 +161,11 @@ pub fn wave(bars: Vec<f32>, ink: u32) -> Div {
 
 pub fn tint(kind: Kind) -> u32 {
     match kind {
-        Kind::Video | Kind::Image => BLUE,
+        Kind::Video | Kind::Image | Kind::Group => BLUE,
         Kind::Sound => GREEN,
         Kind::Text => PURPLE,
         Kind::Color => DIM,
-        Kind::Rect | Kind::Line => ORANGE,
+        Kind::Rect | Kind::Line | Kind::Path => ORANGE,
     }
 }
 
@@ -408,6 +409,7 @@ impl Origami {
                     .justify_end()
                     .child(self.tool(pace, cx, |t, _, _| t.pace()).text_size(px(13.)))
                     .child(self.typer(cx))
+                    .child(self.tracer(cx))
                     .child(self.menu("+", add, cx))
                     .child(self.menu("\u{22ef}", more, cx))
                     .child(
@@ -635,6 +637,7 @@ impl Origami {
         let name = self.script.file_name().unwrap_or_default().to_string_lossy().to_string();
         let scans = self.scans();
         let (regions, hidden, issues, found) = &*scans;
+        let lit = self.lit();
         let seen = (self.left / self.glyph()) as usize;
         let seen = seen.saturating_sub(64)..seen + (self.side / self.glyph()) as usize + 64;
         let row = |(i, s): (usize, &String)| {
@@ -672,6 +675,9 @@ impl Origami {
                 .items_center()
                 .whitespace_nowrap()
                 .when(on, |d| d.bg(rgb(PANEL)))
+                .when_some(lit.filter(|l| (l.1..l.1 + l.2).contains(&i)), |d, l| {
+                    d.bg(rgba(BLUE << 8 | (l.0 * 96.) as u32))
+                })
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, e: &MouseDownEvent, window, cx| {
@@ -690,6 +696,10 @@ impl Origami {
                         let hit = this.tl.clips.iter().filter(|c| c.line as usize == i + 1).map(|c| c.start);
                         if let Some(t) = hit.min_by(f64::total_cmp) {
                             this.seek(t);
+                        }
+                        this.ghost = None;
+                        if e.click_count > 1 {
+                            this.refer();
                         }
                         cx.notify();
                     }),
@@ -1014,6 +1024,15 @@ impl Origami {
             )
     }
 
+    pub fn wait(&self) -> Option<String> {
+        self.boot.filter(|b| b.0.elapsed() > Duration::from_millis(100))?;
+        let name = self.script.file_name().unwrap_or_default().to_string_lossy();
+        Some(match self.reading {
+            true => format!("loading {name}"),
+            false => "drawing the first frame".into(),
+        })
+    }
+
     fn launch(&self, cx: &mut Context<Self>) -> Div {
         let button = |label: &'static str| {
             div()
@@ -1056,7 +1075,9 @@ impl Origami {
             .gap(px(28.))
             .bg(rgb(BG))
             .text_color(rgb(TEXT))
+            .text_size(px(13.))
             .font_family(FONT)
+            .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| this.key(e, window, cx)))
             .child(
                 div()
                     .flex()
@@ -1065,7 +1086,7 @@ impl Origami {
                     .gap(px(4.))
                     .child(div().text_size(px(22.)).child("origami"))
                     .child(match self.latest.clone() {
-                        Some((tag, url)) => div()
+                        Some((tag, url, _)) => div()
                             .text_size(px(12.))
                             .text_color(rgb(BLUE))
                             .underline()
@@ -1080,12 +1101,13 @@ impl Origami {
                     .flex()
                     .gap(px(10.))
                     .text_size(px(14.))
-                    .child(
-                        button("Create new file")
-                            .bg(rgb(BLUE))
-                            .text_color(rgb(INK))
-                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| this.create(window, cx))),
-                    )
+                    .child(button("New project").bg(rgb(BLUE)).text_color(rgb(INK)).on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.create();
+                            cx.notify();
+                        }),
+                    ))
                     .child(
                         button("Open\u{2026}")
                             .border_1()
@@ -1119,6 +1141,7 @@ impl Origami {
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.open_url("https://x.com/danielung19"))
                     .child("created by daniel ung"),
             )
+            .children(self.starter(cx))
     }
 }
 
@@ -1152,9 +1175,16 @@ impl Render for Origami {
         let h = f32::from(window.viewport_size().height);
         let rows = ((h - self.head() - 28.) / self.row()).ceil().max(0.) as usize;
         let (me, image, marks, caret) = (cx.weak_entity(), self.image.clone(), self.marks(), self.caret());
+        let (trace, ghost) = (self.trace.clone(), self.ghost.clone());
         let (pad, size) = (if self.full { 0. } else { 12. }, (tl.size.0 as usize, tl.size.1 as usize));
         let seen = move |b: Bounds<Pixels>, window: &mut Window, cx: &mut App| {
-            let _ = me.update(cx, |this, _| (this.stage, this.dense) = (b, window.scale_factor()));
+            let _ = me.update(cx, |this, cx| {
+                let first = this.stage.size.width <= px(0.);
+                (this.stage, this.dense) = (b, window.scale_factor());
+                if first {
+                    this.refresh(cx);
+                }
+            });
         };
         let show = move |b: Bounds<Pixels>, _, window: &mut Window, _: &mut App| {
             let sheet = letterbox(b, pad, size);
@@ -1167,6 +1197,12 @@ impl Render for Origami {
             if let Some((bar, all)) = caret {
                 mark(bar, all, sheet, window);
             }
+            if let Some(points) = &trace {
+                trail(points, sheet, window, false);
+            }
+            if let Some(points) = &ghost {
+                trail(points, sheet, window, true);
+            }
         };
         let stage = div()
             .relative()
@@ -1175,7 +1211,9 @@ impl Render for Origami {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, e: &MouseDownEvent, _, cx| {
-                    if this.pen && !this.full {
+                    if this.trace.is_some() && !this.full {
+                        this.dot(e.position);
+                    } else if this.pen && !this.full {
                         this.print(e.position, cx);
                     } else if !(e.click_count == 2 && !this.full && this.retype(e.position)) && this.mouse && !this.clasp(e.position) {
                         this.toggle();
@@ -1183,9 +1221,13 @@ impl Render for Origami {
                     cx.notify();
                 }),
             )
-            .when(self.pen && !self.full, |d| d.cursor_crosshair())
+            .when((self.pen || self.trace.is_some()) && !self.full, |d| d.cursor_crosshair())
             .overflow_hidden()
-            .child(canvas(seen, show).size_full());
+            .child(canvas(seen, show).size_full())
+            .children(self.wait().map(|said| {
+                let note = div().absolute().inset_0().flex().items_center().justify_center();
+                note.text_color(rgb(DIM)).child(said)
+            }));
         let up = |this: &mut Self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>| {
             this.release();
             cx.notify();
@@ -1326,6 +1368,7 @@ impl Render for Origami {
         .children(self.peep(window, cx))
         .children(self.help.then_some(help))
         .children(self.dialog(cx))
+        .children(self.starter(cx))
     }
 }
 
@@ -1381,6 +1424,33 @@ mod tests {
         assert!((1..6).all(|i| draw(&|o| o.t = i as f64 / 30.) == first));
         let zoomed: Vec<usize> = (1..100).map(|i| draw(&|o| o.zoom = 1. + i as f64 / 20.)).collect();
         assert_eq!((zoomed[0], zoomed[98]), (first + 1, 64));
+    }
+
+    // Thumbnails shown lately are kept, but ones not shown since the timeline last held 500 are let go,
+    // so zooming and scrolling across many clips for hours does not keep growing memory, while a sound's
+    // waveform, which takes long to read, stays.
+    #[gpui::test]
+    fn thumbnails_stay_bounded(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = cx.add_window_view(|_, cx| crate::fresh(cx.focus_handle(), vec![]));
+        let (held, kept) = view.update_in(cx, |o, window, cx| {
+            o.assets.insert("s.wav".into(), Some(crate::Asset::Wave(vec![0.5])));
+            let show = |o: &mut crate::Origami, i: usize| {
+                let key = format!("a.mp4@{i}.0");
+                if o.asset(key.clone(), "a.mp4", Some(i as f64)).is_none() {
+                    o.assets.insert(key, Some(crate::Asset::Thumb(crate::bitmap(vec![0; 64], 4, 4))));
+                }
+            };
+            for i in 1..5000 {
+                show(o, i);
+                show(o, 0);
+                o.jobs.clear();
+                o.tick(window, cx);
+            }
+            let kept = matches!(o.asset("a.mp4@0.0".into(), "a.mp4", Some(0.)), Some(crate::Asset::Thumb(_)))
+                && matches!(o.asset("s.wav".into(), "s.wav", None), Some(crate::Asset::Wave(_)));
+            (o.assets.len() + o.aged.len(), kept && o.jobs.is_empty())
+        });
+        assert!(held <= 1002 && kept, "{held}");
     }
 
     // The code pane's folds, lint and search hits should be worked out once and kept while nothing

@@ -196,6 +196,8 @@ impl Origami {
             Kind::Color => ("\u{25a0}", "color"),
             Kind::Rect => ("\u{25ad}", "rect"),
             Kind::Line => ("\u{2571}", "line"),
+            Kind::Path => ("\u{270e}", "path"),
+            Kind::Group => ("\u{25a6}", "group"),
         };
         let slot = |w: f32| div().w(px(w)).flex_none();
         div()

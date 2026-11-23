@@ -2,7 +2,6 @@ use crate::{
     Origami,
     clip::set,
     crash,
-    menu::menus,
     scene::{FOOT, LEAD, sink},
     shelf::Shelf,
     view::{HEAD, RULER},
@@ -13,7 +12,7 @@ use std::{
     fs, mem,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 pub fn recent() -> PathBuf {
@@ -30,6 +29,15 @@ fn carried(home: &Path) -> PathBuf {
         let _ = origami_lang::load(&old).and_then(|text| origami_lang::save(&list, text));
     }
     list
+}
+
+fn listed(recent: &[PathBuf]) -> String {
+    let all: Vec<_> = recent
+        .iter()
+        .map(|p| p.to_string_lossy())
+        .filter(|p| !p.contains(['\n', '\r']))
+        .collect();
+    all.join("\n")
 }
 
 fn deep(zoom: f64, duration: f64, fps: f64) -> f64 {
@@ -83,13 +91,17 @@ impl Origami {
         self.recent.retain(|p| *p != path);
         self.recent.insert(0, path.clone());
         self.recent.truncate(6);
-        let (list, all) = (recent(), self.recent.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>());
+        let list = recent();
         let _ = fs::create_dir_all(list.parent().unwrap());
-        let _ = origami_lang::save(&list, all.join("\n"));
-        cx.set_menus(menus(&self.recent));
+        let _ = origami_lang::save(&list, listed(&self.recent));
+        self.hoist(cx);
         (self.script, self.mtime, self.t, self.dirty, self.clash) = (path, None, 0., false, false);
         (self.past, self.future, self.cursor, self.top, self.left) = (Default::default(), Default::default(), None, 0., 0.);
         (self.folded, self.fresh, self.saves) = (vec![], true, None);
+        (self.tl, self.rev, self.shown, self.boot) = (Arc::default(), self.rev + 1, None, Some((Instant::now(), false)));
+        if let Some(old) = self.image.take() {
+            cx.drop_image(old, None);
+        }
         if self.shelf.as_ref().is_none_or(|s| !s.holds(&self.script)) {
             let old = self.shelf.replace(Arc::new(Shelf::new(&self.script)));
             cx.background_executor()
@@ -113,6 +125,8 @@ impl Origami {
                 self.note = "recovered unsaved changes from last time: keep mine saves them, use disk drops them".into();
             }
         }
+        self.mtime = stamp(&self.script);
+        self.load(cx);
     }
 
     pub fn reset(&mut self) {
@@ -158,7 +172,7 @@ impl Origami {
 
     fn reshape(&mut self, grab: &Grab, c: &Clip, dt: f64) {
         let (a, b, d, len) = (c.src_in, c.src_in + (c.end - c.start) * c.speed, dt * c.speed, c.end - c.start);
-        let top = if c.total > 0. { c.total } else { f64::MAX };
+        let top = if c.total > 0. { c.total.max(0.04) } else { f64::MAX };
         let trim = |a: f64, b: f64| {
             let a = a.clamp(0., top - 0.04);
             format!("{:.3}, {:.3}", a, b.clamp(a + 0.04, top))
@@ -296,7 +310,197 @@ impl Origami {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
+    use gpui::TestAppContext;
+    use std::{cell::RefCell, env, rc::Rc};
+
+    // Opening a script puts its code in the editor at once and drops the clips of the script open
+    // before, a save while it is still being evaluated writes that code back unchanged, an export then
+    // writes nothing, and a timeline evaluated for the script open before never shows under the new one.
+    #[gpui::test]
+    fn opens_with_its_own_code(cx: &mut TestAppContext) {
+        let dir = env::temp_dir().join("origami-open-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("a.js"), dir.join("b.js"));
+        fs::write(&a, "stack(text(\"a\"),\n  text(\"b\"))\n").unwrap();
+        fs::write(&b, "text(\"c\").for(1)\n").unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            app.open(a.clone(), cx);
+            assert_eq!(app.lines, ["stack(text(\"a\"),", "  text(\"b\"))"]);
+            app
+        });
+        cx.run_until_parked();
+        assert_eq!(view.update(cx, |o, _| o.tl.clips.len()), 2);
+        let seen = Rc::new(RefCell::new(vec![]));
+        let log = seen.clone();
+        cx.update(|_, cx| {
+            let note = move |v: gpui::Entity<Origami>, cx: &mut gpui::App| {
+                let o = v.read(cx);
+                log.borrow_mut().push((o.script.clone(), o.tl.clips.len()));
+            };
+            cx.observe(&view, note).detach()
+        });
+        view.update(cx, |o, cx| {
+            o.open(a.clone(), cx);
+            o.open(b.clone(), cx);
+            assert!(o.tl.clips.is_empty() && o.lines == ["text(\"c\").for(1)"] && o.reading);
+            o.store();
+            o.send(dir.join("b.mp4").to_string_lossy().into(), Default::default(), cx);
+        });
+        assert_eq!(fs::read_to_string(&b).unwrap(), "text(\"c\").for(1)\n");
+        cx.run_until_parked();
+        let shipped = view.update(cx, |o, _| o.export.as_ref().map(|j| j.lock().unwrap().0.clone()));
+        assert_eq!(shipped.as_deref(), Some("nothing to export: the timeline is empty"));
+        assert!(!dir.join("b.mp4").exists());
+        assert_eq!(view.update(cx, |o, _| (o.tl.clips.len(), o.reading)), (1, false));
+        assert!(!seen.borrow().is_empty() && !seen.borrow().iter().any(|(s, n)| *s == b && *n == 2));
+    }
+
+    // A timeline evaluated before the window opened is shown in the first frame when it is ready and the
+    // script has not changed since, waited for when it is not ready yet, and ignored when the script
+    // changed after it was evaluated; and the first picture starts as soon as its area is laid out.
+    #[gpui::test]
+    fn uses_the_early_timeline(cx: &mut TestAppContext) {
+        let dir = env::temp_dir().join("origami-early-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (a, other) = (dir.join("a.js"), dir.join("other.js"));
+        fs::write(&a, "text(\"a\").for(2)\n").unwrap();
+        fs::write(&other, "stack(text(\"x\"), text(\"y\"), text(\"z\"))\n").unwrap();
+        let early = |at: Option<std::time::SystemTime>| {
+            let (tell, heard) = std::sync::mpsc::channel();
+            *crate::EARLY.lock().unwrap() = Some((a.clone(), at, heard));
+            tell
+        };
+        let made = || origami_lang::eval(&other, true, origami_engine::footprint);
+        let stamp = |p: &Path| fs::metadata(p).and_then(|m| m.modified()).ok();
+        early(stamp(&a)).send(made()).unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            app.open(a.clone(), cx);
+            assert_eq!((app.tl.clips.len(), app.reading), (3, false));
+            app
+        });
+        assert!(view.update(cx, |o, _| o.image.is_some() && o.boot.is_none()));
+        let late = early(stamp(&a));
+        view.update(cx, |o, cx| {
+            o.open(a.clone(), cx);
+            assert!(o.reading && o.tl.clips.is_empty());
+        });
+        late.send(made()).unwrap();
+        cx.run_until_parked();
+        assert_eq!(view.update(cx, |o, _| o.tl.clips.len()), 3);
+        early(stamp(&a).map(|t| t - Duration::from_secs(1))).send(made()).unwrap();
+        view.update(cx, |o, cx| o.open(a.clone(), cx));
+        cx.run_until_parked();
+        assert_eq!(view.update(cx, |o, _| o.tl.clips.len()), 1);
+    }
+
+    // A script that is there but cannot be read, such as one not saved as UTF-8, opens with its error and
+    // an empty editor that is never saved over it, while a script that is gone can be saved again.
+    #[gpui::test]
+    fn never_saves_over_an_unread_script(cx: &mut TestAppContext) {
+        let dir = env::temp_dir().join("origami-unread-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (odd, gone) = (dir.join("odd.js"), dir.join("gone.js"));
+        fs::write(&odd, b"text(\"caf\xe9\")\n").unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| crate::fresh(cx.focus_handle(), vec![]));
+        view.update(cx, |o, cx| o.open(odd.clone(), cx));
+        cx.run_until_parked();
+        view.update(cx, |o, _| {
+            assert!(o.lines.is_empty() && !o.err.is_empty());
+            o.store();
+            o.lines = vec!["text(\"b\")".into()];
+            o.store();
+        });
+        assert_eq!(fs::read(&odd).unwrap(), b"text(\"caf\xe9\")\n");
+        view.update(cx, |o, cx| o.open(gone.clone(), cx));
+        cx.run_until_parked();
+        view.update(cx, |o, _| {
+            o.lines = vec!["text(\"b\")".into()];
+            o.store();
+        });
+        assert_eq!(fs::read_to_string(&gone).unwrap(), "text(\"b\")\n");
+    }
+
+    // Thumbnails and waveforms wait while a project is loading, so its first picture is drawn first, and
+    // start once it is shown.
+    #[gpui::test]
+    fn thumbnails_wait_for_the_first_picture(cx: &mut TestAppContext) {
+        let dir = env::temp_dir().join("origami-thumbs-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let film = dir.join("v.mp4");
+        let made = origami_lang::status(
+            origami_lang::ffmpeg()
+                .args(["-v", "error", "-f", "lavfi", "-i", "color=red:s=64x64:d=1"])
+                .arg(&film),
+        );
+        assert!(made.unwrap().success());
+        fs::write(dir.join("a.js"), "video(\"v.mp4\")\n").unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| crate::fresh(cx.focus_handle(), vec![]));
+        view.update(cx, |o, cx| o.open(dir.join("a.js"), cx));
+        cx.run_until_parked();
+        let held = view.update_in(cx, |o, window, cx| {
+            (o.boot, o.jobs, o.loading) = (
+                Some((Instant::now(), false)),
+                vec![("k".into(), film.to_string_lossy().into(), Some(0.))],
+                0,
+            );
+            o.tick(window, cx);
+            (o.jobs.len(), o.loading)
+        });
+        assert_eq!(held, (1, 0));
+        let went = view.update_in(cx, |o, window, cx| {
+            o.boot = None;
+            o.tick(window, cx);
+            (o.jobs.len(), o.loading)
+        });
+        assert_eq!(went, (0, 1));
+    }
+
+    // The loading note stays hidden for the first tenth of a second, then names the script while it is
+    // evaluated, is gone once the first frame is shown or the script turns out to have an error, and
+    // the window is redrawn once to show it however late the first tick after that tenth comes.
+    #[gpui::test]
+    fn tells_what_is_loading(cx: &mut TestAppContext) {
+        let dir = env::temp_dir().join("origami-wait-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (a, bad) = (dir.join("a.js"), dir.join("bad.js"));
+        fs::write(&a, "text(\"a\").for(2)\n").unwrap();
+        fs::write(&bad, "stack(\n").unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            app.open(a.clone(), cx);
+            assert_eq!(app.wait(), None);
+            app.boot = app.boot.map(|b| (b.0 - Duration::from_millis(200), b.1));
+            assert_eq!(app.wait(), Some("loading a.js".into()));
+            app
+        });
+        cx.run_until_parked();
+        assert!(view.update(cx, |o, _| o.image.is_some() && o.wait().is_none()));
+        view.update(cx, |o, cx| {
+            o.open(bad.clone(), cx);
+            assert!(o.image.is_none());
+            o.boot = o.boot.map(|b| (b.0 - Duration::from_millis(200), b.1));
+            assert_eq!(o.wait(), Some("loading bad.js".into()));
+        });
+        cx.run_until_parked();
+        assert!(view.update(cx, |o, _| o.wait().is_none() && !o.err.is_empty()));
+        let told = Rc::new(RefCell::new(0));
+        let count = told.clone();
+        cx.update(|_, cx| cx.observe(&view, move |_, _| *count.borrow_mut() += 1).detach());
+        for _ in 0..2 {
+            view.update_in(cx, |o, window, cx| {
+                o.boot = o.boot.or(Some((Instant::now() - Duration::from_secs(1), false)));
+                o.tick(window, cx);
+            });
+        }
+        assert_eq!(*told.borrow(), 1);
+    }
 
     // The recent list should live in Application Support, start from the old ~/.origami list the first
     // time, leave that old file alone, and never replace a new list with the old one.
@@ -316,6 +520,14 @@ mod tests {
         fs::write(&list, "/c.js").unwrap();
         assert_eq!(fs::read_to_string(carried(&home)).unwrap(), "/c.js");
         assert_eq!(fs::read_to_string(old).unwrap(), "/a.js\n/b.js");
+    }
+
+    // The saved recent list leaves out a script whose path holds a line break, which would read back as
+    // made-up entries, and keeps the others in order.
+    #[test]
+    fn recent_list_skips_line_breaks() {
+        let all = ["/a/edit.js", "/b\n/etc/edit.js", "/c\r/edit.js", "/d/edit.js"].map(PathBuf::from);
+        assert_eq!(listed(&all).lines().collect::<Vec<_>>(), ["/a/edit.js", "/d/edit.js"]);
     }
 
     // Timeline zoom, scroll position and panel sizes should stay inside sensible limits.
@@ -602,6 +814,29 @@ mod tests {
             o.release();
             assert_eq!(o.past.len(), 0);
         });
+    }
+
+    // Trimming a sound shorter than the shortest trim, such as a 20 ms click, from either end keeps the
+    // trim at that shortest length from the file's start instead of stopping Origami.
+    #[gpui::test]
+    fn short_media_trims(cx: &mut gpui::TestAppContext) {
+        let click = env::temp_dir().join("origami-click-test.wav");
+        let made = origami_lang::ffmpeg()
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "sine=d=0.02"])
+            .arg(&click)
+            .status();
+        assert!(made.unwrap().success());
+        let src = "sound(\"origami-click-test.wav\")";
+        let (view, cx) = window(cx, "click", src);
+        for grab in [Grab::Left, Grab::Right] {
+            let line = view.update(cx, |o, _| {
+                let c = o.tl.clips[0].clone();
+                o.lines = vec![src.into()];
+                o.reshape(&grab, &c, 0.5);
+                o.lines[0].clone()
+            });
+            assert_eq!(line, format!("{src}.trim(0.000, 0.040)"));
+        }
     }
 
     // A named clip used inside a stack on another line should still trim and move from the

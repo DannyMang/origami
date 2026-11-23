@@ -22,7 +22,7 @@ Hover a call that takes numbers. It underlines. Click it to open its controls. D
 
 | Value | Control | Calls |
 |---|---|---|
-| Number | slider | `speed`, `volume`, `scale`, `loop`, `pos`, `fade`, `trim`, `for`, `at`, `shift`, every colour slider |
+| Number | slider | `speed`, `volume`, `scale`, `loop`, `pos`, `fade`, `trim`, `for`, `at`, `shift`, every colour slider, `displace` amount (0 to 100 pixels) and size |
 | Hue and amount | colour wheel, plus sliders | `shadowTint`, `highlightTint`, `wheel` |
 | Points | curve pad, plus sliders | `curve`, `hueVsSat`, `hueVsHue`, `hueVsLuma`, `lumaVsSat`, `satVsSat` |
 | Colour | colour wheel and a light slider | `color`, text and caption `color`, `hslSecondary` key |
@@ -40,6 +40,20 @@ clip.temperature(-10)
 ## Type tool
 
 Click the T beside the speed button, or press `t`, then click anywhere in the picture: Origami adds `text("text").at(<playhead>).for(3).pos(x, y)` to your script with its top-left corner at the spot you clicked, and you type the words right there. Enter saves them, Esc removes the new text, and the size slider, colour wheel and dragging in the preview edit it afterwards.
+
+## Pen tool
+
+Click the ✎ beside the T, then click points around a shape in the picture. Click the first point again, after at least three, to close it. Origami writes the shape above the script's last statement as a [path](video.html#path) named `shape`, then `shape2` and so on, as one undo step. Esc, or the ✎ again, cancels.
+
+```js
+const shape = path([
+  [0.25, 0.25], [0.75, 0.25], [0.5, 0.75],
+], { curve: true })
+```
+
+The shape is not shown until you use it: add it to a `stack`, or use it as a [matte](arranging.html#matte) with `clip.matte(shape)`.
+
+Double-click the shape's name in the script to outline it on the picture until Esc. When the shape is on the timeline, the playhead also moves to where it first appears.
 
 ## Edit text on the picture
 
@@ -121,4 +135,4 @@ Click a version, or move with j and k (or the arrow keys) and press enter, to co
 
 Every command is also in the menu bar, with its shortcut. File has New (cmd+n), Open… (cmd+o), Open Recent, Save (cmd+s), History… (cmd+y), Export… (cmd+shift+e) and Close Window (cmd+w). Help › What's New opens the changelog.
 
-Export… (also ⋯ › export) opens the export dialog. It picks where to save, the resolution (the timeline's size, 4K, 1080p or 720p), the format (H.264, HEVC, or ProRes 422 saved as .mov), the quality (High, Standard or Small), the range (the whole timeline or the selected clip) and whether to include audio. Enter exports, Esc cancels, and the choices are remembered for the script in `~/Library/Application Support/Origami/export`, so they never travel with a shared project. The export is written to a hidden file beside the destination and moved into place when it finishes, so a failed or cancelled export leaves any file that was already there untouched, and the hidden file is removed even if Origami is force-quit or crashes mid-export. If the file already exists, Origami asks first: Replace writes over it, Keep Both saves the new export next to it as `name 2.mp4`, and Cancel goes back to the dialog. 4K draws text and shapes at full size, so names and captions stay sharp; video is scaled up from the clips. A size that would draw any clip over 16384 pixels on a side is refused with the clip's line; pick a smaller size or make the clip smaller. `:export name.mp4` still exports straight away at the timeline's size.
+Export… (also ⋯ › export) opens the export dialog. It picks where to save, the resolution (the timeline's size, 4K, 1080p or 720p), the format (H.264, HEVC, or ProRes 422 saved as .mov), the quality (High, Standard or Small), the range (the whole timeline or the selected clip) and whether to include audio. Enter exports, Esc cancels, and the choices are remembered for the script in `~/Library/Application Support/Origami/export`, so they never travel with a shared project. The export is written to a hidden file beside the destination and moved into place when it finishes, so a failed or cancelled export leaves any file that was already there untouched, and the hidden file is removed even if Origami is force-quit or crashes mid-export. If the file already exists, Origami asks first: Replace writes over it, Keep Both saves the new export next to it as `name 2.mp4`, and Cancel goes back to the dialog. 4K draws text and shapes at full size, so names and captions stay sharp; video is scaled up from the clips. A size that would draw any clip over 16384 pixels on a side is refused with the clip's line; pick a smaller size or make the clip smaller. `:export name.mp4` still exports straight away at the timeline's size, asking the same question first when that file already exists, and `:export --dry-run` asks it before replacing an `export.sh`.

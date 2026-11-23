@@ -1,6 +1,6 @@
 use crate::{
     Origami, pulse,
-    release::{VERSION, latest},
+    release::{Update, VERSION, latest},
     view::DOCS,
 };
 use gpui::{
@@ -8,7 +8,6 @@ use gpui::{
     Window, actions, prelude::*,
 };
 use std::{
-    env,
     ffi::OsStr,
     fs,
     path::{Path, PathBuf},
@@ -47,7 +46,7 @@ const CHORDS: [&str; 14] = [
     "alt-cmd-]",
 ];
 
-const STARTER: &str = "stack(\n  cat(\n    color(\"#282c33\").for(5),\n  ),\n  text(\"hello origami\"),\n)\n";
+pub const STARTER: &str = "stack(\n  cat(\n    color(\"#282c33\").for(5),\n  ),\n  text(\"hello origami\"),\n)\n";
 
 pub static ARRIVED: Mutex<Option<PathBuf>> = Mutex::new(None);
 
@@ -161,7 +160,7 @@ pub fn menus(recent: &[PathBuf]) -> Vec<Menu> {
     ]
 }
 
-pub fn install(cx: &mut App, recent: &[PathBuf]) {
+pub fn install(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("cmd-h", Hide, None),
         KeyBinding::new("alt-cmd-h", HideOthers, None),
@@ -186,10 +185,12 @@ pub fn install(cx: &mut App, recent: &[PathBuf]) {
     route(cx, |this, _: &Updates, window, cx| this.check(window, cx));
     route(cx, |this, _: &Share, _, cx| this.share(pulse::shared() != Some(true), cx));
     route(cx, |this, _: &Quit, window, cx| this.leave(window, cx));
-    route(cx, |this, _: &New, window, cx| this.create(window, cx));
+    route(cx, |this, _: &New, _, cx| {
+        this.create();
+        cx.notify();
+    });
     route(cx, |this, _: &Open, window, cx| this.browse(window, cx));
     route(cx, |this, Reopen(path): &Reopen, window, cx| this.switch(path.clone(), window, cx));
-    cx.set_menus(menus(recent));
 }
 
 fn route<A: Action + Clone>(cx: &mut App, f: fn(&mut Origami, &A, &mut Window, &mut Context<Origami>)) {
@@ -207,6 +208,11 @@ fn route<A: Action + Clone>(cx: &mut App, f: fn(&mut Origami, &A, &mut Window, &
 }
 
 impl Origami {
+    pub fn hoist(&self, cx: &mut Context<Self>) {
+        let recent = self.recent.clone();
+        cx.spawn(async move |_, cx| cx.update(|cx| cx.set_menus(menus(&recent)))).detach();
+    }
+
     pub fn listen(&self, root: Div, cx: &mut Context<Self>) -> Div {
         let chord = |this: &mut Self, Chord(keys): &Chord, window: &mut Window, cx: &mut Context<Self>| {
             let keystroke = Keystroke::parse(keys).unwrap();
@@ -238,42 +244,40 @@ impl Origami {
         let found = cx.background_executor().spawn(async { latest() });
         cx.spawn_in(window, async move |this, cx| {
             let found = found.await;
-            let said = match &found {
-                Some((tag, _)) => format!("Origami v{tag} is available"),
-                None => format!("Origami v{VERSION} is the newest version"),
-            };
-            let picks = match found {
-                Some(_) => [PromptButton::new("Download"), PromptButton::cancel("Later")].to_vec(),
-                None => [PromptButton::ok("OK")].to_vec(),
-            };
-            let answer = cx.prompt(PromptLevel::Info, &said, None, &picks);
-            this.update(cx, |this, cx| {
-                this.latest = found.clone();
-                cx.notify();
-            })?;
-            if let (Ok(0), Some((_, url))) = (answer.await, found) {
-                cx.update(|_, cx| cx.open_url(&url))?;
-            }
-            anyhow::Ok(())
+            this.update_in(cx, |this, window, cx| this.offer(found, true, window, cx))
         })
         .detach();
     }
 
-    pub fn create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.unsaved("Save them before creating a new file?", window, cx, |_, _, cx| {
-            let path = cx.prompt_for_new_path(&env::current_dir().unwrap_or_default(), Some("edit.js"));
-            cx.spawn(async move |this, cx| {
-                if let Ok(Ok(Some(path))) = path.await
-                    && fs::write(&path, STARTER).is_ok()
-                {
-                    let _ = this.update(cx, |this, cx| {
-                        this.open(path, cx);
-                        cx.notify();
-                    });
-                }
-            })
-            .detach();
-        });
+    pub fn offer(&mut self, found: Option<Option<Update>>, asked: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(found) = &found {
+            self.latest = found.clone();
+            cx.notify();
+        }
+        let (said, detail) = match &found {
+            Some(Some((tag, _, true))) => (
+                format!("Origami v{tag} is available"),
+                Some(format!(
+                    "v{VERSION} is no longer supported. Download the new version to keep getting fixes; your scripts stay as they are."
+                )),
+            ),
+            _ if !asked => return,
+            Some(Some((tag, ..))) => (format!("Origami v{tag} is available"), None),
+            Some(None) => (format!("Origami v{VERSION} is the newest version"), None),
+            None => ("Could not check for updates".into(), None),
+        };
+        let picks = match found {
+            Some(Some(_)) => [PromptButton::new("Download"), PromptButton::cancel("Later")].to_vec(),
+            _ => [PromptButton::ok("OK")].to_vec(),
+        };
+        let answer = window.prompt(PromptLevel::Info, &said, detail.as_deref(), &picks, cx);
+        cx.spawn(async move |_, cx| {
+            if let (Ok(0), Some(Some((_, url, _)))) = (answer.await, found) {
+                cx.update(|cx| cx.open_url(&url))?;
+            }
+            anyhow::Ok(())
+        })
+        .detach();
     }
 
     pub fn browse(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -296,10 +300,18 @@ impl Origami {
 
     pub fn switch(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let name = place(&path).0;
-        let Some(path) = fs::canonicalize(&path).ok().filter(|p| p.extension().is_some_and(|e| e == "js")) else {
-            let detail = format!("{name} was not opened: it is missing or not a .js script.");
-            let ok = [PromptButton::ok("OK")];
-            return drop(window.prompt(PromptLevel::Warning, "Origami opens .js scripts", Some(&detail), &ok, cx));
+        let read = fs::canonicalize(&path)
+            .ok()
+            .filter(|p| p.extension().is_some_and(|e| e == "js"))
+            .ok_or("it is missing or not a .js script".to_string())
+            .and_then(|p| origami_lang::load(&p).map(|_| p).map_err(|e| e.to_string()));
+        let path = match read {
+            Ok(path) => path,
+            Err(why) => {
+                let detail = format!("{name} was not opened: {why}.");
+                let ok = [PromptButton::ok("OK")];
+                return drop(window.prompt(PromptLevel::Warning, "Origami opens .js scripts", Some(&detail), &ok, cx));
+            }
         };
         if self.take.is_some() {
             return self.note = "finish the voiceover before opening another script".into();
@@ -312,7 +324,7 @@ impl Origami {
         }
     }
 
-    fn unsaved(
+    pub fn unsaved(
         &mut self,
         detail: &str,
         window: &mut Window,
@@ -336,8 +348,10 @@ impl Origami {
                     this.clash = false;
                     this.store();
                 }
-                if pick < 2 {
-                    then(this, window, cx);
+                match pick {
+                    0 if this.dirty => cx.notify(),
+                    0 | 1 => then(this, window, cx),
+                    _ => {}
                 }
             })
         })
@@ -376,7 +390,7 @@ impl Origami {
 mod tests {
     use super::*;
     use gpui::{ClipboardItem, Entity, TestAppContext, VisualTestContext};
-    use std::sync::Arc;
+    use std::{env, sync::Arc};
 
     fn items(menu: &Menu) -> Vec<(String, Box<dyn Action>)> {
         let item = |i: &MenuItem| match i {
@@ -415,7 +429,7 @@ mod tests {
         let src = "stack(\n  color(\"#203040\").for(4),\n  text(\"a\").for(4),\n)";
         fs::write(&path, src).unwrap();
         let tl = origami_lang::eval(&path, false, origami_engine::footprint).unwrap();
-        cx.update(|cx| install(cx, &[]));
+        cx.update(install);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut app = crate::fresh(cx.focus_handle(), vec![]);
             (app.script, app.lines, app.tl) = (path.clone(), src.lines().map(String::from).collect(), Arc::new(tl));
@@ -479,13 +493,10 @@ mod tests {
     }
 
     // On the launch screen the editing, save and export items are disabled and their keys do nothing, while
-    // cmd+n still makes a new file from the starter script and opens it.
+    // cmd+n still opens the new project dialog.
     #[gpui::test]
     fn launch_menus(cx: &mut TestAppContext) {
-        let dir = fs::canonicalize(env::temp_dir()).unwrap().join("origami-launch-menus-test");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        cx.update(|cx| install(cx, &[]));
+        cx.update(install);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let app = crate::fresh(cx.focus_handle(), vec![]);
             window.focus(&app.focus);
@@ -496,10 +507,7 @@ mod tests {
         assert_eq!([on(&Chord("cmd-z")), on(&FullScreen), on(&Export)], [false; 3]);
         assert_eq!([on(&New), on(&Open), on(&Quit), on(&Updates)], [true; 4]);
         assert!(!press(cx, "cmd-z") && press(cx, "cmd-n"));
-        cx.simulate_new_path_selection(|_| Some(dir.join("new.js")));
-        cx.run_until_parked();
-        assert_eq!(view.update(cx, |o, _| o.script.clone()), dir.join("new.js"));
-        assert_eq!(fs::read_to_string(dir.join("new.js")).unwrap(), STARTER);
+        assert!(view.update(cx, |o, _| o.begin.is_some()));
     }
 
     // Quitting with cmd+q or :q while an export runs should ask first and keep the app and the export on
@@ -533,12 +541,14 @@ mod tests {
     }
 
     // Being told to quit without a prompt, as from the Dock or at logout, should keep unsaved code in
-    // Origami's own folder for the next open, while a quit that chose to discard the changes should keep nothing.
+    // Origami's own folder for the next open, while a quit that chose to discard the changes should keep nothing,
+    // not even the copy made while typing.
     #[gpui::test]
     fn forced_quit_keeps_unsaved(cx: &mut TestAppContext) {
         let (view, cx, path) = project(cx, "forced-quit");
         let spare = crate::crash::spare(&path);
-        let _ = fs::remove_file(&spare);
+        fs::create_dir_all(spare.parent().unwrap()).unwrap();
+        fs::write(&spare, format!("{}\0// mine\n", path.display())).unwrap();
         let edit = |o: &mut Origami, _: &mut Context<Origami>| {
             o.lines.push("// mine".into());
             o.dirty = true;
@@ -556,7 +566,7 @@ mod tests {
 
     // Opening another script from Open Recent, the Open dialog or Finder with unsaved changes should ask first:
     // Cancel keeps the edits, Discard opens the other script and leaves the file on disk as it was, and a
-    // file that is not a .js script is refused.
+    // file that is not a .js script, or a script that cannot be read as text, is refused and left as it was.
     #[gpui::test]
     fn opening_keeps_unsaved(cx: &mut TestAppContext) {
         let (view, cx, path) = project(cx, "open-unsaved");
@@ -585,5 +595,78 @@ mod tests {
         view.update_in(cx, |o, window, cx| o.switch(path.with_file_name("clip.mp4"), window, cx));
         assert_eq!(cx.pending_prompt().map(|p| p.0), Some("Origami opens .js scripts".into()));
         cx.simulate_prompt_answer("OK");
+        let (latin, bytes) = (path.with_file_name("latin.js"), b"// caf\xe9\nstack(text(\"a\").for(1))\n");
+        fs::write(&latin, bytes).unwrap();
+        cx.dispatch_action(Reopen(latin.clone()));
+        let why = "latin.js was not opened: stream did not contain valid UTF-8.";
+        assert_eq!(cx.pending_prompt().map(|p| p.1), Some(why.into()));
+        cx.simulate_prompt_answer("OK");
+        cx.run_until_parked();
+        assert_eq!(view.update(cx, |o, _| o.script.clone()), other);
+        assert_eq!(fs::read(&latin).unwrap(), bytes);
+    }
+
+    // A save that cannot be written, here onto a read-only script, keeps the code on screen marked unsaved
+    // and says why, Save on the unsaved changes question then stays instead of opening another script, and
+    // once the file can be written again cmd+s saves it and takes the message away.
+    #[gpui::test]
+    fn failed_save_stays_unsaved(cx: &mut TestAppContext) {
+        use std::os::unix::fs::PermissionsExt;
+        let (view, cx, path) = project(cx, "failed-save");
+        let (disk, other) = (fs::read_to_string(&path).unwrap(), path.with_file_name("other.js"));
+        fs::write(&other, "stack(text(\"b\").for(1))\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+        view.update(cx, |o, _| {
+            o.lines.push("// mine".into());
+            o.store();
+        });
+        let shown = |cx: &mut VisualTestContext| view.update(cx, |o, _| (o.script.clone(), o.dirty, o.note.clone()));
+        let failed = (
+            path.clone(),
+            true,
+            "could not save edit.js: Permission denied (os error 13)".to_string(),
+        );
+        assert_eq!(shown(cx), failed);
+        cx.dispatch_action(Reopen(other));
+        cx.simulate_prompt_answer("Save");
+        cx.run_until_parked();
+        assert_eq!((shown(cx), fs::read_to_string(&path).unwrap()), (failed, disk));
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        cx.simulate_keystrokes("cmd-s");
+        assert!(fs::read_to_string(&path).unwrap().ends_with("// mine\n"));
+        assert_eq!(shown(cx), (path, false, String::new()));
+    }
+
+    // Check for Updates says when it could not check instead of claiming the newest version; when Origami
+    // opens, an ordinary update or a failed check asks nothing and a failed check keeps the update already
+    // known, while a version below the feed's minimum is told so, Download opening the release page.
+    #[gpui::test]
+    fn offers_updates(cx: &mut TestAppContext) {
+        let (view, cx, _) = project(cx, "offer");
+        let get = "https://github.com/DannyMang/origami/releases/latest".to_string();
+        let up: Update = ("99.0.0".into(), get.clone(), false);
+        let offer = |cx: &mut VisualTestContext, found: Option<Option<Update>>, asked: bool| {
+            view.update_in(cx, |o, window, cx| o.offer(found, asked, window, cx))
+        };
+        offer(cx, None, true);
+        assert_eq!(cx.pending_prompt().map(|p| p.0), Some("Could not check for updates".into()));
+        cx.simulate_prompt_answer("OK");
+        offer(cx, Some(None), true);
+        assert_eq!(
+            cx.pending_prompt().map(|p| p.0),
+            Some(format!("Origami v{VERSION} is the newest version"))
+        );
+        cx.simulate_prompt_answer("OK");
+        for found in [Some(Some(up.clone())), None] {
+            offer(cx, found, false);
+            assert!(!cx.has_pending_prompt());
+        }
+        assert_eq!(view.update(cx, |o, _| o.latest.clone()), Some(up));
+        offer(cx, Some(Some(("99.0.0".into(), get.clone(), true))), false);
+        let (said, detail) = cx.pending_prompt().unwrap();
+        assert!(said == "Origami v99.0.0 is available" && detail.starts_with(&format!("v{VERSION} is no longer supported")));
+        cx.simulate_prompt_answer("Download");
+        cx.run_until_parked();
+        assert_eq!(cx.opened_url(), Some(get));
     }
 }

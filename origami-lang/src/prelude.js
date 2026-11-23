@@ -3,12 +3,17 @@
   const S = { fps: 30, size: null, preview: 'auto', proxy: true }
   let L = {}, at = 0, N = 0, P = [], D = 0, W = [1, 1], note
   const M = new Map(), reads = ['x', 'y', 'scale', 'rotate', 'opacity'], even = n => Math.round(n / 2) * 2
-  const digits = /^\d+$/, share = /^[\d.]+%$/, written = 'keys are written keys([0, 0], ["50%", 1], [-0.5, 0])', named = /(?:const|let|var)\s+(\w+)\s*=/, made = 'video sound image text captions caption color', bare = 'keys rect line add mul cat stack settings delay bezier'
+  const digits = /^\d+$/, share = /^[\d.]+%$/, written = 'keys are written keys([0, 0], ["50%", 1], [-0.5, 0])', named = /(?:const|let|var)\s+(\w+)\s*=/, made = 'video sound image text captions caption color', bare = 'keys rect line path add mul cat stack settings delay bezier'
   const DAY = 86400, run = Symbol(), calm = Symbol()
   const must = (ok, say) => { if (!ok) throw new Error(at ? `line ${at}: ${say}` : say) }
-  const fin = (k, v) => {
+  const fit = (k, v, lo = -Infinity, hi = Infinity) => {
+    const x = typeof v === 'number' ? Math.min(Math.max(v, lo), hi) : v
+    if (x !== v) note = `line ${at}: ${k} ${v} is ${x > v ? 'raised' : 'lowered'} to ${x}, the ${x > v ? 'least' : 'most'} it takes`
+    return x
+  }
+  const fin = (k, v, lo, hi) => {
     if (!Number.isFinite(v)) throw new Error(`line ${at}: ${k} takes a number`)
-    return v
+    return fit(k, v, lo, hi)
   }
   const opts = (k, o, names) => names.forEach(n => fin(`${k} ${n}`, o[n] ?? 0))
   const dotted = (k, p) => must(__dots(p), `${k} takes points of two numbers, like [[0, 0], [0.5, 0.6], [1, 1]]`)
@@ -54,9 +59,11 @@
     return anim(k, Object.assign((t, d, T) => num(a, t, d, T) * num(b, t, d, T), { [run]: all, [calm]: all && b[calm] }))
   }
   const split = { __proto__: null, char: /\S/gu, word: /\S+/gu, line: /.+/gu }
+  const fx = (d, f) => ({ ...d, fx: [...d.fx ?? [], f] })
   const ops = {
     __proto__: null,
     trim: (d, a, b) => {
+      must(!d.kids, 'trim works on one clip, not a stack or cat: trim the clips inside')
       const top = d.total ? Math.ceil(d.total * 1e3) / 1e3 : DAY, i = Math.max(0, Math.min(span('trim', a), top - 0.04))
       return { ...d, in: i, out: Math.min(Math.max(b == null ? d.out : span('trim', b), i + 0.04), top) }
     },
@@ -64,6 +71,7 @@
     at: (d, t) => ({ ...d, at: span('at', t) }),
     shift: (d, s) => ({ ...d, shift: d.shift + span('shift', s) }),
     speed: (d, x) => {
+      must(!d.kids, 'speed goes before merge, like stack(a, b).speed(2).merge(), and speeds up each clip inside')
       must(x > 0, 'speed takes a number above 0')
       return { ...d, speed: d.speed * x }
     },
@@ -89,6 +97,44 @@
         }),
       }
     },
+    blend: (d, m) => {
+      must(m === 'multiply' || m === 'normal', 'blend is "multiply" or "normal"')
+      return { ...d, blend: m === 'normal' ? '' : m }
+    },
+    fps: (d, n) => {
+      must(n > 0 && n <= 240, 'fps takes a number above 0, up to 240')
+      return { ...d, step: n }
+    },
+    matte: (d, m, how = 'alpha') => {
+      must(m?.$, 'matte takes a clip, like title.matte(shape)')
+      must(['alpha', 'alphaInverted', 'luma', 'lumaInverted'].includes(how), 'matte is "alpha", "alphaInverted", "luma" or "lumaInverted"')
+      return { ...d, matte: [m.$, how] }
+    },
+    lens: (d, fov) => fx(d, { lens: fit('lens', anim('lens', fov), -170, 170) }),
+    blur: (d, r) => {
+      if (r > 16384) [note, r] = [`line ${at}: blur ${r} is lowered to 16384, the widest a picture can be`, 16384]
+      return fx(d, { blur: anim('blur', r) })
+    },
+    levels: (d, black, white, channel = 'rgb') => {
+      must(['rgb', 'alpha'].includes(channel), 'levels is written levels(0.2, 0.8) or levels(0.2, 0.8, "alpha")')
+      const b = fin('levels black', black, 0, 0.99)
+      return fx(d, { levels: [b, fin('levels white', white, Math.round(b * 100 + 1) / 100, 1), channel === 'alpha'] })
+    },
+    noise: (d, amount, seed = 0) => fx(d, { noise: [fin('noise', amount, 0, 1), anim('noise', seed)] }),
+    fractal: (d, o = {}) => fx(d, { fractal: { scale: fin('fractal scale', o.scale ?? 100, 1), seed: anim('fractal seed', o.seed ?? 0) } }),
+    roughen: (d, o = {}) => fx(d, {
+      roughen: {
+        border: fin('roughen border', o.border ?? 8, 0), scale: fin('roughen scale', o.scale ?? 100, 1), sharp: fin('roughen sharpness', o.sharpness ?? 1, 0),
+        seed: anim('roughen seed', o.seed ?? 0),
+      },
+    }),
+    displace: (d, o = {}) => fx(d, {
+      displace: { amount: anim('displace amount', o.amount ?? 50), size: fin('displace size', o.size ?? 100, 1), seed: anim('displace seed', o.seed ?? 0) },
+    }),
+    merge: d => {
+      must(d.kids, 'merge is for a stack or cat')
+      return { ...d, kind: 'group', src: '', video: true, audio: false, label: 'group' }
+    },
     loop: (d, n) => {
       must(Number.isInteger(n) && n > 0 && n <= 1000, 'loop takes a whole number from 1 to 1000')
       return { ...d, loop: n }
@@ -112,6 +158,7 @@
         exposure: c.exposure ?? 0, temperature: c.temperature ?? 0, tint: c.tint ?? 0, contrast: c.contrast ?? 0, saturation: c.saturation ?? 100,
       },
     }),
+    duotone: (d, a, b) => grade(d, { duotone: [paint(a), paint(b)] }),
     vignette: (d, o) => grade(d, { vignette: { amount: o.amount ?? 0, midpoint: o.midpoint ?? 50, roundness: o.roundness ?? 0, feather: o.feather ?? 50 } }),
   }
   for (const k of ['temperature', 'tint', 'saturation', 'exposure', 'contrast', 'highlights', 'shadows', 'whites', 'blacks', 'fadedFilm', 'vibrance', 'tintBalance'])
@@ -119,8 +166,9 @@
   for (const k of ['hueVsSat', 'hueVsHue', 'hueVsLuma', 'lumaVsSat', 'satVsSat']) tone[k] = (d, p) => grade(d, { [k]: sorted(p) })
   for (const k of ['shadowTint', 'highlightTint']) tone[k] = (d, o) => grade(d, { [k]: [o.hue ?? 0, o.amount ?? 0] })
   Object.assign(ops, tone)
-  const deep = ['speed', 'volume', 'mute', 'fade', 'scale', 'pos', 'opacity', 'rotate', 'shown', 'each', ...Object.keys(tone)]
-  const nums = new Set(['speed', 'volume', 'loop', 'sharpen', 'temperature', 'tint', 'saturation', 'exposure', 'contrast', 'highlights', 'shadows', 'whites', 'blacks', 'fadedFilm', 'vibrance', 'tintBalance'])
+  const deep = ['speed', 'volume', 'mute', 'fade', 'scale', 'pos', 'opacity', 'rotate', 'shown', 'each', 'blend', 'fps', 'matte', 'lens', 'blur', 'levels', 'noise', 'fractal', 'roughen', 'displace', ...Object.keys(tone)]
+  const loud = ['volume', 'mute']
+  const nums = new Set(['speed', 'volume', 'loop', 'fps', 'sharpen', 'temperature', 'tint', 'saturation', 'exposure', 'contrast', 'highlights', 'shadows', 'whites', 'blacks', 'fadedFilm', 'vibrance', 'tintBalance'])
   const called = Object.keys(ops).join(' ')
   const act = (d, k, n) => {
     const f = (...a) => {
@@ -128,7 +176,7 @@
       if (nums.has(k) && !Number.isFinite(a[0])) throw new Error(`line ${at}: ${k} takes a number`)
       if (n && vets[k]) vets[k](a[0], a[1])
       if (!d.kids && d.kind !== 'text' && (k === 'shown' || k === 'each')) throw new Error(`line ${at}: ${k} is for text and caption`)
-      const o = d.kids && deep.includes(k) ? { ...d, kids: d.kids.map(c => c[k](a[0], a[1])) } : ops[k](d, a[0], a[1])
+      const o = d.kids && (d.kind ? loud : deep).includes(k) ? { ...d, kids: d.kids.map(c => c[k](...a)) } : ops[k](d, ...a)
       o.line = n || d.line
       return clip(o)
     }
@@ -268,13 +316,16 @@
     }),
     rect: shape('rect', 2, 'rect(400, 120, { color: "#0008", radius: 12 })', ([w, h], o) => ({ w: Math.max(1, Math.round(w)), h: Math.max(1, Math.round(h)), radius: fin('radius', o.radius ?? 0) })),
     line: shape('line', 4, 'line(0.1, 0.5, 0.9, 0.5, { color: "#ffffff", width: 4 })', (a, o) => ({ ends: a.slice(0, 4), size: fin('width', o.width ?? 4) })),
+    path: leaf((p, o = {}) => {
+      must(Array.isArray(p) && p.length > 2 && p.every(q => Array.isArray(q) && q.length === 2) && typeof o === 'object', 'path is written path([[0.2, 0.2], [0.8, 0.3], [0.5, 0.8]], { color: "#ffffff", curve: true })')
+      return { kind: 'path', src: '', video: true, audio: false, color: paint(o.color ?? '#ffffff'), label: 'path', points: p.map(q => q.map(v => anim('path', v))), curve: !!o.curve }
+    }),
     cat: group(true, 'cat'),
     stack: pile,
   })
   const vid = d => d.kids ? d.kids.some(c => vid(c.$)) : d.video
   const own = d => d.dur ?? (d.out == null ? null : (d.out - d.in) / d.speed)
-  const len = d => {
-    if (!d.kids) return own(d) == null ? null : own(d) * d.loop
+  const once = d => {
     if (d.dur != null) return d.dur
     const k = d.kids.map(c => c.$), end = c => (c.at ?? 0) + c.shift + (len(c) ?? 0)
     const m = d.cat
@@ -282,18 +333,39 @@
       : Math.max(0, ...k.map(end))
     return m > 0 ? m : null
   }
-  const place = (d, t, fill, out) => {
+  const len = d => {
+    if (!d.kids) return own(d) == null ? null : own(d) * d.loop
+    const m = once(d)
+    return m && m * d.loop
+  }
+  const upto = (x, stop) => x > stop + 1e-9 ? stop : x
+  const cut = (d, t, n, out) => {
+    if (!d.matte) return
+    const [m, how] = d.matte, id = ++N, k = out.length
+    place(m, t + (m.at ?? 0) + m.shift, n, out, id)
+    out.slice(k).forEach(c => c.gain = 0)
+    return [id, how]
+  }
+  const place = (d, t, fill, out, into = 0, stop = Infinity) => {
     if (!d.kids) {
       const n = own(d) ?? fill
-      for (let i = 0; i < d.loop; i++) out.push({ ...d, start: t + i * n, end: t + (i + 1) * n })
+      for (let i = 0; i < d.loop && t + i * n < stop - 1e-9; i++) {
+        const s = t + i * n
+        out.push({ ...d, start: s, end: upto(t + (i + 1) * n, stop), into, matte: cut(d, s, upto(n, stop - s), out) })
+      }
       return
     }
-    const D = len(d) ?? fill
-    let p = 0
-    for (const c of d.kids.map(c => c.$)) {
-      const seq = d.cat && vid(c), o = (c.at ?? (seq ? p : 0)) + c.shift, n = len(c) ?? (d.cat ? 5 : D - o)
-      place(c, t + o, n, out)
-      if (seq) p += n
+    const D = once(d) ?? fill
+    for (let i = 0; i < d.loop && t + i * D < stop - 1e-9; i++) {
+      const s = t + i * D, end = d.dur == null ? stop : upto(s + D, stop)
+      if (d.kind) out.push({ ...d, start: s, end: upto(s + D, stop), into, matte: cut(d, s, upto(D, stop - s), out), id: ++N })
+      const inner = d.kind ? N : into
+      let p = 0
+      for (const c of d.kids.map(c => c.$)) {
+        const seq = d.cat && vid(c), o = (c.at ?? (seq ? p : 0)) + c.shift, n = len(c) ?? (d.cat ? 5 : D - o)
+        place(c, s + o, n, out, inner, end)
+        if (seq) p += n
+      }
     }
   }
   globalThis.__prep = src => {
@@ -319,7 +391,9 @@
     const head = m.split('\n')[0].replace(/ \((unknown at |script:|native\)).*/, '').replace(/^Error: /, '')
       .replace(/^RuntimeLimitError.*/, 'script took too long: a loop, or a function that calls itself, never ends')
     const row = /\bline \d/.test(head) ? 0 : /unterminated string/.test(head) ? loose() : /abrupt end/.test(head) ? tail() : (m.match(/\n.*script:(\d+):/) ?? m.match(/script:(\d+):/))?.[1]
-    return row ? `line ${row}: ${head}` : head
+    const odd = head === 'TypeError: not a callable function' ? [...(__src.split('\n')[row - 1] ?? '').matchAll(/\.\s*(\w+)\s*\(/g)].map(c => c[1]).filter(k => !(k in ops)) : []
+    const what = odd.length === 1 ? `${odd[0]} is not a clip method: check the spelling, or the script may need a newer Origami` : head
+    return row ? `line ${row}: ${what}` : head
   }
   const frames = d => Math.max(1, Math.ceil(d * S.fps - 1e-6))
   const sample = (c, v) => {
@@ -330,13 +404,16 @@
     if (kept === undefined) throw new Error(`line ${v.line}: a function of time must return a number`)
     return kept === false ? s[0] : [v.line, kept]
   }
+  const drawn = (c, v) => typeof v === 'function' ? sample(c, v) : Array.isArray(v) ? v.map(x => drawn(c, x)) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, drawn(c, x)])) : v
   const ir = (c, z) => ({
-    line: c.line, kind: c.kind, src: c.src, w: c.w ?? 0, h: c.h ?? 0, start: c.start, end: c.end, src_in: c.in, speed: c.speed, z,
+    line: c.line, kind: c.kind, src: c.src, w: c.kind === 'group' ? W[0] : c.w ?? 0, h: c.kind === 'group' ? W[1] : c.h ?? 0, id: c.id, into: c.into, start: c.start, end: c.end, src_in: c.in, speed: c.speed, z,
     scale: sample(c, c.scale), pos: (c.pos ?? [null, null]).map(v => v == null ? null : sample(c, v)), gain: c.gain, fade: c.fade.map(f => Math.min(f, c.end - c.start)), label: c.label, home: c.home, total: c.total ?? 0,
     video: c.video, audio: c.audio, size: c.size ?? 0, color: c.color ?? '', font: c.font ?? '', grade: c.grade,
     radius: c.radius ?? 0, ends: c.ends ?? [0, 0, 0, 0], background: c.background ?? '', align: c.align ?? '',
     opacity: sample(c, c.opacity), rotate: sample(c, c.rotate), shown: sample(c, c.shown),
     parts: c.parts?.map(p => Object.fromEntries(Object.entries(p).map(([k, v]) => [k, sample(c, v)]))),
+    blend: c.blend ?? '', step: c.step ?? 0, matte: c.matte, points: c.points?.map(q => q.map(v => sample(c, v))), curve: c.curve,
+    fx: c.fx?.map(f => drawn(c, f)),
   })
   const read = (d, k) => {
     const s = P.find(c => c.id === d.id) ?? { start: 0, end: own(d) ?? D }, n = s.end - s.start, seen = []

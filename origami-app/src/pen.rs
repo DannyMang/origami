@@ -33,6 +33,7 @@ impl Origami {
         self.pen = false;
         pulse::beat("type tool used");
         self.reveal(row);
+        self.flash(row, 1);
         self.spell(self.tl.clips.len() as u32, (row, from), WORD, true);
         self.sketch(cx);
     }

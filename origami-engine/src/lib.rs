@@ -1,5 +1,6 @@
 mod audio;
 mod export;
+mod fx;
 mod grade;
 mod lut;
 mod mic;
@@ -8,9 +9,9 @@ mod shape;
 mod text;
 
 pub use audio::Player;
-pub use export::{Codec, Opts, command, footprint, halt, place, render, seat, sized};
+pub use export::{Codec, Opts, command, footprint, guard, halt, place, render, seat, sized};
 pub use mic::{Mic, inputs};
-pub use preview::{Preview, learn, peaks, thumb};
+pub use preview::{Preview, peaks, thumb, warm};
 pub use text::tone;
 
 #[cfg(test)]
