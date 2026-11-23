@@ -8,7 +8,8 @@ use std::{
     time::SystemTime,
 };
 
-type Files = LruCache<(u64, u64, Option<SystemTime>), Option<Arc<Lut>>>;
+type Stamp = (u64, u64, Option<SystemTime>);
+type Files = LruCache<Stamp, Option<Arc<Lut>>>;
 
 static FILES: LazyLock<Mutex<Files>> = LazyLock::new(|| Mutex::new(LruCache::new(NonZeroUsize::new(32).unwrap())));
 
@@ -38,6 +39,11 @@ pub fn spread<T: Send>(out: &mut [T], unit: usize, f: impl Fn(usize, &mut [T]) +
             });
         }
     });
+}
+
+pub fn stamp(path: &str) -> Option<Stamp> {
+    let m = fs::metadata(path).ok()?;
+    Some((m.dev(), m.ino(), m.modified().ok()))
 }
 
 impl Lut {
@@ -72,8 +78,7 @@ impl Lut {
     }
 
     pub fn read(path: &str) -> Option<Arc<Self>> {
-        let m = fs::metadata(path).ok()?;
-        let key = (m.dev(), m.ino(), m.modified().ok());
+        let key = stamp(path)?;
         let load = || Self::parse(&origami_lang::load(path.as_ref()).ok()?).map(Arc::new);
         FILES.lock().unwrap().get_or_insert(key, load).clone()
     }

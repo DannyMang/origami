@@ -423,12 +423,18 @@ impl Origami {
         let media = tl
             .clips
             .iter()
-            .filter(|c| matches!(c.kind, Kind::Video | Kind::Sound | Kind::Image));
-        for c in media.filter(|c| seen.insert(&c.src)) {
-            let now = fs::metadata(&c.src).and_then(|m| Ok((m.len(), m.modified()?))).ok();
-            if self.stamps.insert(c.src.clone(), now).is_some_and(|was| was != now) {
+            .filter(|c| matches!(c.kind, Kind::Video | Kind::Sound | Kind::Image))
+            .map(|c| &c.src);
+        let looks = tl
+            .clips
+            .iter()
+            .flat_map(|c| &c.grade)
+            .flat_map(|g| g.input_lut.iter().chain(g.look.iter().map(|l| &l.0)));
+        for src in media.chain(looks).filter(|s| seen.insert(*s)) {
+            let now = fs::metadata(src).and_then(|m| Ok((m.len(), m.modified()?))).ok();
+            if self.stamps.insert(src.clone(), now).is_some_and(|was| was != now) {
                 for assets in [&mut self.assets, &mut self.aged] {
-                    assets.retain(|k, _| !k.starts_with(&c.src));
+                    assets.retain(|k, _| !k.starts_with(src));
                 }
                 self.rev += 1;
                 self.mtime = self.mtime.filter(|_| self.dirty);

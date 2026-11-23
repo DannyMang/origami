@@ -1,5 +1,5 @@
 use crate::{
-    lut::{Lut, Rgb, spread},
+    lut::{Lut, Rgb, spread, stamp},
     text,
 };
 use lru::LruCache;
@@ -165,8 +165,9 @@ fn pipe(g: &Grade) -> impl Fn(Rgb) -> Rgb + '_ {
 }
 
 pub fn lut(g: &Grade) -> Option<Arc<Lut>> {
+    let files = [g.input_lut.as_deref(), g.look.as_ref().map(|l| l.0.as_str())].map(|f| f.and_then(stamp));
     let key = format!(
-        "{:?}",
+        "{:?}{files:?}",
         Grade {
             vignette: None,
             ..g.clone()
@@ -280,7 +281,7 @@ mod tests {
 
     // A colour table saved as a .cube file should read back the same and is read once however its path
     // is spelled, a size so large that its cube overflows is refused, a look at strength 0 should change
-    // nothing, and at 100 should apply in full.
+    // nothing, at 100 should apply in full, and a file edited afterwards should grade with its new table.
     #[test]
     fn cube_round_trips_and_look_blends() {
         let lut = Lut::bake(5, |[r, g, b]| [b, r * 0.5, g * g]);
@@ -304,6 +305,9 @@ mod tests {
         let c = [0.25, 0.5, 0.75];
         let (full, [r, g, b]) = (pipe(&look(100.))(c), lut.sample(c));
         assert!((full[0] - r).abs() < 1e-6 && (full[1] - g).abs() < 1e-6 && (full[2] - b).abs() < 1e-6);
+        let was = super::lut(&look(100.)).unwrap();
+        std::fs::write(&file, Lut::bake(5, |c| c.map(|v| v * 0.5)).text()).unwrap();
+        assert_ne!(super::lut(&look(100.)).unwrap(), was);
     }
 
     // Applying a colour table to a whole picture should give exactly the bytes that sampling the
