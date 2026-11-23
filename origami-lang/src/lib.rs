@@ -22,7 +22,10 @@ use std::{
     fmt, fs,
     io::{self, Read, Seek, SeekFrom, Write},
     mem,
-    os::unix::{ffi::OsStrExt, fs::MetadataExt},
+    os::unix::{
+        ffi::OsStrExt,
+        fs::{MetadataExt, OpenOptionsExt},
+    },
     panic,
     path::{Path, PathBuf},
     pin::pin,
@@ -527,7 +530,7 @@ pub fn save(path: &Path, data: impl AsRef<[u8]>) -> io::Result<()> {
     static PARTS: AtomicU64 = AtomicU64::new(0);
     let old = fs::symlink_metadata(path).ok().filter(|m| m.is_file());
     if old.is_some() {
-        fs::OpenOptions::new().write(true).open(path)?;
+        fs::OpenOptions::new().write(true).custom_flags(NONBLOCK_NOFOLLOW).open(path)?;
     }
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     let part = path.with_file_name(format!(".{name}.{}-{}", process::id(), PARTS.fetch_add(1, Relaxed)));
@@ -536,7 +539,7 @@ pub fn save(path: &Path, data: impl AsRef<[u8]>) -> io::Result<()> {
         if let Some(m) = &old {
             f.set_permissions(m.permissions())?;
             let c = |p: &Path| CString::new(p.as_os_str().as_bytes()).unwrap_or_default();
-            unsafe { copyfile(c(path).as_ptr(), c(&part).as_ptr(), ptr::null_mut(), ACL_XATTR) };
+            unsafe { copyfile(c(path).as_ptr(), c(&part).as_ptr(), ptr::null_mut(), ACL_XATTR_NOFOLLOW) };
         }
         f.write_all(data.as_ref())?;
         fs::rename(&part, path)
@@ -777,7 +780,8 @@ static SERVING: AtomicBool = AtomicBool::new(false);
 type Helper = (Child, ChildStdin, mpsc::Receiver<Vec<u8>>);
 static HELPER: Mutex<Option<Helper>> = Mutex::new(None);
 
-const ACL_XATTR: u32 = 1 | 4;
+const ACL_XATTR_NOFOLLOW: u32 = 1 | 4 | 1 << 18;
+const NONBLOCK_NOFOLLOW: i32 = 0x4 | 0x100;
 
 unsafe extern "C" {
     fn proc_pid_rusage(pid: i32, flavor: i32, info: *mut [u64; 12]) -> i32;
