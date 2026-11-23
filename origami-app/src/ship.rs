@@ -238,6 +238,32 @@ impl Origami {
         cx: &mut Context<Self>,
         then: impl FnOnce(&mut Self, Option<PathBuf>, &mut Context<Self>) + 'static,
     ) {
+        if self.err.is_empty() || self.tl.clips.is_empty() {
+            return self.spare(path, window, cx, then);
+        }
+        let ask = format!("{}\n\nExport the last version that worked?", self.err);
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            "The script has an error",
+            Some(&ask),
+            &["Export", "Cancel"],
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            if matches!(answer.await, Ok(0)) {
+                let _ = this.update_in(cx, |this, window, cx| this.spare(path, window, cx, then));
+            }
+        })
+        .detach();
+    }
+
+    fn spare(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        then: impl FnOnce(&mut Self, Option<PathBuf>, &mut Context<Self>) + 'static,
+    ) {
         if !path.exists() {
             return then(self, None, cx);
         }

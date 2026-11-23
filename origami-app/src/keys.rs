@@ -414,7 +414,8 @@ mod tests {
 
     // `:export` onto a file that already exists, here footage the script does not read, asks the Export
     // dialog's question first, Cancel leaving the file alone and Keep Both exporting beside it,
-    // `:export --dry-run` asks the same before replacing an export.sh, and a new name exports at once.
+    // `:export --dry-run` asks the same before replacing an export.sh, a new name exports at once, and
+    // while the script has an error `:export` first warns that it exports the last version that worked.
     #[gpui::test]
     fn export_command_asks_before_replacing(cx: &mut gpui::TestAppContext) {
         let _one = crate::ship::tests::ONE.lock();
@@ -453,6 +454,11 @@ mod tests {
         assert!(fs::read_to_string(dir.join("export.sh")).unwrap().starts_with("ffmpeg "));
         assert_eq!(run(cx, "export new.mp4", "Cancel").0, None);
         assert!(dir.join("new.mp4").exists() && fs::read(dir.join("take.mp4")).unwrap() == b"footage");
+        view.update(cx, |o, _| o.err = "line 2: boom".into());
+        let broken = Some("The script has an error".to_string());
+        assert_eq!(run(cx, "export late.mp4", "Cancel"), (broken.clone(), None));
+        let late = format!("exported {}", dir.join("late.mp4").display());
+        assert_eq!(run(cx, "export late.mp4", "Export"), (broken, Some(late)));
     }
 
     // Clicking the timecode should copy a time that, pasted into .at(...), starts on the frame shown,
