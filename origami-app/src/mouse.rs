@@ -679,6 +679,32 @@ mod tests {
         assert_eq!(view.update(cx, |o, _| o.marks.len()), 0);
     }
 
+    // Pointing at a word in the code is what brings up its tip; moving on to the empty space after the
+    // line, below the last line or up to the pane's header lets go of it, so no tip stays behind.
+    #[gpui::test]
+    fn hover_ends_off_the_text(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = window(cx, "hover", "stack(\n  color(\"#203040\").for(4),\n)");
+        cx.run_until_parked();
+        let (x, y, glyph, row) = view.update_in(cx, |o, window, _| {
+            let w = f32::from(window.viewport_size().width);
+            (w - o.side + o.inset(), o.head(), o.glyph(), o.row())
+        });
+        let mut over = |col: f32, line: f32| {
+            let at = gpui::point(px(x + col * glyph), px(y + (line + 0.5) * row));
+            cx.simulate_mouse_move(at, None, Default::default());
+            view.update(cx, |o, _| o.hover)
+        };
+        let seen = [
+            over(2.2, 0.),
+            over(30., 0.),
+            over(4.2, 1.),
+            over(4.2, 6.),
+            over(2.2, 0.),
+            over(2.2, -1.),
+        ];
+        assert_eq!(seen, [Some((0, 2)), None, Some((1, 4)), None, Some((0, 2)), None]);
+    }
+
     // Clicking in the code while the search bar is open should send typing to the code, and Find should send it back to the bar.
     #[gpui::test]
     fn clicks_leave_the_search_bar(cx: &mut gpui::TestAppContext) {

@@ -6,6 +6,7 @@ What changed in each version of Origami. The launch screen shows the version you
 
 ### Nov 23
 
+- A tip shown for a word in the code goes away when the pointer moves off the text, onto the empty space after a line, below the last line or up to the pane's header. Before, it stayed up and covered the next line.
 - Marks set with `m` and a letter are cleared when another script is opened. Before, a mark from one project was still drawn on the next project's ruler.
 - The New project dialog says "Type a name for the project" until the project has a name. Before, it said it would create `edit.js` straight in the chosen folder, which it never does.
 - Asking to quit again while "An export is running. Quit and stop it?" is still open no longer puts a second copy of the question behind the first.

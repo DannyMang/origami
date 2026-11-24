@@ -764,7 +764,7 @@ impl Origami {
                         .bg(rgb(BLUE))
                 }))
                 .on_mouse_move(cx.listener(move |this, e: &MouseMoveEvent, window, cx| {
-                    let at = Some(this.spot(e.position, window)).filter(|_| this.mouse);
+                    let at = this.over(e.position, window).filter(|_| this.mouse);
                     if this.hover != at {
                         (this.hover, this.since, this.tipped) = (at, Instant::now(), false);
                         cx.notify();
@@ -1280,8 +1280,8 @@ impl Render for Origami {
                     this.stir = Instant::now();
                     cx.notify();
                 }
-                let out = f32::from(e.position.x) < f32::from(window.viewport_size().width) - this.side;
-                if out && this.hover.take().is_some() {
+                if this.hover.is_some() && this.over(e.position, window).is_none() {
+                    this.hover = None;
                     cx.notify();
                 }
                 if this.eyeing {
