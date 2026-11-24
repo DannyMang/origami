@@ -5,14 +5,15 @@
   const M = new Map(), reads = ['x', 'y', 'scale', 'rotate', 'opacity'], even = n => Math.round(n / 2) * 2
   const digits = /^\d+$/, share = /^[\d.]+%$/, written = 'keys are written keys([0, 0], ["50%", 1], [-0.5, 0])', named = /(?:const|let|var)\s+(\w+)\s*=/, made = 'video sound image text captions caption color', bare = 'keys rect line path add mul cat stack settings delay bezier'
   const DAY = 86400, run = Symbol(), calm = Symbol()
-  const must = (ok, say) => { if (!ok) throw new Error(at ? `line ${at}: ${say}` : say) }
+  const lined = (say, n = at) => n ? `line ${n}: ${say}` : say
+  const must = (ok, say) => { if (!ok) throw new Error(lined(say)) }
   const fit = (k, v, lo = -Infinity, hi = Infinity) => {
     const x = typeof v === 'number' ? Math.min(Math.max(v, lo), hi) : v
-    if (x !== v) note ??= `line ${at}: ${k} ${v} is ${x > v ? 'raised' : 'lowered'} to ${x}, the ${x > v ? 'least' : 'most'} it takes`
+    if (x !== v) note ??= lined(`${k} ${v} is ${x > v ? 'raised' : 'lowered'} to ${x}, the ${x > v ? 'least' : 'most'} it takes`)
     return x
   }
   const fin = (k, v, lo, hi) => {
-    if (!Number.isFinite(v)) throw new Error(`line ${at}: ${k} takes a number`)
+    if (!Number.isFinite(v)) throw new Error(lined(`${k} takes a number`))
     return fit(k, v, lo, hi)
   }
   const opts = (k, o, names) => names.forEach(n => fin(`${k} ${n}`, o[n] ?? 0))
@@ -49,12 +50,12 @@
   const anim = (k, v) => {
     if (v?.of) {
       const { of, k: p } = v, name = `${of.label ?? 'a group'}.${p === 'x' || p === 'y' ? 'pos.' : ''}${p}`
-      if (of.kids || !reads.includes(p) || k.startsWith('each')) throw new Error(`line ${at}: ${k} cannot follow ${name} (pos.x, pos.y, scale, rotate and opacity of one clip can be followed, outside each)`)
+      if (of.kids || !reads.includes(p) || k.startsWith('each')) throw new Error(lined(`${k} cannot follow ${name} (pos.x, pos.y, scale, rotate and opacity of one clip can be followed, outside each)`))
       let f
       const led = T => (f ??= read(of, p))(T)
       v = Object.assign((t, d, T) => led(T), { [run]: (n, d, from) => Array.from({ length: n }, (_, i) => led(from + i / S.fps)) })
     }
-    if (typeof v !== 'function' && !(typeof v === 'number' && v - v === 0)) throw new Error(`line ${at}: ${k} takes a number or a function of time`)
+    if (typeof v !== 'function' && !(typeof v === 'number' && v - v === 0)) throw new Error(lined(`${k} takes a number or a function of time`))
     return typeof v === 'number' ? v : Object.assign((t, d, T) => v(t, d, T), { line: at, [run]: v[run], [calm]: v[calm] })
   }
   const num = (v, t, d, T) => typeof v === 'number' ? v : v(t, d, T)
@@ -93,7 +94,7 @@
     rotate: (d, x) => ({ ...d, rotate: anim('rotate', x) }),
     shown: (d, x) => ({ ...d, shown: anim('shown', x) }),
     each: (d, by, f) => {
-      if (!split[by] || typeof f !== 'function') throw new Error(`line ${at}: each is written each("char", i => ({ opacity: 1 })) with "char", "word" or "line"`)
+      if (!split[by] || typeof f !== 'function') throw new Error(lined(`each is written each("char", i => ({ opacity: 1 })) with "char", "word" or "line"`))
       const m = [...d.src.matchAll(split[by])], n = s => [...s].length
       return {
         ...d,
@@ -118,7 +119,7 @@
     },
     lens: (d, fov) => fx(d, { lens: fit('lens', anim('lens', fov), -170, 170) }),
     blur: (d, r) => {
-      if (r > 16384) [note, r] = [note ?? `line ${at}: blur ${r} is lowered to 16384, the widest a picture can be`, 16384]
+      if (r > 16384) [note, r] = [note ?? lined(`blur ${r} is lowered to 16384, the widest a picture can be`), 16384]
       return fx(d, { blur: anim('blur', r) })
     },
     levels: (d, black, white, channel = 'rgb') => {
@@ -149,7 +150,7 @@
   const grade = (d, g) => ({ ...d, grade: { ...d.grade, ...g } })
   const sorted = p => [...p].sort((a, b) => a[0] - b[0])
   const part = (k, names, d, n, v) => {
-    if (!names.includes(n)) throw new Error(`line ${at}: ${k}("${n}") must be one of ${names.join(', ')}`)
+    if (!names.includes(n)) throw new Error(lined(`${k}("${n}") must be one of ${names.join(', ')}`))
     return grade(d, { [k]: { ...d.grade?.[k], [n]: v } })
   }
   const tone = {
@@ -176,15 +177,18 @@
   const loud = ['volume', 'mute']
   const nums = new Set(['speed', 'volume', 'loop', 'fps', 'sharpen', 'temperature', 'tint', 'saturation', 'exposure', 'contrast', 'highlights', 'shadows', 'whites', 'blacks', 'fadedFilm', 'vibrance', 'tintBalance'])
   const called = Object.keys(ops).join(' ')
+  const work = (d, k, n, a) => {
+    if (nums.has(k) && !Number.isFinite(a[0])) throw new Error(lined(`${k} takes a number`))
+    if (n && vets[k]) vets[k](a[0], a[1])
+    if (!d.kids && d.kind !== 'text' && (k === 'shown' || k === 'each')) throw new Error(lined(`${k} is for text and caption`))
+    const o = d.kids && (d.kind ? loud : deep).includes(k) ? { ...d, kids: d.kids.map(c => work(c.$, k, 0, a)) } : ops[k](d, ...a)
+    o.line = n || d.line
+    return clip(o)
+  }
   const act = (d, k, n) => {
     const f = (...a) => {
-      at = n || at
-      if (nums.has(k) && !Number.isFinite(a[0])) throw new Error(`line ${at}: ${k} takes a number`)
-      if (n && vets[k]) vets[k](a[0], a[1])
-      if (!d.kids && d.kind !== 'text' && (k === 'shown' || k === 'each')) throw new Error(`line ${at}: ${k} is for text and caption`)
-      const o = d.kids && (d.kind ? loud : deep).includes(k) ? { ...d, kids: d.kids.map(c => c[k](...a)) } : ops[k](d, ...a)
-      o.line = n || d.line
-      return clip(o)
+      at = n
+      return work(d, k, n, a)
     }
     f.of = d
     f.k = k
@@ -202,8 +206,8 @@
     return { kind, src: m.path, w: m.w, h: m.h, label: stem(p), ...pick(m) }
   })
   const words = (size, pos) => leaf((s, o = {}) => {
-    if (typeof o !== 'object') throw new Error(`line ${at}: options are written { size: 72, color: "#ffffff" }`)
-    if (!['left', 'center', 'right'].includes(o.align ?? 'center')) throw new Error(`line ${at}: align is "left", "center" or "right"`)
+    if (typeof o !== 'object') throw new Error(lined(`options are written { size: 72, color: "#ffffff" }`))
+    if (!['left', 'center', 'right'].includes(o.align ?? 'center')) throw new Error(lined(`align is "left", "center" or "right"`))
     must(Number.isFinite(o.size ?? size) && (o.size ?? size) >= 0, 'size takes a number, 0 or more')
     return {
       kind: 'text', src: String(s), video: true, audio: false, size: o.size ?? size, color: paint(o.color ?? '#ffffff'), font: o.font == null ? '' : __font(o.font, 'font', at), pos, label: String(s),
@@ -212,11 +216,11 @@
   })
   const shape = (kind, n, how, make) => leaf((...a) => {
     const o = a[n] ?? {}
-    if (!(a.length >= n && a.slice(0, n).every(Number.isFinite)) || typeof o !== 'object') throw new Error(`line ${at}: ${kind} is written ${how}`)
+    if (!(a.length >= n && a.slice(0, n).every(Number.isFinite)) || typeof o !== 'object') throw new Error(lined(`${kind} is written ${how}`))
     return { kind, src: '', video: true, audio: false, color: paint(o.color ?? '#ffffff'), label: kind, ...make(a, o) }
   })
   const group = (cat, k) => line(n => (...kids) => {
-    at = n || at
+    at = n
     kids.flat().forEach((c, i) => must(c?.$, `${k} takes clips, but item ${i + 1} is not a clip`))
     return clip({ ...base, cat, kids: kids.flat() })
   })
@@ -239,7 +243,7 @@
   Object.values(eases).forEach(tame)
   const wire = (k, f) => line(n => (v, x) => {
     at = n
-    if (!Number.isFinite(x)) throw new Error(`line ${at}: ${k} is written ${k}(title.pos.y, 0.5)`)
+    if (!Number.isFinite(x)) throw new Error(lined(`${k} is written ${k}(title.pos.y, 0.5)`))
     const g = anim(k, v)
     const all = g[run] && ((n, d, from) => g[run](n, d, from).map(y => f(y, x)))
     return typeof g === 'number' ? f(g, x) : Object.assign((t, d, T) => f(g(t, d, T), x), { [run]: all, [calm]: g[calm] })
@@ -253,13 +257,13 @@
       let odd, D, T
       for (let i = __plain(k) ? k.length : 0; i < k.length; i++) {
         const p = k[i]
-        if (!Array.isArray(p) || !Number.isFinite(p[0]) && !share.test(p[0]) || !Number.isFinite(p[1])) throw new Error(`line ${at}: ${written}`)
+        if (!Array.isArray(p) || !Number.isFinite(p[0]) && !share.test(p[0]) || !Number.isFinite(p[1])) throw new Error(lined(`${written}`))
         const f = p[2] === undefined ? 'linear' : p[2]
         if (typeof f !== 'function' && !eases[f]) odd ??= [f]
         e.push(eases[f] ?? f)
       }
       must(k.length, written)
-      if (odd) throw new Error(`line ${at}: "${odd[0]}" is not an ease (${Object.keys(eases).join(', ')}, bezier)`)
+      if (odd) throw new Error(lined(`"${odd[0]}" is not an ease (${Object.keys(eases).join(', ')}, bezier)`))
       const linear = e.every((f, i) => !i || f === eases.linear)
       const lay = d => {
         if (d !== D) [D, T] = [d, k.map(([s]) => typeof s === 'string' ? parseFloat(s) / 100 * d : s < 0 ? d + s : s)]
@@ -282,7 +286,7 @@
       return Object.assign(one, { [run]: all, [calm]: e.every(f => f[calm]) })
     }),
     bezier: line(n => (x1, y1, x2, y2) => {
-      at = n || at
+      at = n
       must([x1, y1, x2, y2].every(Number.isFinite), 'bezier is written bezier(0.3, 0, 0.6, 1)')
       return tame(x => {
         const B = (p, q, s) => 3 * p * s * (1 - s) ** 2 + 3 * q * s * s * (1 - s) + s ** 3
@@ -292,7 +296,7 @@
       })
     }),
     delay: line(n => (v, s) => {
-      at = n || at
+      at = n
       fin('delay', s)
       return (t, d, T) => v(t - s, d, T - s)
     }),
@@ -300,7 +304,7 @@
       at = n
       must(o.fps === undefined || Number.isInteger(o.fps) && o.fps > 0 && o.fps <= 240, 'fps takes a whole number from 1 to 240')
       must(o.size == null || Array.isArray(o.size) && o.size.length === 2 && o.size.every(v => v >= 1 && v <= 16384), 'size is written [1920, 1080], two numbers from 1 to 16384')
-      if (o.size?.some(v => v % 2)) note ??= `${at ? `line ${at}: ` : ''}size [${o.size.join(', ')}] is rounded to [${o.size.map(even).join(', ')}], video files need even numbers`
+      if (o.size?.some(v => v % 2)) note ??= lined(`size [${o.size.join(', ')}] is rounded to [${o.size.map(even).join(', ')}], video files need even numbers`)
       must([undefined, 'auto', 'full', 'half', 'quarter'].includes(o.preview), 'preview is "auto", "full", "half" or "quarter"')
       must([undefined, true, false].includes(o.proxy), 'proxy is true or false')
       for (const k in S) if (o[k] !== undefined) S[k] = o[k]
@@ -415,7 +419,7 @@
     const d = c.end - c.start, n = frames(d), s = v[run] ? v[run](n, d, c.start) : []
     for (let i = s.length; i < n; i++) s.push(v(i / S.fps, d, c.start + i / S.fps))
     const kept = __keep(s)
-    if (kept === undefined) throw new Error(`line ${v.line}: a function of time must return a number`)
+    if (kept === undefined) throw new Error(lined('a function of time must return a number', v.line))
     return kept === false ? s[0] : [v.line, kept]
   }
   const drawn = (c, v) => typeof v === 'function' ? sample(c, v) : Array.isArray(v) ? v.map(x => drawn(c, x)) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, drawn(c, x)])) : v

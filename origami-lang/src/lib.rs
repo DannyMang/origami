@@ -1193,7 +1193,8 @@ fn finish(out: &str, kept: Vec<Vec<f32>>, files: Vec<(u32, PathBuf)>, measure: M
         {
             s.iter_mut().for_each(|v| *v = v.clamp(-170., 170.));
             if tl.note.is_empty() {
-                tl.note = format!("line {n}: lens goes past 170 either way and is held at 170, the most it takes");
+                let said = "lens goes past 170 either way and is held at 170, the most it takes";
+                tl.note = if *n > 0 { format!("line {n}: {said}") } else { said.into() };
             }
         }
     }
@@ -2271,6 +2272,31 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         let t = tl("rect(64, 36).matte(rect(20, 20).matte(rect(9, 9)))");
         let mid = t.clips.iter().find(|c| c.w == 20).unwrap();
         assert_eq!(t.clips.iter().find(|c| c.w == 64).unwrap().matte.as_ref().unwrap().0, mid.into);
+    }
+
+    // A function called through another name, or on a whole group, still names its own line when
+    // something is wrong, never line 0 or the line of the call before it.
+    #[test]
+    fn renamed_functions_name_their_own_line() {
+        let dir = scratch("renamed");
+        for (src, says) in [
+            ("const r = rect\nr(1, 1, { radius: NaN })", "line 2: radius takes a number"),
+            ("text('a')\nconst b = bezier\nb(NaN, 0, 1, 1)", "line 3: bezier is written"),
+            ("text('a')\nconst s = stack\ns(1)", "line 3: stack takes clips"),
+            ("text('a')\nconst d = delay\nd(t => t, NaN)", "line 3: delay takes a number"),
+            ("const a = text('a')\nconst f = a.fade\nf(-1)", "line 3: fade takes seconds"),
+            ("const a = text('a')\nconst s = a.speed\ns('x')", "line 3: speed takes a number"),
+            ("stack(text('a'),\n  text('b'))\n  .fade(-1)", "line 3: fade takes seconds"),
+            (
+                "const a = text('a')\nconst o = a.opacity\no(t => 'x')",
+                "a function of time must return a number",
+            ),
+        ] {
+            let e = fails(&dir, src);
+            assert!(e.starts_with(says), "{src}: {e}");
+        }
+        let t = run(&dir, "const a = text('a').for(1)\nconst l = a.lens\nl(t => 500 + t)").unwrap();
+        assert_eq!(t.note, "lens goes past 170 either way and is held at 170, the most it takes");
     }
 
     // A missing file the script caught and moved past is not blamed for a later mistake, while one it
