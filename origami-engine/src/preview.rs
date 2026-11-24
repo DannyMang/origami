@@ -216,12 +216,13 @@ fn still(path: &str, w: usize, h: usize) -> Option<Vec<u8>> {
 
 pub fn thumb(path: &str, t: f64, w: usize, h: usize) -> Option<Vec<u8>> {
     let from = |path: &str| {
-        let ((lead, down, ..), seek) = (probe(path), ["-skip_frame", "nokey", "-ss", &t.to_string()]);
-        let fast = if t > 0. { &seek[..] } else { &[] };
-        raw(
-            &[lead, fast, literal(path), &["-i", path, "-vf", &format!("{down}scale={w}:{h}")]].concat(),
-            w * h * 4,
-        )
+        let ((lead, down, ..), at) = (probe(path), t.to_string());
+        let vf = format!("{down}scale={w}:{h}");
+        let grab = |seek: &[&str]| raw(&[lead, seek, literal(path), &["-i", path, "-vf", &vf]].concat(), w * h * 4);
+        match t > 0. {
+            true => grab(&["-skip_frame", "nokey", "-ss", &at]).or_else(|| grab(&["-ss", &at])),
+            false => grab(&[]),
+        }
     };
     let lrf = Path::new(path).with_extension("LRF");
     let side = Some(lrf.to_string_lossy()).filter(|l| l != path && lrf.is_file());
@@ -1377,6 +1378,18 @@ mod tests {
             ],
             [(true, false), (false, true), (true, false), (false, true)]
         );
+    }
+
+    // A film with a single keyframe, at its start, here one that brightens each second, shows a thumbnail
+    // at every time, each with the picture of its own moment.
+    #[test]
+    fn thumbnails_reach_past_the_last_keyframe() {
+        let file = scratch("sparse").join("a.mp4");
+        let fade = "color=black:s=64x36:r=30:d=4,geq=lum='64*floor(T)':cb=128:cr=128";
+        film(&file, fade, &["-g", "9999", "-pix_fmt", "yuv420p"]);
+        let grey = |t: f64| thumb(&file.to_string_lossy(), t, 16, 9).map(|px| px[(4 * 16 + 8) * 4]);
+        let seen = [0.5, 1.5, 2.5, 3.5].map(grey);
+        assert!(seen[0].is_some() && seen.windows(2).all(|w| w[0] < w[1]), "{seen:?}");
     }
 
     // A JPEG still, which ffmpeg gives no picture for when told to seek before reading it, draws in
