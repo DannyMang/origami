@@ -26,7 +26,8 @@ The later crates depend on the earlier ones by relative path.
 
 | File | Contents |
 | --- | --- |
-| `lib.rs` | `Clip`, `Timeline`, `eval`, media probing and `origami.lock` |
+| `lib.rs` | `eval`, media probing and `origami.lock` |
+| `ir.rs` | `Clip`, `Timeline` and the other types a script turns into |
 | `prelude.js` | The script API: `video`, `sound`, `text`, `cat`, `stack` and every clip method |
 | `disk.rs` | `save` and `load`: whole-file saves that never cut a script short |
 | `grade.rs` | Colour grade types carried on a clip |
