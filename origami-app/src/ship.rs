@@ -1,6 +1,7 @@
 use crate::{
     Origami, crash,
     keys::stamp,
+    menu::place,
     pulse,
     view::{BAR, BG, BLUE, BORDER, DIM, INK, MUTED, PANEL, TEXT},
 };
@@ -35,10 +36,6 @@ fn bits(o: &Opts) -> f64 {
 
 fn suffix(path: &Path, codec: Codec) -> PathBuf {
     path.with_extension(if codec == Codec::ProRes { "mov" } else { "mp4" })
-}
-
-fn named(path: &Path) -> String {
-    path.file_name().unwrap_or_default().to_string_lossy().to_string()
 }
 
 fn free(path: &Path) -> PathBuf {
@@ -268,10 +265,10 @@ impl Origami {
             return then(self, None, cx);
         }
         let both = free(&path);
-        let ask = format!("Replace it, or keep it and save this export as \u{201c}{}\u{201d}?", named(&both));
+        let ask = format!("Replace it, or keep it and save this export as \u{201c}{}\u{201d}?", place(&both).0);
         let answer = window.prompt(
             PromptLevel::Warning,
-            &format!("\u{201c}{}\u{201d} already exists", named(&path)),
+            &format!("\u{201c}{}\u{201d} already exists", place(&path).0),
             Some(&ask),
             &["Replace", "Keep Both", "Cancel"],
             cx,
@@ -324,7 +321,7 @@ impl Origami {
     fn locate(&mut self, cx: &mut Context<Self>) {
         let Some(s) = &self.ship else { return };
         let dir = s.path.parent().unwrap_or(Path::new(".")).to_path_buf();
-        let name = named(&s.path);
+        let name = place(&s.path).0;
         let path = cx.prompt_for_new_path(&dir, Some(&name));
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(path))) = path.await {
@@ -356,7 +353,7 @@ impl Origami {
             .and_then(|p| p.file_name())
             .unwrap_or_default()
             .to_string_lossy();
-        let file = named(&s.path);
+        let file = place(&s.path).0;
         let head = format!(
             "{name} \u{b7} {} \u{b7} timeline {}\u{d7}{} \u{b7} {} fps",
             stamp(tl.duration),

@@ -1,7 +1,8 @@
 use crate::{
     Asset, Origami, bitmap,
     keys::stamp,
-    view::{BG, BLUE, BORDER, DIM, GREEN, PANEL, TEXT},
+    knob::groove,
+    view::{BG, BLUE, BORDER, DIM, GREEN, TEXT, card},
 };
 use gpui::{
     App, Bounds, Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent, ObjectFit, PathBuilder, Pixels, RenderImage, StyledImage,
@@ -41,13 +42,7 @@ impl Peek {
 
 impl Origami {
     pub fn glance(&mut self, row: usize, cx: &mut Context<Self>) {
-        let linked = |c: &&Clip| {
-            let last = (c.line as usize).saturating_sub(1);
-            let chain = self.lines.get(row + 1..=last);
-            matches!(c.kind, Kind::Video | Kind::Sound)
-                && last >= row
-                && chain.is_some_and(|l| l.iter().all(|l| l.trim_start().starts_with('.')))
-        };
+        let linked = |c: &&Clip| matches!(c.kind, Kind::Video | Kind::Sound) && self.owns(c, row);
         if let Some(c) = self.tl.clips.iter().find(linked) {
             let clip = Clip {
                 start: 0.,
@@ -152,12 +147,8 @@ impl Origami {
 
     fn perch(&self, window: &Window) -> Option<(f32, f32)> {
         let p = self.peek.as_ref()?;
-        let (hidden, top) = (self.hidden(), self.top as usize);
-        if p.row < top || hidden.get(p.row) != Some(&false) {
-            return None;
-        }
+        let y = self.line_y(p.row)?;
         let (w, h) = (f32::from(window.viewport_size().width), f32::from(window.viewport_size().height));
-        let y = self.head() + (top..p.row).filter(|i| !hidden[*i]).count() as f32 * self.row();
         let tall = if p.tl.clips.iter().any(|c| c.video) { 230. } else { 130. };
         Some((
             (w - self.side + self.gutter()).min(w - WIDE - 26.),
@@ -224,14 +215,7 @@ impl Origami {
             .text_size(px(10.))
             .cursor_pointer()
             .child(if p.run.is_some() { "||" } else { "\u{25b6}" })
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    this.eye();
-                    cx.stop_propagation();
-                    cx.notify();
-                }),
-            );
+            .on_mouse_down(MouseButton::Left, Self::touch(cx, |this, _, _, _| this.eye()));
         let bar = div()
             .h(px(14.))
             .flex()
@@ -239,37 +223,18 @@ impl Origami {
             .cursor_pointer()
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, e: &MouseDownEvent, window, cx| {
+                Self::touch(cx, |this, e: &MouseDownEvent, window, _| {
                     this.eyeing = true;
                     this.scan(e.position.x, window);
-                    cx.stop_propagation();
-                    cx.notify();
                 }),
             )
-            .child(
-                div()
-                    .relative()
-                    .w_full()
-                    .h(px(4.))
-                    .rounded(px(2.))
-                    .bg(rgb(BORDER))
-                    .child(div().h_full().w(px(done * WIDE)).rounded(px(2.)).bg(rgb(BLUE)))
-                    .child(
-                        div()
-                            .absolute()
-                            .top(px(-4.))
-                            .left(px(done * WIDE - 6.))
-                            .size(px(12.))
-                            .rounded_full()
-                            .bg(rgb(BLUE)),
-                    ),
-            );
+            .child(groove(done * WIDE, rgb(BLUE)).w_full());
         let about = match c.video {
             true => format!("{}\u{d7}{}{}", c.w, c.h, if c.audio { " \u{b7} sound" } else { "" }),
             false => c.src.rsplit('/').next().unwrap_or_default().to_string(),
         };
         Some(
-            div()
+            card()
                 .absolute()
                 .left(px(left))
                 .top(px(top))
@@ -278,10 +243,6 @@ impl Origami {
                 .flex()
                 .flex_col()
                 .gap_2()
-                .bg(rgb(PANEL))
-                .border_1()
-                .border_color(rgb(BORDER))
-                .rounded(px(6.))
                 .text_size(px(12.))
                 .text_color(rgb(TEXT))
                 .occlude()

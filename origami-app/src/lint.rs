@@ -2,13 +2,12 @@ use crate::{
     Origami,
     complete::{DEFS, kind},
     knob::calls,
-    view::{BORDER, DIM, PANEL},
+    view::{BORDER, DIM, PANEL, RED},
 };
 use gpui::{Div, Window, div, prelude::*, px, rgb};
 use origami_lang::Kind;
 use std::{sync::Arc, time::Duration};
 
-const RED: u32 = 0xd07277;
 const MOST: usize = 500;
 
 #[derive(Clone)]
@@ -178,12 +177,7 @@ impl Origami {
             Some(i) => (i.span.0, i.text.clone(), true),
             None => self.about(row, col).filter(|_| self.tipped).map(|a| (a.0, a.1, false))?,
         };
-        let (hidden, top) = (&scans.1, self.top as usize);
-        if row < top || hidden.get(row) != Some(&false) {
-            return None;
-        }
-        let w = f32::from(window.viewport_size().width);
-        let y = self.head() + (top..row).filter(|i| !hidden[*i]).count() as f32 * self.row();
+        let (y, w) = (self.line_y(row)?, f32::from(window.viewport_size().width));
         Some((
             div()
                 .absolute()

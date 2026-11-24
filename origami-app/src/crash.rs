@@ -139,9 +139,7 @@ mod tests {
     // shipped beside the script is never read.
     #[gpui::test]
     fn crash_keeps_unsaved(cx: &mut TestAppContext) {
-        let dir = env::temp_dir().join("origami-crash-test");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = crate::tests::scratch("crash");
         let (script, log) = (dir.join("edit.js"), dir.join("Logs/origami.log"));
         fs::write(&script, "text(\"a\")\n").unwrap();
         fs::write(dir.join("other"), "precious").unwrap();
@@ -185,9 +183,7 @@ mod tests {
     // leaves it for the next open, and the copy is removed once nothing is left unsaved.
     #[test]
     fn minds_unsaved() {
-        let dir = env::temp_dir().join("origami-mind-test");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = crate::tests::scratch("mind");
         let script = dir.join("edit.js");
         fs::write(&script, "a\n").unwrap();
         let _ = fs::remove_file(spare(&script));
@@ -205,9 +201,7 @@ mod tests {
     // second, and the version it could not write is written by the next drain.
     #[gpui::test]
     fn quits_past_a_held_history(cx: &mut TestAppContext) {
-        let dir = env::temp_dir().join("origami-quit-test");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = crate::tests::scratch("quit");
         let script = dir.join("edit.js");
         fs::write(&script, "a\n").unwrap();
         let history = kept(&script, "history");

@@ -26,8 +26,10 @@ The later crates depend on the earlier ones by relative path.
 
 | File | Contents |
 | --- | --- |
-| `lib.rs` | `Clip`, `Timeline`, `eval`, media probing and `origami.lock` |
+| `lib.rs` | `eval`, media probing and `origami.lock` |
+| `ir.rs` | `Clip`, `Timeline` and the other types a script turns into |
 | `prelude.js` | The script API: `video`, `sound`, `text`, `cat`, `stack` and every clip method |
+| `disk.rs` | `save` and `load`: whole-file saves that never cut a script short |
 | `grade.rs` | Colour grade types carried on a clip |
 | `error.rs` | Errors a script author can fix, each with the script line |
 | `tool.rs` | Finds `ffmpeg` and `ffprobe`: next to the program, then `PATH`, then the usual Homebrew and MacPorts folders |
@@ -38,7 +40,10 @@ The later crates depend on the earlier ones by relative path.
 | --- | --- |
 | `preview.rs` | Frame compositing, ffmpeg decoders, frame cache, thumbnails, waveform peaks |
 | `audio.rs` | `Player`: ffmpeg audio mix played through cpal |
-| `export.rs` | ffmpeg filter graph for export and for preview audio, clip placement |
+| `export.rs` | ffmpeg filter graph for export and for preview audio |
+| `pixels.rs` | Drawing one layer onto the frame: scaled, turned, blended, nudged |
+| `place.rs` | Where and when a clip shows: size, position, fades |
+| `timing.rs` | Which source frame a timeline frame shows, and where a clip can be split without changing any |
 | `grade.rs`, `lut.rs` | Colour pipeline baked to a 3D LUT, `.cube` reading and writing, vignette mask |
 | `text.rs` | Text rasterising |
 | `main.rs` | `origami render` and `origami ir` commands |

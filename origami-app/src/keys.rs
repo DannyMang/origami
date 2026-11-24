@@ -1,6 +1,6 @@
 use crate::{Mode, Origami, clip::set, knob::close};
 use gpui::{ClipboardItem, Context, KeyDownEvent, Window};
-use origami_engine::{Opts, command};
+use origami_engine::{Opts, shell};
 use origami_lang::Clip;
 use std::{env, fs, mem, process::Command};
 
@@ -325,16 +325,11 @@ impl Origami {
                 let name = arg.split(' ').find(|a| !a.is_empty() && !a.starts_with("--")).unwrap_or("out.mp4");
                 let out = dir.join(name).to_string_lossy().to_string();
                 if arg.contains("--dry-run") {
-                    let quote = |a: String| format!("'{}'", a.replace('\'', "'\\''"));
-                    let line = command(&self.tl, &out, &Opts::default())
-                        .into_iter()
-                        .map(quote)
-                        .collect::<Vec<_>>()
-                        .join(" ");
+                    let line = shell(&self.tl, &out, &Opts::default());
                     let sh = dir.join("export.sh");
                     return self.vet(sh.clone(), window, cx, move |this, both, _| {
                         let sh = both.unwrap_or(sh);
-                        let wrote = origami_lang::save(&sh, format!("ffmpeg {line}\n")).is_ok();
+                        let wrote = origami_lang::save(&sh, format!("{line}\n")).is_ok();
                         let name = sh.file_name().unwrap_or_default().to_string_lossy();
                         this.note = format!("{} {name}", if wrote { "wrote" } else { "could not write" });
                     });
@@ -375,9 +370,7 @@ mod tests {
     #[gpui::test]
     fn one_export_at_a_time(cx: &mut gpui::TestAppContext) {
         let _one = crate::ship::tests::ONE.lock();
-        let dir = env::temp_dir().join("origami-twice-test");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = crate::tests::scratch("twice");
         fs::write(dir.join("edit.js"), "color('#203040').for(1)").unwrap();
         let tl = origami_lang::eval(&dir.join("edit.js"), false, origami_engine::footprint).unwrap();
         let (view, cx) = cx.add_window_view(|_, cx| {
@@ -393,12 +386,7 @@ mod tests {
             assert!(Arc::ptr_eq(o.export.as_ref().unwrap(), &job));
         });
         fs::write(dir.join("v.js"), "video('a.mp4').trim(0, 1)").unwrap();
-        let made = origami_lang::status(
-            origami_lang::ffmpeg()
-                .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=white:s=64x36:r=30:d=1"])
-                .arg(dir.join("a.mp4")),
-        );
-        assert!(made.unwrap().success());
+        crate::tests::film(&dir.join("a.mp4"), "color=white:s=64x36:r=30:d=1", &[]);
         let mut tl = origami_lang::eval(&dir.join("v.js"), false, origami_engine::footprint).unwrap();
         assert!(
             origami_lang::status(Command::new("mkfifo").arg(dir.join("never.mp4")))
@@ -420,9 +408,7 @@ mod tests {
     #[gpui::test]
     fn export_command_asks_before_replacing(cx: &mut gpui::TestAppContext) {
         let _one = crate::ship::tests::ONE.lock();
-        let dir = env::temp_dir().join("origami-replace-test");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = crate::tests::scratch("replace");
         fs::write(dir.join("edit.js"), "settings({ size: [64, 36] })\ncolor('#203040').for(1)").unwrap();
         fs::write(dir.join("take.mp4"), "footage").unwrap();
         fs::write(dir.join("export.sh"), "mine").unwrap();
@@ -493,15 +479,8 @@ mod tests {
     // even at high frame rates.
     #[gpui::test]
     fn copies_the_frame_shown(cx: &mut gpui::TestAppContext) {
-        let path = env::temp_dir().join("origami-timecode-test.js");
         let src = "settings({ fps: 120 })\nstack(color(\"#203040\").for(4))";
-        fs::write(&path, src).unwrap();
-        let tl = origami_lang::eval(&path, false, origami_engine::footprint).unwrap();
-        let (view, cx) = cx.add_window_view(|_, cx| {
-            let mut app = crate::fresh(cx.focus_handle(), vec![]);
-            (app.script, app.lines, app.tl) = (path.clone(), src.lines().map(String::from).collect(), Arc::new(tl));
-            app
-        });
+        let (view, cx) = crate::tests::window(cx, "timecode", src);
         cx.run_until_parked();
         for (frame, want) in [(1., "0.008"), (2., "0.016"), (121., "1.008")] {
             let at = view.update_in(cx, |o, window, cx| {
