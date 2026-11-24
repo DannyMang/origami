@@ -167,11 +167,12 @@ pub fn learn(tl: &Timeline, from: f64) {
 
 pub fn warm(tl: &Timeline, from: f64) {
     learn(tl, from);
-    let used = tl
-        .clips
-        .iter()
-        .filter(|c| c.end > from && c.kind == Kind::Video && Path::new(&c.src).is_file());
-    let mut seeks: Vec<(String, f64, f64)> = used
+    aim(tl.clips.iter().filter(|c| c.end > from));
+}
+
+fn aim<'a>(clips: impl Iterator<Item = &'a Clip>) {
+    let mut seeks: Vec<(String, f64, f64)> = clips
+        .filter(|c| c.kind == Kind::Video && Path::new(&c.src).is_file())
         .filter_map(|c| match probe(&c.src) {
             (.., late, start, _, false) if late > 0 => Some((c.src.clone(), c.src_in, start)),
             _ => None,
@@ -180,11 +181,21 @@ pub fn warm(tl: &Timeline, from: f64) {
         .collect();
     seeks.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
     seeks.dedup();
-    spread(&mut seeks, 1, |_, part| {
-        for (src, at, start) in part.iter() {
-            lands(src, *at, *start);
-        }
-    });
+    if !seeks.is_empty() {
+        spread(&mut seeks, 1, |_, part| {
+            for (src, at, start) in part.iter() {
+                lands(src, *at, *start);
+            }
+        });
+    }
+}
+
+fn near(tl: &Timeline, t: f64) {
+    let soon = |c: &&Clip| c.kind == Kind::Video && t < c.start && c.start < t + 1.;
+    let next = tl.clips.iter().filter(soon).map(|c| c.start).fold(f64::MAX, f64::min);
+    let used = |c: &&Clip| c.kind == Kind::Video && (c.video && live(c, t) || soon(c) && c.start == next);
+    study(tl.clips.iter().filter(used).map(|c| c.src.clone()).collect());
+    aim(tl.clips.iter().filter(used));
 }
 
 fn study(mut new: Vec<String>) {
@@ -431,6 +442,7 @@ impl Preview {
         });
         let lrf = |c: &Clip| Path::new(&c.src).with_extension("LRF").to_string_lossy().into_owned();
         study(tl.clips.iter().filter(shown).flat_map(|c| [c.src.clone(), lrf(c)]).collect());
+        near(tl, t);
         self.shown = tl.clips.iter().filter(shown).count() + 1;
         let mut all = true;
         for c in tl.clips.iter().filter(shown) {
@@ -868,6 +880,9 @@ impl Preview {
             self.decoders
                 .retain(|(_, d)| d.child.as_ref().is_none_or(|c| !primed.contains(&c.id())));
         }
+        if !self.fast {
+            near(tl, t);
+        }
         let mut out = [0, 0, 0, 255].repeat(pw * ph);
         (self.rough, self.back) = (false, !self.fast && t < self.at && self.at - t < 5. / tl.fps as f64);
         self.shown = tl.clips.iter().filter(|c| c.kind == Kind::Video && c.video && live(c, t)).count() + 1;
@@ -1289,6 +1304,38 @@ mod tests {
         assert!(probe(&path).6 > 0 && found(&tl) == 0);
         warm(&tl, 0.);
         assert_eq!(found(&tl), 6);
+    }
+
+    // Before a frame is drawn, the first frames of the footage with B-frames on screen and of the cut
+    // that starts next are worked out together, and those of later cuts are left for later.
+    #[test]
+    fn frames_find_their_first_frames_together() {
+        let file = scratch("near").join("a.mp4");
+        film(&file, "testsrc=s=64x36:r=30:d=2", &["-bf", "2"]);
+        let path = file.to_string_lossy().into_owned();
+        let cut = |i: usize, start: f64| Clip {
+            src: path.clone(),
+            w: 64,
+            h: 36,
+            start,
+            end: start + 0.2,
+            src_in: 0.1 + i as f64 * 0.13,
+            ..clip("video", "")
+        };
+        let tl = timeline(
+            30,
+            (64, 36),
+            0.8,
+            vec![cut(0, 0.), cut(1, 0.), cut(2, 0.2), cut(3, 0.2), cut(4, 0.4)],
+        );
+        near(&tl, 0.);
+        let lands = LANDS.lock().unwrap();
+        let found: Vec<bool> = tl
+            .clips
+            .iter()
+            .map(|c| lands.contains_key(&(path.clone(), c.src_in.to_bits())))
+            .collect();
+        assert_eq!(found, [true, true, true, true, false]);
     }
 
     // A file ffprobe could not read should be asked about again after a few hundred lookups rather
