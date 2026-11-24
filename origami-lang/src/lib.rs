@@ -1668,8 +1668,9 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
 
     // Values that make no sense (a negative length, zero speed, a frame rate of 0, a loop without end,
     // a day-long timeline) and common slips (a number among clips, an unclosed string or bracket, a
-    // misspelt name or method, an error thrown by a function of time) should be refused with a message
-    // that names the line, and a name or loop that could be on several lines names no line.
+    // misspelt name or method, a curve or wheel without its name, an error thrown by a function of
+    // time) should be refused with a message that names the line, and a name or loop that could be on
+    // several lines names no line.
     #[test]
     fn slips_name_the_line() {
         let deep = format!("{}text('a'){}", "\nstack(".repeat(101), ")".repeat(101));
@@ -1706,6 +1707,16 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
             ("text('a')\ncolor()", 2, "color is written color(\"#203040\")"),
             ("stack(text('a'),\n  text('c').scale(t => { throw new Error('x') }))", 2, "x"),
             ("const a = text('a')\n\nstack(a, bb)", 3, "ReferenceError: bb is not defined"),
+            (
+                "text('a')\n  .curve([[0, 0], [1, 1]])",
+                2,
+                "curve takes \"luma\", \"red\", \"green\" or \"blue\" first",
+            ),
+            (
+                "text('a')\n  .wheel({ hue: 20 })",
+                2,
+                "wheel takes \"shadows\", \"midtones\" or \"highlights\" first",
+            ),
             ("const a = text('a')\n\n\n\nvidoe('x')", 5, "ReferenceError: vidoe is not defined"),
             ("vidoe('x')\ntext('a')", 1, "ReferenceError: vidoe is not defined"),
             ("const f = () => {\n  return nope\n}\nf()", 2, "ReferenceError: nope is not defined"),

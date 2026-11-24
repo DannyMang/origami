@@ -19,8 +19,14 @@
   const dotted = (k, p) => must(__dots(p), `${k} takes points of two numbers, like [[0, 0], [0.5, 0.6], [1, 1]]`)
   const vets = {
     look: (p, k = 100) => fin('look', k),
-    curve: (n, p) => dotted('curve', p),
-    wheel: (n, o) => opts('wheel', o, ['hue', 'amount', 'luma']),
+    curve: (n, p) => {
+      must(typeof n === 'string', 'curve takes "luma", "red", "green" or "blue" first, like curve("luma", [[0, 0], [1, 1]])')
+      dotted('curve', p)
+    },
+    wheel: (n, o) => {
+      must(typeof n === 'string' && o, 'wheel takes "shadows", "midtones" or "highlights" first, like wheel("midtones", { hue: 40, amount: 0.4 })')
+      opts('wheel', o, ['hue', 'amount', 'luma'])
+    },
     vignette: o => opts('vignette', o, ['amount', 'midpoint', 'roundness', 'feather']),
     hslSecondary: ({ key, correction = {} }) => {
       opts('hslSecondary', key, ['range', 'soft'])

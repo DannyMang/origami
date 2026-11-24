@@ -6,6 +6,7 @@ What changed in each version of Origami. The launch screen shows the version you
 
 ### Nov 23
 
+- `curve` without its channel, as in `curve([[0, 0], [1, 1]])`, and `wheel` without its range now say which name goes first. Before, `curve` said it "takes points of two numbers", which the script had given, and `wheel` gave a JavaScript type error.
 - A colour table (`.cube`) file that is empty, cut short or not a colour table at all, used with `look` or `inputLut`, now gives an error on its line as soon as the script is read. Before, the preview drew the clip without the look and said nothing, and only the export refused the file.
 - An error for a misspelt or unknown name, such as `vidoe("x")`, names the line the name is on. Before, it named the line of an earlier clip, or no line. A loop that never ends names its line when the script has one loop, a mistake in the grammar reads `line 2: SyntaxError: …` like every other error, and two misspelt methods on one line name the one that failed instead of saying "not a callable function".
 - A JPEG used with `image` now shows in the preview and as its timeline thumbnail. Before, most JPEGs drew nothing there, though they did appear in exports.
