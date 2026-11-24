@@ -8,7 +8,7 @@ use std::{
     time::SystemTime,
 };
 
-type Stamp = (u64, u64, Option<SystemTime>);
+pub type Stamp = (u64, u64, Option<SystemTime>);
 type Files = LruCache<Stamp, Option<Arc<Lut>>>;
 
 static FILES: LazyLock<Mutex<Files>> = LazyLock::new(|| Mutex::new(LruCache::new(NonZeroUsize::new(32).unwrap())));

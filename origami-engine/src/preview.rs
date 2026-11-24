@@ -922,8 +922,9 @@ impl Preview {
                 (kept(&mut self.stills, &mut self.was.0, base.clone(), make)?, base)
             }
         };
-        let px = match &c.grade {
-            Some(g) => kept(&mut self.stills, &mut self.was.0, format!("{base}|{g:?}"), || {
+        let graded = c.grade.as_ref().map(|g| (g, format!("{base}|{g:?}{:?}", grade::files(g))));
+        let px = match &graded {
+            Some((g, key)) => kept(&mut self.stills, &mut self.was.0, key.clone(), || {
                 Some(grade::paint(g, px, (tw, th), reuse(&mut self.spare, tw * th * 4)))
             })?,
             None => px,
@@ -936,8 +937,8 @@ impl Preview {
                 })?;
                 if fixed {
                     self.stills.remove(&base);
-                    if let Some(g) = &c.grade {
-                        self.stills.remove(&format!("{base}|{g:?}"));
+                    if let Some((_, key)) = &graded {
+                        self.stills.remove(key);
                     }
                 }
                 px
