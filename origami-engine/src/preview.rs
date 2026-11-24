@@ -875,7 +875,7 @@ impl Preview {
         }
         let now = fx::now(&c.fx, i);
         let (fixed, done) = (!now.is_empty() && now == c.fx && c.kind != Kind::Video, |base: &str| {
-            format!("{base}|{:?}|{k}|{now:?}", c.grade)
+            format!("{base}|{:?}{:?}|{k}|{now:?}", c.grade, c.grade.as_ref().map(grade::files))
         });
         let (px, base) = match c.kind {
             Kind::Video => {
@@ -971,14 +971,15 @@ impl Preview {
             return blit(out, (pw, ph), &px, (pw, ph), 1., 0., (w / 2., h / 2.), a, mul);
         }
         let key = format!(
-            "{}|{}|{}|{}|{}|{}|{:?}",
+            "{}|{}|{}|{}|{}|{}|{:?}{:?}",
             c.src,
             c.color,
             c.font,
             c.background,
             c.align,
             c.size * c.scale.max() * k,
-            c.grade
+            c.grade,
+            c.grade.as_ref().map(grade::files)
         );
         let tint = |mut g: Glyph| {
             g.px = c.grade.as_ref().map_or(g.px.clone(), |x| grade::paint(x, g.px, (g.w, g.h), vec![]));
@@ -2228,5 +2229,25 @@ mod tests {
             pv.frame(&tl(3), k as f64 / 30., (64, 36));
         }
         assert_eq!((first.len(), ids(&pv)), (3, first));
+    }
+
+    // A look file edited on disk shows its new colours at once on a still with an effect and on text
+    // drawn letter by letter, even though neither picture changed.
+    #[test]
+    fn edited_looks_show_at_once() {
+        let dir = scratch("looks");
+        let cube = |k: f64| std::fs::write(dir.join("look.cube"), crate::lut::Lut::bake(5, |c| c.map(|v| v * k)).text()).unwrap();
+        for src in [
+            "rect(40, 20).look('look.cube').blur(1)",
+            "text('H', { size: 30 }).each('char', () => ({})).look('look.cube')",
+        ] {
+            cube(1.);
+            std::fs::write(dir.join("edit.js"), format!("settings({{ size: [64, 36] }})\n{src}")).unwrap();
+            let tl = origami_lang::eval(&dir.join("edit.js"), false, crate::footprint).unwrap();
+            let mut pv = Preview::default();
+            let was = pv.frame(&tl, 0., (64, 36));
+            cube(0.5);
+            assert!(pv.frame(&tl, 0., (64, 36)) != was, "{src}");
+        }
     }
 }

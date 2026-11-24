@@ -676,7 +676,7 @@ fn dots(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
 fn ramp(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
     let mut num = |i: usize| args.get_or_undefined(i).to_number(cx);
     let (d, n, fps, mut i) = (num(1)?, num(2)?, num(3)?, 0);
-    let Some(keys) = pairs(args.get_or_undefined(0), d, cx)? else {
+    let Some(keys) = pairs(args.get_or_undefined(0), d, cx)?.filter(|k| !k.is_empty()) else {
         return Ok(JsValue::undefined());
     };
     let (t, v): (Vec<f64>, Vec<f64>) = keys.iter().map(|k| (k.0, k.1)).unzip();
@@ -880,7 +880,7 @@ fn answer(cx: &mut Context, job: &[u8], measure: Measure) -> Vec<u8> {
     let (script, relock, src): (PathBuf, bool, Option<String>) = serde_json::from_slice(job).unwrap_or_default();
     BUSY.store(false, Relaxed);
     let got = half(cx, &script, relock, src.as_deref(), measure);
-    let fail = FAIL.take().filter(|_| src.is_none());
+    let fail = got.as_ref().err().and_then(|e| uncaught(e, src.is_none()));
     let (head, out, kept): (Head, _, _) = match got {
         Ok((out, kept, files)) => ((Ok((out.len(), kept.iter().map(Vec::len).collect(), files)), fail), out, kept),
         Err(e) => ((Err(e.chain().map(|c| c.to_string()).collect()), fail), String::new(), vec![]),
@@ -969,6 +969,10 @@ fn open(f: &[u8], measure: Measure) -> Result<Timeline> {
     }
 }
 
+fn uncaught(e: &anyhow::Error, saved: bool) -> Option<Error> {
+    FAIL.take().filter(|f| saved && f.to_string() == e.to_string())
+}
+
 fn remote(script: &Path, relock: bool, src: Option<&str>, measure: Measure) -> Result<Timeline> {
     let job = serde_json::to_vec(&(script, relock, src))?;
     let mut slot = HELPER.lock().unwrap_or_else(PoisonError::into_inner);
@@ -998,7 +1002,7 @@ fn ask(script: &Path, relock: bool, src: Option<&str>, measure: Measure) -> Resu
     let (script, src, (back, got)) = (script.to_path_buf(), src.map(String::from), mpsc::channel());
     let job = move |cx: &mut Context| {
         let tl = build(cx, &script, relock, src.as_deref(), measure);
-        drop(back.send(tl.map_err(|e| FAIL.take().filter(|_| src.is_none()).map_or(e, Into::into))));
+        drop(back.send(tl.map_err(|e| uncaught(&e, src.is_none()).map_or(e, Into::into))));
     };
     let mut vm = VM.lock().unwrap();
     BUSY.store(false, Relaxed);
@@ -1037,7 +1041,7 @@ fn half(cx: &mut Context, script: &Path, relock: bool, src: Option<&str>, measur
     let script = script
         .canonicalize()
         .with_context(|| format!("missing script: {}", script.display()))?;
-    let dir = script.parent().unwrap().to_path_buf();
+    let dir = script.parent().unwrap_or(&script).to_path_buf();
     let lock = dir.join("origami.lock");
     let old: Lock = Some(&lock)
         .filter(|l| fs::symlink_metadata(l).is_ok_and(|m| m.is_file()))
@@ -1045,9 +1049,17 @@ fn half(cx: &mut Context, script: &Path, relock: bool, src: Option<&str>, measur
         .and_then(|b| serde_json::from_str(&b).ok())
         .unwrap_or_default();
     let text = src.map_or_else(|| load(&script).map_err(|e| anyhow!("{}: {e}", script.display())), |s| Ok(s.into()))?;
-    let mut depth = 0;
+    let (mut depth, mut quote, mut skip) = (0, 0, false);
     let nest = |b| {
-        depth += matches!(b, b'(' | b'[' | b'{') as i32 - matches!(b, b')' | b']' | b'}') as i32;
+        if mem::take(&mut skip) {
+        } else if b == b'\\' {
+            skip = true;
+        } else if quote == 0 {
+            depth += matches!(b, b'(' | b'[' | b'{') as i32 - matches!(b, b')' | b']' | b'}') as i32;
+            quote = if matches!(b, b'\'' | b'"') { b } else { 0 };
+        } else if b == quote || b == b'\n' {
+            quote = 0;
+        }
         depth > 100
     };
     if let Some(i) = text.bytes().position(nest) {
@@ -1181,7 +1193,8 @@ fn finish(out: &str, kept: Vec<Vec<f32>>, files: Vec<(u32, PathBuf)>, measure: M
         {
             s.iter_mut().for_each(|v| *v = v.clamp(-170., 170.));
             if tl.note.is_empty() {
-                tl.note = format!("line {n}: lens goes past 170 either way and is held at 170, the most it takes");
+                let said = "lens goes past 170 either way and is held at 170, the most it takes";
+                tl.note = if *n > 0 { format!("line {n}: {said}") } else { said.into() };
             }
         }
     }
@@ -2036,6 +2049,7 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
             "__plain()",
             "__plain(5)",
             "__ramp(null, 1, 1, 1)",
+            "__ramp([], 1, 1, 1)",
             "__keep()",
             "__keep({ length: 1e9 })",
             "__dots('x')",
@@ -2171,7 +2185,7 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
     // shipped origami.lock already lists it.
     #[test]
     fn playlists_are_refused_at_once() {
-        let dir = scratch("lists");
+        let dir = scratch("playlists");
         fs::write(dir.join("a.ts"), "").unwrap();
         fs::write(dir.join("live.m3u8"), "#EXTM3U\n#EXT-X-TARGETDURATION:100000\n#EXTINF:1,\na.ts\n").unwrap();
         fs::write(dir.join("nest.mp4"), "ffconcat version 1.0\nfile live.m3u8\n").unwrap();
@@ -2258,6 +2272,65 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         let t = tl("rect(64, 36).matte(rect(20, 20).matte(rect(9, 9)))");
         let mid = t.clips.iter().find(|c| c.w == 20).unwrap();
         assert_eq!(t.clips.iter().find(|c| c.w == 64).unwrap().matte.as_ref().unwrap().0, mid.into);
+    }
+
+    // A function called through another name, or on a whole group, still names its own line when
+    // something is wrong, never line 0 or the line of the call before it.
+    #[test]
+    fn renamed_functions_name_their_own_line() {
+        let dir = scratch("renamed");
+        for (src, says) in [
+            ("const r = rect\nr(1, 1, { radius: NaN })", "line 2: radius takes a number"),
+            ("text('a')\nconst b = bezier\nb(NaN, 0, 1, 1)", "line 3: bezier is written"),
+            ("text('a')\nconst s = stack\ns(1)", "line 3: stack takes clips"),
+            ("text('a')\nconst d = delay\nd(t => t, NaN)", "line 3: delay takes a number"),
+            ("const a = text('a')\nconst f = a.fade\nf(-1)", "line 3: fade takes seconds"),
+            ("const a = text('a')\nconst s = a.speed\ns('x')", "line 3: speed takes a number"),
+            ("stack(text('a'),\n  text('b'))\n  .fade(-1)", "line 3: fade takes seconds"),
+            (
+                "const a = text('a')\nconst o = a.opacity\no(t => 'x')",
+                "a function of time must return a number",
+            ),
+        ] {
+            let e = fails(&dir, src);
+            assert!(e.starts_with(says), "{src}: {e}");
+        }
+        let t = run(&dir, "const a = text('a').for(1)\nconst l = a.lens\nl(t => 500 + t)").unwrap();
+        assert_eq!(t.note, "lens goes past 170 either way and is held at 170, the most it takes");
+    }
+
+    // A missing file the script caught and moved past is not blamed for a later mistake, while one it
+    // did not catch is still reported as the missing file.
+    #[test]
+    fn caught_errors_are_forgotten() {
+        let dir = scratch("caught");
+        assert_eq!(
+            fails(&dir, "try { video('nope') } catch {}\nfoo"),
+            "line 2: ReferenceError: foo is not defined"
+        );
+        let e = run(&dir, "text('a')\nvideo('nope')").unwrap_err();
+        assert_eq!(e.downcast_ref::<Error>().map(Error::line), Some(2));
+    }
+
+    // Brackets inside quoted text are not counted as nesting, while real nesting after a stray or
+    // escaped quote mark is still refused, and a script path with no folder is an error, not a crash.
+    #[test]
+    fn quoted_brackets_are_not_nesting() {
+        let (open, shut) = ("(".repeat(101), ")".repeat(101));
+        let t = tl(&format!("stack(text('{open}').for(1),\n  text(\"it's {open}\"))"));
+        assert_eq!(t.clips[0].src, open);
+        let dir = scratch("quoted");
+        for src in [
+            format!("// don't\n{open}text('a'){shut}"),
+            format!("text('\\'')\n{open}text('a'){shut}"),
+        ] {
+            assert!(
+                fails(&dir, &src).starts_with("line 2: brackets are nested more than 100 deep"),
+                "{src}"
+            );
+        }
+        let e = eval(Path::new("/"), false, size).unwrap_err().to_string();
+        assert!(!e.contains("crashed"), "{e}");
     }
 
     // Groups and mattes nest up to 16 deep; one more, a group that holds itself or two groups with
@@ -2360,7 +2433,7 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
     #[test]
     fn saves_by_swapping_in_a_whole_file() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = scratch("save");
+        let dir = scratch("swap");
         let path = dir.join("edit.js");
         fs::write(&path, "old\n").unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();

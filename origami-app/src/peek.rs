@@ -182,8 +182,8 @@ impl Origami {
         let c = self.peek.as_ref()?.tl.clips.first()?.clone();
         let bars: Vec<f32> = match self.asset(c.src.clone(), &c.src, None).filter(|_| !c.video) {
             Some(Asset::Wave(w)) => {
-                let (a, b) = ((c.src_in * 20.) as usize, ((c.src_in + c.end * c.speed) * 20.) as usize);
-                let part = &w[a.min(w.len())..b.clamp(a, w.len())];
+                let b = (((c.src_in + c.end * c.speed) * 20.) as usize).min(w.len());
+                let part = &w[((c.src_in * 20.) as usize).min(b)..b];
                 part.chunks((part.len() / 139).max(1))
                     .map(|c| c.iter().fold(0., |m: f32, &p| m.max(p)))
                     .collect()
@@ -318,6 +318,32 @@ impl Origami {
 mod tests {
     use super::*;
     use gpui::{Modifiers, point};
+
+    // The hover preview of a trimmed sound whose file could not be read as sound draws without its
+    // wave instead of crashing.
+    #[gpui::test]
+    fn unread_sounds_still_preview(cx: &mut gpui::TestAppContext) {
+        let dir = std::env::temp_dir().join("origami-peek-sound-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let made = origami_lang::ffmpeg()
+            .args(["-v", "error", "-f", "lavfi", "-i", "sine=d=2"])
+            .arg(dir.join("s.wav"))
+            .status();
+        assert!(made.unwrap().success());
+        let src = "sound(\"s.wav\").trim(1)";
+        std::fs::write(dir.join("edit.js"), src).unwrap();
+        let tl = origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            (app.script, app.lines) = (dir.join("edit.js"), vec![src.into()]);
+            app.assets.insert(tl.clips[0].src.clone(), Some(Asset::Wave(vec![])));
+            app.peek = Some(Peek::new(0, tl));
+            app
+        });
+        cx.run_until_parked();
+        assert!(view.update_in(cx, |o, window, cx| o.peep(window, cx).is_some()));
+    }
 
     // Dragging along the bar of the hover preview should move its playhead, keep following the drag
     // even when the pointer leaves the bar, and stop once the button is released.

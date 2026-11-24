@@ -334,8 +334,9 @@ impl Origami {
                     let sh = dir.join("export.sh");
                     return self.vet(sh.clone(), window, cx, move |this, both, _| {
                         let sh = both.unwrap_or(sh);
-                        let _ = origami_lang::save(&sh, format!("ffmpeg {line}\n"));
-                        this.note = format!("wrote {}", sh.file_name().unwrap_or_default().to_string_lossy());
+                        let wrote = origami_lang::save(&sh, format!("ffmpeg {line}\n")).is_ok();
+                        let name = sh.file_name().unwrap_or_default().to_string_lossy();
+                        this.note = format!("{} {name}", if wrote { "wrote" } else { "could not write" });
                     });
                 }
                 self.vet(dir.join(name), window, cx, move |this, both, cx| {
@@ -459,6 +460,33 @@ mod tests {
         assert_eq!(run(cx, "export late.mp4", "Cancel"), (broken.clone(), None));
         let late = format!("exported {}", dir.join("late.mp4").display());
         assert_eq!(run(cx, "export late.mp4", "Export"), (broken, Some(late)));
+    }
+
+    // `:export --dry-run` in a folder that cannot be written to says it could not write export.sh
+    // instead of saying it wrote it.
+    #[gpui::test]
+    fn dry_run_says_when_it_fails(cx: &mut gpui::TestAppContext) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = env::temp_dir().join("origami-dry-test");
+        let lock = |mode| fs::set_permissions(&dir, fs::Permissions::from_mode(mode));
+        let _ = lock(0o755);
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("edit.js"), "settings({ size: [64, 36] })\ncolor('#203040').for(1)").unwrap();
+        let tl = origami_lang::eval(&dir.join("edit.js"), false, origami_engine::footprint).unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            (app.script, app.tl) = (dir.join("edit.js"), Arc::new(tl));
+            app
+        });
+        lock(0o555).unwrap();
+        view.update_in(cx, |o, window, cx| o.run("export --dry-run", window, cx));
+        cx.run_until_parked();
+        lock(0o755).unwrap();
+        assert_eq!(
+            view.update(cx, |o, _| (o.note.clone(), dir.join("export.sh").exists())),
+            ("could not write export.sh".into(), false)
+        );
     }
 
     // Clicking the timecode should copy a time that, pasted into .at(...), starts on the frame shown,

@@ -15,7 +15,7 @@ fail() {
   exit 1
 }
 [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "usage: ./release.sh <version, such as 0.2.0> [--dry-run]"
-[ -z "${FFMPEG_DIR:-}" ] && ! grep -qs FFMPEG_DIR .env || fail "FFMPEG_DIR is set: this release does not bundle ffmpeg"
+[ -z "${FFMPEG_DIR:-}" ] && ! grep -qsE '^[[:space:]]*(export[[:space:]]+)?FFMPEG_DIR=' .env || fail "FFMPEG_DIR is set: this release does not bundle ffmpeg"
 tag=v$version
 crates=(origami-lang origami-engine origami-app)
 log=docs/pages/08-changelog.md

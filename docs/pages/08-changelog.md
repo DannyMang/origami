@@ -27,6 +27,17 @@ What changed in each version of Origami. The launch screen shows the version you
 - A sound, or a film's sound, that starts after a silence at the beginning of the timeline is exported with that silence, so the export's sound starts at 0 and lasts as long as its picture, and playing in the editor hears it at its place. Before, the export's sound track began where the first sound did, which some players and editors show out of step, and the editor played the sound straight away instead of at its time.
 - Timeline thumbnails show a picture all along a film that has few keyframes, such as a screen recording or a clip encoded with one keyframe at its start. Before, every thumbnail after the film's last keyframe was blank, so such a clip showed only its first.
 - Saving no longer hangs if another program swaps the script for a pipe at the very moment of the save; the save fails with its reason and your changes stay marked as unsaved.
+- A solid colour with a fade, such as `color("#f00").for(2).fade(1)`, fades in the export as it does in the preview. Before, the export showed it at full strength from its first frame to its last.
+- Text, a shape or an image with `speed`, such as `text("hi").for(2).speed(2)`, stays on screen for its whole length in the export, as in the preview. Before, the export showed it for its length divided by the speed, here 1 second, and then nothing.
+- A film that is shorter than its clip, such as a 2 second film with `.for(5)`, holds its last frame to the end of the clip in the export, as in the preview. Before, the film vanished from the export two frames after it ran out.
+- Playing, or exporting a range, from the middle of a sound's fade in starts at the loudness the fade has reached there. Before, the fade started again from silence.
+- A colour table (`.cube`) file edited while Origami is open also shows its new colours on an image, shape or text that has a picture effect such as `blur`, and on text animated with `each`. Before, those two kept the old colours until something else about them changed.
+- A function called through another name, such as `const r = rect` and then `r(1, 1, { radius: NaN })`, names the line of the call in its error. Before, the error said "line 0", or named the line of the call before it.
+- A missing file that the script caught with `try` and moved past is no longer reported in place of a later mistake. Before, `try { video("nope") } catch {}` followed by a misspelt name reported the missing file.
+- Brackets inside quoted text no longer count towards the limit of 100 nested brackets. Before, `text("((((…")` with more than 100 brackets was refused as nested too deep.
+- Opening a clip in the Motion tab right after typing code that makes it follow another clip, before the script has been read again, no longer crashes Origami.
+- Triple-clicking the line of a trimmed sound whose file cannot be read as sound opens its small player without the wave. Before, it crashed Origami.
+- `:export --dry-run` says "could not write export.sh" when it could not, for example in a folder you may not write to. Before, it always said "wrote export.sh".
 
 ### Nov 22
 
