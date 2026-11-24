@@ -383,13 +383,13 @@ impl Origami {
         self.busy = true;
         let (scrub, hop) = (self.tl.proxy && self.scrubbing, self.tl.proxy && still && self.shown != Some(want));
         let (preview, tl, t) = (self.preview.clone(), self.tl.clone(), want.0 as f64 / self.fps());
+        let draw = cx.background_executor().spawn(async move {
+            let mut preview = preview.lock().unwrap();
+            preview.fast = scrub || hop && !preview.ready(&tl, t, (w, h));
+            (preview.frame(&tl, t, (w, h)), preview.rough)
+        });
         cx.spawn(async move |this, cx| {
-            let draw = async move {
-                let mut preview = preview.lock().unwrap();
-                preview.fast = scrub || hop && !preview.ready(&tl, t, (w, h));
-                (preview.frame(&tl, t, (w, h)), preview.rough)
-            };
-            let (px, rough) = cx.background_executor().spawn(draw).await;
+            let (px, rough) = draw.await;
             this.update(cx, |this, cx| {
                 if let Some(old) = this.image.replace(bitmap(px, w, h)) {
                     cx.drop_image(old, None);
