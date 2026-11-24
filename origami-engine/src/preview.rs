@@ -436,6 +436,32 @@ impl Preview {
             .position(|(o, d)| o == key && d.next <= k && k <= d.next + reach(&key.0))
     }
 
+    fn gather(&mut self, tl: &Timeline, t: f64, (pw, ph): (usize, usize)) {
+        let k = pw as f64 / tl.size.0 as f64;
+        let key = |src: &str, tw: usize, th: usize| format!("{src}|{tw}x{th}");
+        let shown = |c: &&Clip| c.kind == Kind::Image && c.into == 0 && c.video && live(c, t) && c.scale.max() > 0.;
+        let mut new: Vec<(&str, usize, usize, Option<Px>)> = tl
+            .clips
+            .iter()
+            .filter(shown)
+            .map(|c| {
+                let (tw, th, ..) = place(c, (pw as f64, ph as f64), k);
+                (c.src.as_str(), tw as usize, th as usize, None)
+            })
+            .filter(|(src, tw, th, _)| !self.stills.keys().any(|k| k.starts_with(&key(src, *tw, *th))))
+            .collect();
+        new.sort();
+        new.dedup();
+        if new.len() > 1 {
+            spread(&mut new, 1, |_, part| {
+                for (src, tw, th, px) in part {
+                    *px = still(src, *tw, *th).map(Arc::new);
+                }
+            });
+            self.stills.extend(new.into_iter().map(|(src, tw, th, px)| (key(src, tw, th), px)));
+        }
+    }
+
     pub fn ready(&mut self, tl: &Timeline, t: f64, (pw, ph): (usize, usize)) -> bool {
         let (k, shown) = (pw as f64 / tl.size.0 as f64, |c: &&Clip| {
             c.kind == Kind::Video && c.video && live(c, t)
@@ -883,6 +909,7 @@ impl Preview {
         if !self.fast {
             near(tl, t);
         }
+        self.gather(tl, t, (pw, ph));
         let mut out = [0, 0, 0, 255].repeat(pw * ph);
         (self.rough, self.back) = (false, !self.fast && t < self.at && self.at - t < 5. / tl.fps as f64);
         self.shown = tl.clips.iter().filter(|c| c.kind == Kind::Video && c.video && live(c, t)).count() + 1;
@@ -1336,6 +1363,28 @@ mod tests {
             .map(|c| lands.contains_key(&(path.clone(), c.src_in.to_bits())))
             .collect();
         assert_eq!(found, [true, true, true, true, false]);
+    }
+
+    // Several pictures that first appear in the same frame are read together, and each still lands in
+    // its own place and draws the same again from memory.
+    #[test]
+    fn pictures_in_one_frame_keep_their_places() {
+        let dir = scratch("pictures");
+        let at = |color: &str, x: f64| {
+            let file = dir.join(format!("{color}.png"));
+            film(&file, &format!("color={color}:s=40x20"), &["-frames:v", "1"]);
+            Clip {
+                src: file.to_string_lossy().into(),
+                pos: (Some(Val::Fixed(x)), Some(Val::Fixed(0.))),
+                ..clip("image", "")
+            }
+        };
+        let tl = timeline(30, (80, 20), 1., vec![at("red", 0.), at("blue", 0.5)]);
+        let mut pv = Preview::default();
+        let px = pv.frame(&tl, 0., (80, 20));
+        let bgr = |x: usize| (px[x * 4] > 200, px[x * 4 + 2] > 200);
+        assert_eq!((bgr(10), bgr(50)), ((false, true), (true, false)));
+        assert_eq!(pv.frame(&tl, 0., (80, 20)), px);
     }
 
     // A file ffprobe could not read should be asked about again after a few hundred lookups rather
