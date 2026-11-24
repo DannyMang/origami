@@ -6,6 +6,7 @@ What changed in each version of Origami. The launch screen shows the version you
 
 ### Nov 23
 
+- When an export ends while the script has an error, the status bar says "exported …", or why the export failed, in front of the error, and shows the export's progress there too. Before, it showed only the error, so nothing told you the export had finished.
 - `:history clear` asks "Remove all saved versions?" and removes them only on Remove, as the clear link in the History list does. Before, the command removed every version at once without a question.
 - The `:help` panel fits the window: long lines wrap, and in a window too short for all of it the panel scrolls. Before, it was wider than the window, so the first and last words of every line were cut off.
 - The timeline bar leaves out the buttons that do not fit when the left pane is narrow: first the timecode, then undo, redo, delete and the microphone, then the speed, T, ✎ and +. Before, in a small window or with the code pane dragged wide, the buttons were drawn on top of each other and the timecode ran over the code.

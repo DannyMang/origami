@@ -970,6 +970,10 @@ impl Origami {
             .child(self.grip(true, cx))
     }
 
+    fn aside(&self) -> Option<String> {
+        Some(self.note.clone()).filter(|n| self.take.is_none() && !self.err.is_empty() && !n.is_empty())
+    }
+
     fn status(&self, focus: Option<&Clip>, cx: &mut Context<Self>) -> Div {
         let (tag, hint) = self.lens();
         let mode = match &self.mode {
@@ -1021,6 +1025,7 @@ impl Origami {
                             .child(mode),
                     )
                     .children((!self.mouse).then(|| div().text_color(rgb(DIM)).child("i or click here for mouse")))
+                    .children(self.aside())
                     .child(div().text_color(rgb(color)).child(info)),
             )
             .child(
@@ -1503,6 +1508,23 @@ mod tests {
                 "{edges:?}"
             );
         }
+    }
+
+    // When an export ends while the script has an error, the status bar says how the export went
+    // beside the error instead of showing the error alone.
+    #[gpui::test]
+    fn export_result_shows_beside_an_error(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = cx.add_window_view(|_, cx| crate::fresh(cx.focus_handle(), vec![]));
+        let said = view.update_in(cx, |o, window, cx| {
+            let job = ("exported out.mp4".to_string(), true);
+            (o.err, o.export) = ("line 1: wrong".into(), Some(std::sync::Arc::new(std::sync::Mutex::new(job))));
+            o.tick(window, cx);
+            let both = (o.export.is_none(), o.aside());
+            o.err.clear();
+            (both, o.aside(), o.note.clone())
+        });
+        let done = "exported out.mp4".to_string();
+        assert_eq!(said, ((true, Some(done.clone())), None, done));
     }
 
     // Thumbnails shown lately are kept, but ones not shown since the timeline last held 500 are let go,
