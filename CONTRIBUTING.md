@@ -28,6 +28,7 @@ The later crates depend on the earlier ones by relative path.
 | --- | --- |
 | `lib.rs` | `Clip`, `Timeline`, `eval`, media probing and `origami.lock` |
 | `prelude.js` | The script API: `video`, `sound`, `text`, `cat`, `stack` and every clip method |
+| `disk.rs` | `save` and `load`: whole-file saves that never cut a script short |
 | `grade.rs` | Colour grade types carried on a clip |
 | `error.rs` | Errors a script author can fix, each with the script line |
 | `tool.rs` | Finds `ffmpeg` and `ffprobe`: next to the program, then `PATH`, then the usual Homebrew and MacPorts folders |
