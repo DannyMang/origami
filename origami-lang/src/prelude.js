@@ -6,6 +6,7 @@
   const digits = /^\d+$/, share = /^[\d.]+%$/, written = 'keys are written keys([0, 0], ["50%", 1], [-0.5, 0])', named = /(?:const|let|var)\s+(\w+)\s*=/, made = 'video sound image text captions caption color', bare = 'keys rect line path add mul cat stack settings delay bezier'
   const DAY = 86400, run = Symbol(), calm = Symbol()
   const lined = (say, n = at) => n ? `line ${n}: ${say}` : say
+  const here = () => +(new Error().stack?.match(/script:(\d+):/)?.[1] ?? 0)
   const must = (ok, say) => { if (!ok) throw new Error(lined(say)) }
   const fit = (k, v, lo = -Infinity, hi = Infinity, n, most = 'most it takes') => {
     const x = typeof v === 'number' ? Math.min(Math.max(v, lo), hi) : v
@@ -57,7 +58,7 @@
       v = Object.assign((t, d, T) => led(T), { [run]: (n, d, from) => Array.from({ length: n }, (_, i) => led(from + i / S.fps)) })
     }
     if (typeof v !== 'function' && !(typeof v === 'number' && v - v === 0)) throw new Error(lined(`${k} takes a number or a function of time`))
-    return typeof v === 'number' ? v : Object.assign((t, d, T) => v(t, d, T), { line: at, [run]: v[run], [calm]: v[calm] })
+    return typeof v === 'number' ? v : Object.assign((t, d, T) => v(t, d, T), { line: at || here(), [run]: v[run], [calm]: v[calm] })
   }
   const num = (v, t, d, T) => typeof v === 'number' ? v : v(t, d, T)
   const times = (k, a, x) => {

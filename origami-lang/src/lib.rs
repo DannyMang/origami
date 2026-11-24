@@ -2333,7 +2333,8 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
     }
 
     // A function called through another name, or on a whole group, still names its own line when
-    // something is wrong, never line 0 or the line of the call before it.
+    // something is wrong, never line 0 or the line of the call before it, and so does a function of
+    // time handed to one, whose mistake is only found after the script has ended.
     #[test]
     fn renamed_functions_name_their_own_line() {
         let dir = scratch("renamed");
@@ -2347,14 +2348,35 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
             ("stack(text('a'),\n  text('b'))\n  .fade(-1)", "line 3: fade takes seconds"),
             (
                 "const a = text('a')\nconst o = a.opacity\no(t => 'x')",
-                "a function of time must return a number",
+                "line 3: a function of time must return a number",
+            ),
+            (
+                "const a = text('a')\nconst o = a.opacity\nconst dim = f => o(\n  f)\n\ndim(t => NaN)",
+                "line 3: a function of time must return a number",
+            ),
+            (
+                "const p = path\n\np([[t => NaN, 0], [1, 0], [1, 1]])",
+                "line 3: a function of time must return a number",
+            ),
+            (
+                "const e = text('abc').each\n\n\ne('char', i => ({ opacity: t => NaN }))",
+                "line 4: a function of time must return a number",
+            ),
+            (
+                "const o = text('a').opacity\nconst b = [t => NaN].map(o)\nb[0]",
+                "line 2: a function of time must return a number",
             ),
         ] {
             let e = fails(&dir, src);
             assert!(e.starts_with(says), "{src}: {e}");
         }
         let t = run(&dir, "const a = text('a').for(1)\nconst l = a.lens\nl(t => 500 + t)").unwrap();
-        assert_eq!(t.note, "lens goes past 170 either way and is held at 170, the most it takes");
+        assert_eq!(
+            t.note,
+            "line 3: lens goes past 170 either way and is held at 170, the most it takes"
+        );
+        let t = run(&dir, "const a = text('a').for(1)\nconst l = a.lens\n\nl(t => 500)").unwrap();
+        assert_eq!(t.note, "line 4: lens 500 is lowered to 170, the most it takes");
     }
 
     // A missing file the script caught and moved past is not blamed for a later mistake, while one it
