@@ -337,7 +337,10 @@ fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path, (k, (w, h)): (f64, (
             if c.fade.1 > 0. {
                 s += &format!(",afade=t=out:st={}:d={}", (len - c.fade.1).max(0.), c.fade.1);
             }
-            f.push(format!("{s},adelay={}:all=1[a{i}]", ((c.start - from).max(0.) * 1000.).round()));
+            f.push(format!(
+                "{s},adelay={}:all=1,asetpts=N/SR/TB[a{i}]",
+                ((c.start - from).max(0.) * 1000.).round()
+            ));
             mix += &format!("[a{i}]");
         }
     }
@@ -866,6 +869,31 @@ mod tests {
             assert!(job.join().unwrap().is_err());
             assert_eq!((before, after), ((1, 1), (0, 0)));
         });
+    }
+
+    // A sound that starts late should come with the silence before it: the export's sound starts at 0
+    // and lasts the whole timeline, and playback hears the sound at its time instead of straight away.
+    #[test]
+    fn late_sounds_keep_their_silence() {
+        let _tidy = TIDY.read();
+        let dir = scratch("late");
+        film(&dir.join("s.wav"), "sine=d=2", &[]);
+        let src = "settings({ size: [64, 36] })\nstack(color('#203040').for(3), sound('s.wav').trim(0, 1).at(2))";
+        fs::write(dir.join("edit.js"), src).unwrap();
+        let tl = origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap();
+        let out = dir.join("late.mp4").to_string_lossy().to_string();
+        render(&tl, &out, &Opts::default(), |_| {}).unwrap();
+        let heard = |args: Vec<String>| {
+            let pcm = origami_lang::output(ffmpeg().args(["-v", "error"]).args(args)).unwrap().stdout;
+            let peak = |from: usize, to: usize| {
+                let part = pcm.get(from * 3840..to * 3840).unwrap_or_default().chunks_exact(4);
+                part.map(|s| f32::from_le_bytes(s.try_into().unwrap()).abs()).fold(0., f32::max)
+            };
+            ((pcm.len() + 19200) / 38400, peak(0, 190) < 0.01, peak(210, 290) > 0.05)
+        };
+        let made = heard(own(&["-i", &out, "-f", "f32le", "-ar", "48000", "-ac", "2", "-"]));
+        let played = heard(audio_args(&tl, 0., 48000, 1.));
+        assert_eq!((made, played), ((30, true, true), (30, true, true)));
     }
 
     // The command a dry run prints should name layer pictures that are there to be read when it is run
