@@ -8,6 +8,8 @@ Loads a video file.
 video("clips/intro.mp4")
 ```
 
+Playlist files (`.m3u8`, `.m3u` and ffmpeg concat lists) are not supported, in `video`, `sound` or `image`: use a video or sound file.
+
 ## sound
 
 Loads an audio file.
