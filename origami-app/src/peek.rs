@@ -41,13 +41,7 @@ impl Peek {
 
 impl Origami {
     pub fn glance(&mut self, row: usize, cx: &mut Context<Self>) {
-        let linked = |c: &&Clip| {
-            let last = (c.line as usize).saturating_sub(1);
-            let chain = self.lines.get(row + 1..=last);
-            matches!(c.kind, Kind::Video | Kind::Sound)
-                && last >= row
-                && chain.is_some_and(|l| l.iter().all(|l| l.trim_start().starts_with('.')))
-        };
+        let linked = |c: &&Clip| matches!(c.kind, Kind::Video | Kind::Sound) && self.owns(c, row);
         if let Some(c) = self.tl.clips.iter().find(linked) {
             let clip = Clip {
                 start: 0.,
@@ -152,12 +146,8 @@ impl Origami {
 
     fn perch(&self, window: &Window) -> Option<(f32, f32)> {
         let p = self.peek.as_ref()?;
-        let (hidden, top) = (self.hidden(), self.top as usize);
-        if p.row < top || hidden.get(p.row) != Some(&false) {
-            return None;
-        }
+        let y = self.line_y(p.row)?;
         let (w, h) = (f32::from(window.viewport_size().width), f32::from(window.viewport_size().height));
-        let y = self.head() + (top..p.row).filter(|i| !hidden[*i]).count() as f32 * self.row();
         let tall = if p.tl.clips.iter().any(|c| c.video) { 230. } else { 130. };
         Some((
             (w - self.side + self.gutter()).min(w - WIDE - 26.),

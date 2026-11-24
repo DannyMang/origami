@@ -496,14 +496,10 @@ impl Origami {
     pub fn popup(&self, window: &Window) -> Option<Div> {
         let (start, list) = &self.offers;
         let (r, _) = self.cursor.filter(|_| !list.is_empty())?;
-        let (hidden, top) = (self.hidden(), self.top as usize);
-        if r < top || hidden.get(r) != Some(&false) {
-            return None;
-        }
+        let y = self.line_y(r)?;
         let (w, h) = (f32::from(window.viewport_size().width), f32::from(window.viewport_size().height));
         let (glyph, row) = (self.glyph(), self.row());
         let wide = list.iter().map(|(n, a, _)| n.chars().count() + a.chars().count()).max()? as f32;
-        let y = self.head() + (top..r).filter(|i| !hidden[*i]).count() as f32 * row;
         let (down, shown) = room(y, row, h, list.len());
         let (wide, first) = ((wide + 2.) * glyph + 22., (self.pick + 1).saturating_sub(shown));
         let rows = list.iter().enumerate().skip(first).take(shown).map(|(i, (name, args, _))| {

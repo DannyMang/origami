@@ -330,17 +330,15 @@ pub fn rail(label: String, start: f32, text: String) -> Div {
 }
 
 impl Origami {
+    pub fn owns(&self, c: &Clip, row: usize) -> bool {
+        let last = (c.line as usize).saturating_sub(1);
+        let chain = self.lines.get(row + 1..=last);
+        last >= row && chain.is_some_and(|l| l.iter().all(|l| l.trim_start().starts_with('.')))
+    }
+
     pub fn board(&self, row: usize, at: usize) -> Option<(String, usize, usize, Vec<Knob>)> {
         let (call, name, end, mut found) = knobs(self.lines.get(row)?, at)?;
-        let linked = |c: &&Clip| {
-            let last = (c.line as usize).saturating_sub(1);
-            last >= row
-                && self
-                    .lines
-                    .get(row + 1..=last)
-                    .is_some_and(|l| l.iter().all(|l| l.trim_start().starts_with('.')))
-        };
-        let clip = self.tl.clips.iter().find(linked);
+        let clip = self.tl.clips.iter().find(|c| self.owns(c, row));
         let top = match call.as_str() {
             "trim" => clip.map(|c| c.total),
             "fade" => clip.map(|c| c.end - c.start),
@@ -374,16 +372,12 @@ impl Origami {
 
     fn origin(&self, window: &Window) -> Option<(f32, f32, usize, bool)> {
         let (row, call, name, found) = self.panel()?;
-        let (hidden, top) = (self.hidden(), self.top as usize);
-        if row < top || hidden.get(row) != Some(&false) {
-            return None;
-        }
+        let y = self.line_y(row)?;
         let (w, h) = (f32::from(window.viewport_size().width), f32::from(window.viewport_size().height));
         let pad = found.iter().any(|k| k.label == "hue" || k.label == "#") || CURVES.contains(&call.as_str());
         let rows = if CURVES.contains(&call.as_str()) { 1 } else { found.len() } + TYPED.contains(&call.as_str()) as usize;
         let tall = rows as f32 * 24. + 20. + if pad { PAD + 10. } else { 0. };
         let col = self.lines[row][..name].chars().count() as f32;
-        let y = self.head() + (top..row).filter(|i| !hidden[*i]).count() as f32 * self.row();
         let x = (w - self.side + self.inset() + col * self.glyph()).min(w - 344.);
         Some((
             x,
