@@ -207,20 +207,19 @@ fn raw(args: &[&str], len: usize) -> Option<Vec<u8>> {
     (out.stdout.len() == len).then_some(out.stdout)
 }
 
-fn still(path: &str, t: f64, w: usize, h: usize) -> Option<Vec<u8>> {
-    let args = [
-        &["-ss", &t.to_string()],
-        literal(path),
-        &["-i", path, "-vf", &format!("scale={w}:{h}")],
-    ];
-    raw(&args.concat(), w * h * 4)
+fn still(path: &str, w: usize, h: usize) -> Option<Vec<u8>> {
+    raw(
+        &[literal(path), &["-i", path, "-vf", &format!("scale={w}:{h}")]].concat(),
+        w * h * 4,
+    )
 }
 
 pub fn thumb(path: &str, t: f64, w: usize, h: usize) -> Option<Vec<u8>> {
     let from = |path: &str| {
-        let ((lead, down, ..), fast) = (probe(path), ["-skip_frame", "nokey", "-ss", &t.to_string()]);
+        let ((lead, down, ..), seek) = (probe(path), ["-skip_frame", "nokey", "-ss", &t.to_string()]);
+        let fast = if t > 0. { &seek[..] } else { &[] };
         raw(
-            &[lead, &fast, literal(path), &["-i", path, "-vf", &format!("{down}scale={w}:{h}")]].concat(),
+            &[lead, fast, literal(path), &["-i", path, "-vf", &format!("{down}scale={w}:{h}")]].concat(),
             w * h * 4,
         )
     };
@@ -917,7 +916,7 @@ impl Preview {
                     return (px.len() >= tw * th * 4).then_some((px, (tw, th), (x as i64, y as i64)));
                 }
                 let make = || match c.kind {
-                    Kind::Image => still(&c.src, 0., tw, th).map(Arc::new),
+                    Kind::Image => still(&c.src, tw, th).map(Arc::new),
                     _ => Some(Arc::new(shape::image(c, (size.0 as f64, size.1 as f64), k, i).0)),
                 };
                 (kept(&mut self.stills, &mut self.was.0, base.clone(), make)?, base)
@@ -1377,6 +1376,16 @@ mod tests {
             ],
             [(true, false), (false, true), (true, false), (false, true)]
         );
+    }
+
+    // A JPEG still, which ffmpeg gives no picture for when told to seek before reading it, draws in
+    // the preview and as a timeline thumbnail.
+    #[test]
+    fn jpegs_draw() {
+        let file = scratch("jpeg").join("bars.jpg");
+        film(&file, "testsrc=s=640x360", &["-frames:v", "1"]);
+        let path = file.to_string_lossy();
+        assert!(still(&path, 16, 9).is_some() && thumb(&path, 0., 16, 9).is_some());
     }
 
     // In a montage of many short clips the preview should warm up a decoder for the next clip only,
