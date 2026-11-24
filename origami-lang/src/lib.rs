@@ -1180,7 +1180,9 @@ fn finish(out: &str, kept: Vec<Vec<f32>>, files: Vec<(u32, PathBuf)>, measure: M
             && s.iter().any(|v| v.abs() > 170.)
         {
             s.iter_mut().for_each(|v| *v = v.clamp(-170., 170.));
-            tl.note = format!("line {n}: lens goes past 170 either way and is held at 170, the most it takes");
+            if tl.note.is_empty() {
+                tl.note = format!("line {n}: lens goes past 170 either way and is held at 170, the most it takes");
+            }
         }
     }
     tl.files = files;
@@ -1624,7 +1626,8 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
     }
 
     // An effect value outside what the effect can draw, keys included, is brought to the nearest value
-    // it takes with a note naming its line, while values inside are kept and NaN or Infinity stop the script.
+    // it takes with a note naming its line, the first such value when there are several, while values
+    // inside are kept and NaN or Infinity stop the script.
     #[test]
     fn effects_stay_in_range() {
         let t = tl(
@@ -1648,6 +1651,22 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
             ),
         ] {
             assert_eq!(tl(&format!("rect(9, 9).for(1)\n  .{src}")).note, format!("line 2: {note}"));
+        }
+        for (src, note) in [
+            (
+                "rect(9, 9).for(1).roughen({ border: -3, scale: 0 })\n  .blur(1e9).lens(keys([0, 0], [1, -200]))",
+                "line 1: roughen border -3 is raised to 0, the least it takes",
+            ),
+            (
+                "settings({ size: [641, 360] })\nrect(9, 9).for(1).blur(1e9).lens(200)",
+                "line 1: size [641, 360] is rounded to [642, 360], video files need even numbers",
+            ),
+            (
+                "rect(9, 9).for(1).blur(1e9)\n  .lens(200)",
+                "line 1: blur 1000000000 is lowered to 16384, the widest a picture can be",
+            ),
+        ] {
+            assert_eq!(tl(src).note, note);
         }
         let Fx::Lens(v) = &tl("rect(9, 9).for(1).lens(keys([0, 0], [1, -200]))").clips[0].fx[0] else {
             panic!()

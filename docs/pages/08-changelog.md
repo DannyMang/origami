@@ -6,6 +6,7 @@ What changed in each version of Origami. The launch screen shows the version you
 
 ### Nov 23
 
+- `origami frame` and `origami render` print the script's note, such as "line 3: lens 200 is lowered to 170, the most it takes", before they draw. Before, only `origami ir` and the app showed it. When a script has several such values the note is about the first one; before, it was about the last.
 - A font name that is not installed, such as `text("Hi", { font: "NoSuchFontName" })`, now says it "is not a font installed on this Mac, or a font file next to the script". Before, it said the name "points to a file that does not exist", as if a file had been asked for.
 - `curve` without its channel, as in `curve([[0, 0], [1, 1]])`, and `wheel` without its range now say which name goes first. Before, `curve` said it "takes points of two numbers", which the script had given, and `wheel` gave a JavaScript type error.
 - A colour table (`.cube`) file that is empty, cut short or not a colour table at all, used with `look` or `inputLut`, now gives an error on its line as soon as the script is read. Before, the preview drew the clip without the look and said nothing, and only the export refused the file.

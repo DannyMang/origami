@@ -8,7 +8,7 @@
   const must = (ok, say) => { if (!ok) throw new Error(at ? `line ${at}: ${say}` : say) }
   const fit = (k, v, lo = -Infinity, hi = Infinity) => {
     const x = typeof v === 'number' ? Math.min(Math.max(v, lo), hi) : v
-    if (x !== v) note = `line ${at}: ${k} ${v} is ${x > v ? 'raised' : 'lowered'} to ${x}, the ${x > v ? 'least' : 'most'} it takes`
+    if (x !== v) note ??= `line ${at}: ${k} ${v} is ${x > v ? 'raised' : 'lowered'} to ${x}, the ${x > v ? 'least' : 'most'} it takes`
     return x
   }
   const fin = (k, v, lo, hi) => {
@@ -118,7 +118,7 @@
     },
     lens: (d, fov) => fx(d, { lens: fit('lens', anim('lens', fov), -170, 170) }),
     blur: (d, r) => {
-      if (r > 16384) [note, r] = [`line ${at}: blur ${r} is lowered to 16384, the widest a picture can be`, 16384]
+      if (r > 16384) [note, r] = [note ?? `line ${at}: blur ${r} is lowered to 16384, the widest a picture can be`, 16384]
       return fx(d, { blur: anim('blur', r) })
     },
     levels: (d, black, white, channel = 'rgb') => {
@@ -300,7 +300,7 @@
       at = n
       must(o.fps === undefined || Number.isInteger(o.fps) && o.fps > 0 && o.fps <= 240, 'fps takes a whole number from 1 to 240')
       must(o.size == null || Array.isArray(o.size) && o.size.length === 2 && o.size.every(v => v >= 1 && v <= 16384), 'size is written [1920, 1080], two numbers from 1 to 16384')
-      if (o.size?.some(v => v % 2)) note = `${at ? `line ${at}: ` : ''}size [${o.size.join(', ')}] is rounded to [${o.size.map(even).join(', ')}], video files need even numbers`
+      if (o.size?.some(v => v % 2)) note ??= `${at ? `line ${at}: ` : ''}size [${o.size.join(', ')}] is rounded to [${o.size.map(even).join(', ')}], video files need even numbers`
       must([undefined, 'auto', 'full', 'half', 'quarter'].includes(o.preview), 'preview is "auto", "full", "half" or "quarter"')
       must([undefined, true, false].includes(o.proxy), 'proxy is true or false')
       for (const k in S) if (o[k] !== undefined) S[k] = o[k]
