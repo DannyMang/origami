@@ -38,6 +38,11 @@ What changed in each version of Origami. The launch screen shows the version you
 - Opening a clip in the Motion tab right after typing code that makes it follow another clip, before the script has been read again, no longer crashes Origami.
 - Triple-clicking the line of a trimmed sound whose file cannot be read as sound opens its small player without the wave. Before, it crashed Origami.
 - `:export --dry-run` says "could not write export.sh" when it could not, for example in a folder you may not write to. Before, it always said "wrote export.sh".
+- A voice recording whose file can no longer be written, for example because the disk is full, stops by itself and the status bar says "recording stopped: could not write to voice/take-1.wav" and that what was recorded is kept as `voice_1`. The kept take holds exactly the sound that reached the file. Before, the recording went on counting time that was never saved, and the take added to the script could be an empty or damaged sound file.
+- `lens` and `blur` keep to their limits when the value is a function of time. `.lens(t => 500)` is lowered to 170 and `.blur(t => 1e9)` to 16384, with the same note in the status bar as for a plain number, and a blur that moves past 16384, such as `.blur(t => 20000 + 1000 * t)`, is held there with the note "blur goes past 16384 and is held at 16384, the widest a picture can be". Before, these values went through as written, with no note.
+- Brackets inside backtick text and inside comments no longer count towards the limit of 100 nested brackets. Before, a comment or a `` `…` `` text with more than 100 brackets was refused as nested too deep.
+- Brackets nested thousands deep on a line that also has an apostrophe in backtick text, or a quote mark inside a pattern such as `/'/`, are refused with "brackets are nested more than 100 deep". Before, the script was reported as "script evaluation crashed".
+- A function of time handed to a function called through another name, such as `const o = title.opacity` and then `o(t => NaN)`, names the line of that call in its error or note. Before, "a function of time must return a number" and "lens goes past 170" named no line there.
 
 ### Nov 22
 

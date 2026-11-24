@@ -157,7 +157,7 @@ The next seven methods change a clip's picture: `lens`, `blur`, `levels`, `noise
 
 Bends the picture as a wide lens would. The number is the lens's field of view in degrees: how wide an angle it sees. A positive number curves the picture into a barrel, like a fisheye lens: it shrinks toward the middle, more at the edges, and the corners turn see-through. A negative number pinches the other way: the edges stretch outward past the frame.
 
-Range: -170 to 170, 0 changes nothing. 30 is gentle, 90 strong. Takes keys.
+Range: -170 to 170, 0 changes nothing. 30 is gentle, 90 strong. A value past either end, whether written as a number, as keys or as a function of time, is held at 170 or -170, and the status bar says so. Takes keys.
 
 ```origami
 video("clips/funny.mp4").trim(0, 3).lens(keys([0, 0], [3, 90]))
@@ -167,7 +167,7 @@ video("clips/funny.mp4").trim(0, 3).lens(keys([0, 0], [3, 90]))
 
 Softens the picture. The number is the radius in pixels: how far each pixel spreads. The clip's own edges blur too and turn see-through, so what is behind it shows at the border.
 
-Range: 0 and up, 0 changes nothing. 2 to 30 is typical. A number over 16384 is lowered to 16384, and the status bar says so. Takes keys.
+Range: 0 and up, 0 changes nothing. 2 to 30 is typical. A value over 16384, whether written as a number, as keys or as a function of time, is lowered to 16384, and the status bar says so. Takes keys.
 
 ```origami
 video("clips/funny.mp4").trim(0, 3).blur(keys([0, 0], [3, 20]))

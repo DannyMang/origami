@@ -6,12 +6,14 @@
   const digits = /^\d+$/, share = /^[\d.]+%$/, written = 'keys are written keys([0, 0], ["50%", 1], [-0.5, 0])', named = /(?:const|let|var)\s+(\w+)\s*=/, made = 'video sound image text captions caption color', bare = 'keys rect line path add mul cat stack settings delay bezier'
   const DAY = 86400, run = Symbol(), calm = Symbol()
   const lined = (say, n = at) => n ? `line ${n}: ${say}` : say
+  const here = () => +(new Error().stack?.match(/script:(\d+):/)?.[1] ?? 0)
   const must = (ok, say) => { if (!ok) throw new Error(lined(say)) }
-  const fit = (k, v, lo = -Infinity, hi = Infinity) => {
+  const fit = (k, v, lo = -Infinity, hi = Infinity, n, most = 'most it takes') => {
     const x = typeof v === 'number' ? Math.min(Math.max(v, lo), hi) : v
-    if (x !== v) note ??= lined(`${k} ${v} is ${x > v ? 'raised' : 'lowered'} to ${x}, the ${x > v ? 'least' : 'most'} it takes`)
+    if (x !== v) note ??= lined(`${k} ${v} is ${x > v ? 'raised' : 'lowered'} to ${x}, the ${x > v ? 'least it takes' : most}`, n)
     return x
   }
+  const held = (k, v, lo, hi, most) => typeof v === 'function' ? Object.assign(v, { held: x => fit(k, x, lo, hi, v.line, most) }) : fit(k, v, lo, hi, at, most)
   const fin = (k, v, lo, hi) => {
     if (!Number.isFinite(v)) throw new Error(lined(`${k} takes a number`))
     return fit(k, v, lo, hi)
@@ -57,7 +59,7 @@
       v = Object.assign((t, d, T) => led(T), { [run]: (n, d, from) => Array.from({ length: n }, (_, i) => led(from + i / S.fps)) })
     }
     if (typeof v !== 'function' && !(typeof v === 'number' && v - v === 0)) throw new Error(lined(`${k} takes a number or a function of time`))
-    return typeof v === 'number' ? v : Object.assign((t, d, T) => v(t, d, T), { line: at, [run]: v[run], [calm]: v[calm] })
+    return typeof v === 'number' ? v : Object.assign((t, d, T) => v(t, d, T), { line: at || here(), [run]: v[run], [calm]: v[calm] })
   }
   const num = (v, t, d, T) => typeof v === 'number' ? v : v(t, d, T)
   const times = (k, a, x) => {
@@ -118,11 +120,8 @@
       must(['alpha', 'alphaInverted', 'luma', 'lumaInverted'].includes(how), 'matte is "alpha", "alphaInverted", "luma" or "lumaInverted"')
       return { ...d, matte: [m.$, how] }
     },
-    lens: (d, fov) => fx(d, { lens: fit('lens', anim('lens', fov), -170, 170) }),
-    blur: (d, r) => {
-      if (r > 16384) [note, r] = [note ?? lined(`blur ${r} is lowered to 16384, the widest a picture can be`), 16384]
-      return fx(d, { blur: anim('blur', r) })
-    },
+    lens: (d, fov) => fx(d, { lens: held('lens', anim('lens', fov), -170, 170) }),
+    blur: (d, r) => fx(d, { blur: held('blur', anim('blur', r), -Infinity, 16384, 'widest a picture can be') }),
     levels: (d, black, white, channel = 'rgb') => {
       must(['rgb', 'alpha'].includes(channel), 'levels is written levels(0.2, 0.8) or levels(0.2, 0.8, "alpha")')
       const b = fin('levels black', black, 0, 0.99)
@@ -420,7 +419,7 @@
     for (let i = s.length; i < n; i++) s.push(v(i / S.fps, d, c.start + i / S.fps))
     const kept = __keep(s)
     if (kept === undefined) throw new Error(lined('a function of time must return a number', v.line))
-    return kept === false ? s[0] : [v.line, kept]
+    return kept === false ? v.held?.(s[0]) ?? s[0] : [v.line, kept]
   }
   const drawn = (c, v) => typeof v === 'function' ? sample(c, v) : Array.isArray(v) ? v.map(x => drawn(c, x)) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, drawn(c, x)])) : v
   const ir = (c, z) => ({
@@ -464,7 +463,8 @@
     const first = P.find(c => c.kind === 'video' && c.w)
     W = (S.size ?? (first ? [first.w, first.h] : [1920, 1080])).map(even)
     D = Math.max(0, ...P.map(c => c.end))
-    return JSON.stringify({ fps: S.fps, size: W, duration: D, preview: S.preview, proxy: S.proxy, note, clips: P.map(ir) })
+    const clips = P.map(ir)
+    return JSON.stringify({ fps: S.fps, size: W, duration: D, preview: S.preview, proxy: S.proxy, note, clips })
   }
   for (const k of ['__prep', '__late', '__out', '__probe', '__read', '__lut', '__font', '__measure', '__assigns', '__tag', '__plain', '__dots', '__ramp', '__keep']) Object.defineProperty(globalThis, k, { writable: false, configurable: false })
 })()

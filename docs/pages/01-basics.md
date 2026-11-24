@@ -59,7 +59,7 @@ The preview is never drawn more than 8192 pixels on its long side, also with `"f
 
 A script is stopped, with an error, when it runs for more than 30 seconds or uses more than 2 GB of memory. While it is still reading new media files it gets up to 5 minutes.
 
-A timeline over 16 MB as text, which means tens of thousands of clips, or more than 1,048,576 animated values, is an error too. So are brackets nested more than 100 deep; brackets inside quoted text do not count.
+A timeline over 16 MB as text, which means tens of thousands of clips, or more than 1,048,576 animated values, is an error too. So are brackets nested more than 100 deep; brackets inside quoted text, backtick text and comments do not count.
 
 ## Command line
 

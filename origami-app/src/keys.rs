@@ -86,7 +86,7 @@ impl Origami {
             return cx.notify();
         }
         if self.take.is_some() && matches!(k.as_str(), "escape" | "space") {
-            self.finish(k == "space");
+            self.finish(k == "space", false);
             return cx.notify();
         }
         let again = key.modifiers.platform && key.key == "g";

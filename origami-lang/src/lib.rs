@@ -21,7 +21,7 @@ use std::{
     env, fs,
     io::{self, Read, Seek, SeekFrom, Write},
     mem,
-    os::unix::fs::MetadataExt,
+    os::unix::{fs::MetadataExt, process::ExitStatusExt},
     panic,
     path::{Path, PathBuf},
     pin::pin,
@@ -705,6 +705,48 @@ fn uncaught(e: &anyhow::Error, saved: bool) -> Option<Error> {
     FAIL.take().filter(|f| saved && f.to_string() == e.to_string())
 }
 
+fn nested(text: &str, plain: bool) -> Result<()> {
+    let (mut depth, mut mode, mut last, mut skip, mut holes) = (0, 0, 0, false, vec![]);
+    let nest = |b| {
+        let was = mem::replace(&mut last, b);
+        let turn = matches!(b, b'(' | b'[' | b'{') as i32 - matches!(b, b')' | b']' | b'}') as i32;
+        if plain {
+            depth += turn;
+        } else if mem::take(&mut skip) {
+            last = 0;
+        } else if b == b'\\' && !matches!(mode, b'/' | b'*') {
+            skip = true;
+        } else {
+            match (mode, was, b) {
+                (0, b'/', b'/' | b'*') => (mode, last) = (b, 0),
+                (0, _, b'\'' | b'"' | b'`') => mode = b,
+                (0, _, b'}') if holes.last() == Some(&depth) => {
+                    holes.pop();
+                    (depth, mode) = (depth - 1, b'`');
+                }
+                (0, ..) => depth += turn,
+                (b'`', b'$', b'{') => {
+                    depth += 1;
+                    holes.push(depth);
+                    mode = 0;
+                }
+                (b'*', b'*', b'/') => (mode, last) = (0, 0),
+                (b'/' | b'\'' | b'"', _, b'\n') => mode = 0,
+                (b'\'' | b'"' | b'`', ..) if b == mode => mode = 0,
+                _ => {}
+            }
+        }
+        depth > 100
+    };
+    match text.bytes().position(nest) {
+        Some(i) => bail!(
+            "line {}: brackets are nested more than 100 deep",
+            text[..i].matches('\n').count() + 1
+        ),
+        None => Ok(()),
+    }
+}
+
 fn remote(script: &Path, relock: bool, src: Option<&str>, measure: Measure) -> Result<Timeline> {
     let job = serde_json::to_vec(&(script, relock, src))?;
     let mut slot = HELPER.lock().unwrap_or_else(PoisonError::into_inner);
@@ -714,16 +756,19 @@ fn remote(script: &Path, relock: bool, src: Option<&str>, measure: Measure) -> R
         None => fresh()?,
     };
     let _ = send(&mut h.1, &job);
-    let got = wait(&h);
+    let (got, mut sunk) = (wait(&h), false);
     *slot = match got {
         Ok(_) => Some(h),
         Err(_) => {
             let _ = h.0.kill();
-            let _ = h.0.wait();
+            sunk = h.0.wait().is_ok_and(|s| s.signal() == Some(6));
             fresh().ok()
         }
     };
     drop(slot);
+    if sunk && let Some(text) = src.map(String::from).or_else(|| load(script).ok()) {
+        nested(&text, true)?;
+    }
     open(&got?, measure)
 }
 
@@ -776,25 +821,7 @@ fn half(cx: &mut Context, script: &Path, relock: bool, src: Option<&str>, measur
         .and_then(|b| serde_json::from_str(&b).ok())
         .unwrap_or_default();
     let text = src.map_or_else(|| load(&script).map_err(|e| anyhow!("{}: {e}", script.display())), |s| Ok(s.into()))?;
-    let (mut depth, mut quote, mut skip) = (0, 0, false);
-    let nest = |b| {
-        if mem::take(&mut skip) {
-        } else if b == b'\\' {
-            skip = true;
-        } else if quote == 0 {
-            depth += matches!(b, b'(' | b'[' | b'{') as i32 - matches!(b, b')' | b']' | b'}') as i32;
-            quote = if matches!(b, b'\'' | b'"') { b } else { 0 };
-        } else if b == quote || b == b'\n' {
-            quote = 0;
-        }
-        depth > 100
-    };
-    if let Some(i) = text.bytes().position(nest) {
-        bail!(
-            "line {}: brackets are nested more than 100 deep",
-            text[..i].matches('\n').count() + 1
-        );
-    }
+    nested(&text, false)?;
     let run = |cx: &mut Context, code: &str| cx.eval(Source::from_bytes(code)).map_err(js);
     let set = |cx: &mut Context, k: JsString, v: JsValue| cx.register_global_property(k, v, Attribute::all()).map_err(js);
     let say = |cx: &mut Context, v: JsValue| Ok::<_, anyhow::Error>(v.to_string(cx).map_err(js)?.to_std_string_escaped());
@@ -915,12 +942,26 @@ fn finish(out: &str, kept: Vec<Vec<f32>>, files: Vec<(u32, PathBuf)>, measure: M
         );
     }
     for f in tl.clips.iter_mut().flat_map(|c| &mut c.fx) {
-        if let Fx::Lens(Val::Frames(n, s)) = f
-            && s.iter().any(|v| v.abs() > 170.)
+        let (v, lo, hi, said) = match f {
+            Fx::Lens(v) => (
+                v,
+                -170.,
+                170.,
+                "lens goes past 170 either way and is held at 170, the most it takes",
+            ),
+            Fx::Blur(v) => (
+                v,
+                f32::MIN,
+                16384.,
+                "blur goes past 16384 and is held at 16384, the widest a picture can be",
+            ),
+            _ => continue,
+        };
+        if let Val::Frames(n, s) = v
+            && s.iter().any(|x| !(lo..=hi).contains(x))
         {
-            s.iter_mut().for_each(|v| *v = v.clamp(-170., 170.));
+            s.iter_mut().for_each(|x| *x = x.clamp(lo, hi));
             if tl.note.is_empty() {
-                let said = "lens goes past 170 either way and is held at 170, the most it takes";
                 tl.note = if *n > 0 { format!("line {n}: {said}") } else { said.into() };
             }
         }
@@ -1365,9 +1406,9 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         assert_eq!(span, [(Kind::Rect, 1.5, 2.5, 0.), (Kind::Text, 1., 4., 2.)]);
     }
 
-    // An effect value outside what the effect can draw, keys included, is brought to the nearest value
-    // it takes with a note naming its line, the first such value when there are several, while values
-    // inside are kept and NaN or Infinity stop the script.
+    // An effect value outside what the effect can draw, whether written as a number, as keys or as a
+    // function of time, is brought to the nearest value it takes with a note naming its line, the first
+    // such value when there are several, while values inside are kept and NaN or Infinity stop the script.
     #[test]
     fn effects_stay_in_range() {
         let t = tl(
@@ -1388,6 +1429,17 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
             (
                 "lens(keys([0, 0], [1, -200]))",
                 "lens goes past 170 either way and is held at 170, the most it takes",
+            ),
+            ("lens(t => 500)", "lens 500 is lowered to 170, the most it takes"),
+            ("lens(() => -500)", "lens -500 is raised to -170, the least it takes"),
+            (
+                "lens(t => 500 + t)",
+                "lens goes past 170 either way and is held at 170, the most it takes",
+            ),
+            ("blur(t => 1e9)", "blur 1000000000 is lowered to 16384, the widest a picture can be"),
+            (
+                "blur(t => 20000 + 1000 * t)",
+                "blur goes past 16384 and is held at 16384, the widest a picture can be",
             ),
         ] {
             assert_eq!(tl(&format!("rect(9, 9).for(1)\n  .{src}")).note, format!("line 2: {note}"));
@@ -1412,6 +1464,11 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
             panic!()
         };
         assert_eq!((v.at(15), v.at(29)), (-100., -170.));
+        let t = tl("rect(9, 9).for(1).lens(t => 500).blur(() => 1e9).blur(t => 20000 + 1000 * t).blur(t => 9 + t)");
+        let [Fx::Lens(a), Fx::Blur(b), Fx::Blur(c), Fx::Blur(d)] = &t.clips[0].fx[..] else {
+            panic!()
+        };
+        assert_eq!((a.max(), b.max(), c.max(), d.at(0)), (170., 16384., 16384., 9.));
         let t = tl("rect(9, 9).lens(30).levels(0.2, 0.8).roughen({ border: 0, sharpness: 0 }).noise(1)");
         assert_eq!((t.clips[0].fx[1].clone(), t.note.as_str()), (Fx::Levels(0.2, 0.8, false), ""));
         let dir = scratch("effects");
@@ -2002,7 +2059,8 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
     }
 
     // A function called through another name, or on a whole group, still names its own line when
-    // something is wrong, never line 0 or the line of the call before it.
+    // something is wrong, never line 0 or the line of the call before it, and so does a function of
+    // time handed to one, whose mistake is only found after the script has ended.
     #[test]
     fn renamed_functions_name_their_own_line() {
         let dir = scratch("renamed");
@@ -2016,14 +2074,35 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
             ("stack(text('a'),\n  text('b'))\n  .fade(-1)", "line 3: fade takes seconds"),
             (
                 "const a = text('a')\nconst o = a.opacity\no(t => 'x')",
-                "a function of time must return a number",
+                "line 3: a function of time must return a number",
+            ),
+            (
+                "const a = text('a')\nconst o = a.opacity\nconst dim = f => o(\n  f)\n\ndim(t => NaN)",
+                "line 3: a function of time must return a number",
+            ),
+            (
+                "const p = path\n\np([[t => NaN, 0], [1, 0], [1, 1]])",
+                "line 3: a function of time must return a number",
+            ),
+            (
+                "const e = text('abc').each\n\n\ne('char', i => ({ opacity: t => NaN }))",
+                "line 4: a function of time must return a number",
+            ),
+            (
+                "const o = text('a').opacity\nconst b = [t => NaN].map(o)\nb[0]",
+                "line 2: a function of time must return a number",
             ),
         ] {
             let e = fails(&dir, src);
             assert!(e.starts_with(says), "{src}: {e}");
         }
         let t = run(&dir, "const a = text('a').for(1)\nconst l = a.lens\nl(t => 500 + t)").unwrap();
-        assert_eq!(t.note, "lens goes past 170 either way and is held at 170, the most it takes");
+        assert_eq!(
+            t.note,
+            "line 3: lens goes past 170 either way and is held at 170, the most it takes"
+        );
+        let t = run(&dir, "const a = text('a').for(1)\nconst l = a.lens\n\nl(t => 500)").unwrap();
+        assert_eq!(t.note, "line 4: lens 500 is lowered to 170, the most it takes");
     }
 
     // A missing file the script caught and moved past is not blamed for a later mistake, while one it
@@ -2039,23 +2118,37 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         assert_eq!(e.downcast_ref::<Error>().map(Error::line), Some(2));
     }
 
-    // Brackets inside quoted text are not counted as nesting, while real nesting after a stray or
-    // escaped quote mark is still refused, and a script path with no folder is an error, not a crash.
+    // Brackets inside quoted text, backtick text and comments are not counted as nesting, while real
+    // nesting after a stray or escaped quote mark or inside ${} is still refused, nesting hidden behind
+    // a quote mark in a pattern is still found by the plain count used after a crash, and a script path
+    // with no folder is an error, not a crash.
     #[test]
     fn quoted_brackets_are_not_nesting() {
         let (open, shut) = ("(".repeat(101), ")".repeat(101));
         let t = tl(&format!("stack(text('{open}').for(1),\n  text(\"it's {open}\"))"));
         assert_eq!(t.clips[0].src, open);
+        let t = tl(&format!(
+            "// don't {open}\n/* it's\n{open} */\nstack(text(`it's {open}`).for(1), text(`a${{'b'}}c{open}`))"
+        ));
+        assert_eq!((&t.clips[0].src, &t.clips[1].src), (&format!("it's {open}"), &format!("abc{open}")));
         let dir = scratch("quoted");
         for src in [
             format!("// don't\n{open}text('a'){shut}"),
             format!("text('\\'')\n{open}text('a'){shut}"),
+            format!("text(`\\${{`)\n{open}text('a'){shut}"),
+            format!("/* a */ /* b */\ntext(`${{{open}1{shut}}}`)"),
         ] {
             assert!(
                 fails(&dir, &src).starts_with("line 2: brackets are nested more than 100 deep"),
                 "{src}"
             );
         }
+        let slip = format!("text('a')\nconst r = /'/, x = {open}1{shut}");
+        assert!(nested(&slip, false).is_ok());
+        assert_eq!(
+            nested(&slip, true).unwrap_err().to_string(),
+            "line 2: brackets are nested more than 100 deep"
+        );
         let e = eval(Path::new("/"), false, size).unwrap_err().to_string();
         assert!(!e.contains("crashed"), "{e}");
     }
