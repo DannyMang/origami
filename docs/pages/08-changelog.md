@@ -39,6 +39,7 @@ What changed in each version of Origami. The launch screen shows the version you
 - Triple-clicking the line of a trimmed sound whose file cannot be read as sound opens its small player without the wave. Before, it crashed Origami.
 - `:export --dry-run` says "could not write export.sh" when it could not, for example in a folder you may not write to. Before, it always said "wrote export.sh".
 - A voice recording whose file can no longer be written, for example because the disk is full, stops by itself and the status bar says "recording stopped: could not write to voice/take-1.wav" and that what was recorded is kept as `voice_1`. The kept take holds exactly the sound that reached the file. Before, the recording went on counting time that was never saved, and the take added to the script could be an empty or damaged sound file.
+- `lens` and `blur` keep to their limits when the value is a function of time. `.lens(t => 500)` is lowered to 170 and `.blur(t => 1e9)` to 16384, with the same note in the status bar as for a plain number, and a blur that moves past 16384, such as `.blur(t => 20000 + 1000 * t)`, is held there with the note "blur goes past 16384 and is held at 16384, the widest a picture can be". Before, these values went through as written, with no note.
 
 ### Nov 22
 

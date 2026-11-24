@@ -1188,12 +1188,26 @@ fn finish(out: &str, kept: Vec<Vec<f32>>, files: Vec<(u32, PathBuf)>, measure: M
         );
     }
     for f in tl.clips.iter_mut().flat_map(|c| &mut c.fx) {
-        if let Fx::Lens(Val::Frames(n, s)) = f
-            && s.iter().any(|v| v.abs() > 170.)
+        let (v, lo, hi, said) = match f {
+            Fx::Lens(v) => (
+                v,
+                -170.,
+                170.,
+                "lens goes past 170 either way and is held at 170, the most it takes",
+            ),
+            Fx::Blur(v) => (
+                v,
+                f32::MIN,
+                16384.,
+                "blur goes past 16384 and is held at 16384, the widest a picture can be",
+            ),
+            _ => continue,
+        };
+        if let Val::Frames(n, s) = v
+            && s.iter().any(|x| !(lo..=hi).contains(x))
         {
-            s.iter_mut().for_each(|v| *v = v.clamp(-170., 170.));
+            s.iter_mut().for_each(|x| *x = x.clamp(lo, hi));
             if tl.note.is_empty() {
-                let said = "lens goes past 170 either way and is held at 170, the most it takes";
                 tl.note = if *n > 0 { format!("line {n}: {said}") } else { said.into() };
             }
         }
@@ -1638,9 +1652,9 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         assert_eq!(span, [(Kind::Rect, 1.5, 2.5, 0.), (Kind::Text, 1., 4., 2.)]);
     }
 
-    // An effect value outside what the effect can draw, keys included, is brought to the nearest value
-    // it takes with a note naming its line, the first such value when there are several, while values
-    // inside are kept and NaN or Infinity stop the script.
+    // An effect value outside what the effect can draw, whether written as a number, as keys or as a
+    // function of time, is brought to the nearest value it takes with a note naming its line, the first
+    // such value when there are several, while values inside are kept and NaN or Infinity stop the script.
     #[test]
     fn effects_stay_in_range() {
         let t = tl(
@@ -1661,6 +1675,17 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
             (
                 "lens(keys([0, 0], [1, -200]))",
                 "lens goes past 170 either way and is held at 170, the most it takes",
+            ),
+            ("lens(t => 500)", "lens 500 is lowered to 170, the most it takes"),
+            ("lens(() => -500)", "lens -500 is raised to -170, the least it takes"),
+            (
+                "lens(t => 500 + t)",
+                "lens goes past 170 either way and is held at 170, the most it takes",
+            ),
+            ("blur(t => 1e9)", "blur 1000000000 is lowered to 16384, the widest a picture can be"),
+            (
+                "blur(t => 20000 + 1000 * t)",
+                "blur goes past 16384 and is held at 16384, the widest a picture can be",
             ),
         ] {
             assert_eq!(tl(&format!("rect(9, 9).for(1)\n  .{src}")).note, format!("line 2: {note}"));
@@ -1685,6 +1710,11 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
             panic!()
         };
         assert_eq!((v.at(15), v.at(29)), (-100., -170.));
+        let t = tl("rect(9, 9).for(1).lens(t => 500).blur(() => 1e9).blur(t => 20000 + 1000 * t).blur(t => 9 + t)");
+        let [Fx::Lens(a), Fx::Blur(b), Fx::Blur(c), Fx::Blur(d)] = &t.clips[0].fx[..] else {
+            panic!()
+        };
+        assert_eq!((a.max(), b.max(), c.max(), d.at(0)), (170., 16384., 16384., 9.));
         let t = tl("rect(9, 9).lens(30).levels(0.2, 0.8).roughen({ border: 0, sharpness: 0 }).noise(1)");
         assert_eq!((t.clips[0].fx[1].clone(), t.note.as_str()), (Fx::Levels(0.2, 0.8, false), ""));
         let dir = scratch("effects");
