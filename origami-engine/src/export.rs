@@ -245,7 +245,7 @@ fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path, (k, (w, h)): (f64, (
         );
         let n = inputs(&ins);
         let (tw, th, x, y) = place(c, size, k);
-        let solid = c.kind == Kind::Color && text::rgba(&c.src)[3] == 255;
+        let solid = c.kind == Kind::Color && text::rgba(&c.src)[3] == 255 && c.fade == (0., 0.);
         let (video, mut cut) = (video && tw >= 1. && th >= 1., String::new());
         match c.kind {
             Kind::Image if video => {
@@ -299,8 +299,14 @@ fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path, (k, (w, h)): (f64, (
                     format!("[b{b0}]drawbox=w=iw:h=ih:{fill}:t=fill:{on}{shade}[b{}]", b0 + 1)
                 }
                 false => {
-                    let pad = if c.kind == Kind::Video { "tpad=stop=2:stop_mode=clone," } else { "" };
-                    let mut s = format!("[{n}:v]{cut}{pad}setpts=(PTS-STARTPTS)/{}+{}/TB+1e-6,scale={tw}:{th}", c.speed, c.start);
+                    let (pad, pace) = match c.kind {
+                        Kind::Video => {
+                            let held = format!("trim=duration={},tpad=stop=2:stop_mode=clone,", len * c.speed);
+                            (format!("tpad=stop=-1:stop_mode=clone,{held}"), c.speed)
+                        }
+                        _ => (String::new(), 1.),
+                    };
+                    let mut s = format!("[{n}:v]{cut}{pad}setpts=(PTS-STARTPTS)/{pace}+{}/TB+1e-6,scale={tw}:{th}", c.start);
                     if lut.is_some() || mask.is_some() {
                         s += ",format=bgra";
                     }
@@ -332,7 +338,7 @@ fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path, (k, (w, h)): (f64, (
                 c.gain
             );
             if c.fade.0 > skip {
-                s += &format!(",afade=t=in:d={}", c.fade.0 - skip);
+                s += &format!(",asetpts=PTS+{skip}/TB,afade=t=in:d={},asetpts=PTS-STARTPTS", c.fade.0);
             }
             if c.fade.1 > 0. {
                 s += &format!(",afade=t=out:st={}:d={}", (len - c.fade.1).max(0.), c.fade.1);
@@ -746,6 +752,53 @@ mod tests {
         let made: Vec<u8> = px.chunks(64 * 36).map(|f| f[18 * 64 + 32]).collect();
         assert_eq!(made.len(), n);
         assert!(shown.iter().chain(&made).all(|v| *v > 200), "{shown:?} {made:?}");
+    }
+
+    // A fading solid colour, a sped-up still and a film shorter than its clip look the same frame by
+    // frame in the export as in the preview, and sound that starts part-way through its fade in is as
+    // loud as it is at that moment when played from the start.
+    #[test]
+    fn exports_match_the_preview() {
+        let _tidy = TIDY.read();
+        let dir = scratch("match");
+        film(&dir.join("w.mp4"), "color=white:s=64x36:r=30:d=1", &[]);
+        film(&dir.join("s.wav"), "sine=d=4", &[]);
+        let tl = |src: &str| {
+            fs::write(dir.join("edit.js"), format!("settings({{ size: [64, 36] }})\n{src}")).unwrap();
+            origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap()
+        };
+        let out = dir.join("out.mp4").to_string_lossy().to_string();
+        for src in [
+            "stack(color('#000').for(2), color('#fff').for(2).fade(1))",
+            "stack(color('#000').for(2), rect(64, 36).for(2).speed(2))",
+            "stack(color('#000').for(3), video('w.mp4').for(3))",
+        ] {
+            let (tl, mut pv) = (tl(src), Preview::default());
+            let n = (tl.duration * 30.).round() as usize;
+            let shown: Vec<u8> = (0..n)
+                .map(|k| pv.frame(&tl, k as f64 / 30., (64, 36))[(18 * 64 + 32) * 4])
+                .collect();
+            render(&tl, &out, &Opts::default(), |_| {}).unwrap();
+            let args = ["-v", "error", "-i", &out, "-f", "rawvideo", "-pix_fmt", "gray", "-"];
+            let px = origami_lang::output(ffmpeg().args(args)).unwrap().stdout;
+            let made: Vec<u8> = px.chunks(64 * 36).map(|f| f[18 * 64 + 32]).collect();
+            assert_eq!(made.len(), n, "{src}");
+            assert!(
+                shown.iter().zip(&made).all(|(a, b)| a.abs_diff(*b) < 24),
+                "{src}: {shown:?} {made:?}"
+            );
+        }
+        let tl = tl("sound('s.wav').fade(2)");
+        let loud = |from: f64, skip: usize| {
+            let heard = origami_lang::output(ffmpeg().args(["-v", "error"]).args(audio_args(&tl, from, 48000, 1.)));
+            let all = heard.unwrap().stdout;
+            let part = all.chunks_exact(4).skip(skip * 2).take(9600);
+            part.map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]).powi(2))
+                .sum::<f32>()
+                .sqrt()
+        };
+        let (whole, late) = (loud(0., 48000), loud(1., 0));
+        assert!((late / whole - 1.).abs() < 0.1, "{whole} {late}");
     }
 
     // An export onto a file the script reads, spelled another way (different case, a detour through ..,
