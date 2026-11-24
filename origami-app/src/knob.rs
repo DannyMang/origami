@@ -1,6 +1,7 @@
 use crate::{
     Origami, bitmap,
-    view::{BLUE, BORDER, DIM, PANEL},
+    keys::secs,
+    view::{BLUE, BORDER, DIM, GREEN, INK, PANEL, RED, TEXT},
 };
 use gpui::{Context, Div, MouseButton, MouseDownEvent, Pixels, Point, RenderImage, Window, div, img, prelude::*, px, rgb, rgba};
 use origami_engine::tone;
@@ -109,10 +110,6 @@ fn hsv(rgb: f64) -> (f32, f32, f32) {
 fn pack(hue: f32, vivid: f32, light: f32) -> f64 {
     let [b, g, r] = paint(hue / 60., vivid, light).map(u32::from);
     (r << 16 | g << 8 | b) as f64
-}
-
-fn secs(s: &str) -> Option<f64> {
-    s.split(':').try_fold(0., |a, x| x.parse::<f64>().ok().map(|x| a * 60. + x))
 }
 
 pub fn close(s: &[u8], open: usize) -> Option<usize> {
@@ -485,8 +482,8 @@ impl Origami {
                     .iter()
                     .position(|c| call == "curve" && args.contains(c))
                 {
-                    Some(i) => [0xd07277, 0xa1c181, BLUE][i],
-                    None => 0xdce0e5,
+                    Some(i) => [RED, GREEN, BLUE][i],
+                    None => TEXT,
                 };
                 let back = ["hueVsSat", "hueVsHue", "hueVsLuma", "lumaVsSat", "satVsSat"]
                     .iter()
@@ -497,7 +494,7 @@ impl Origami {
                         .inset_0()
                         .child(img(STRIPS[i.saturating_sub(2)].clone()).size_full())
                 });
-                let handle = |p: &(f32, f32)| dot(p.0, p.1, 14.).bg(rgb(ink)).border_2().border_color(rgb(0x1b1f25));
+                let handle = |p: &(f32, f32)| dot(p.0, p.1, 14.).bg(rgb(ink)).border_2().border_color(rgb(INK));
                 let handles: Vec<Div> = points.iter().map(handle).collect();
                 let rule = |i: usize| {
                     div().absolute().bg(rgba(BORDER << 8 | 0x90)).map(|d| match i < 3 {
@@ -523,7 +520,7 @@ impl Origami {
                 };
                 let (fx, fy) = (hue.to_radians().cos() * far * 0.5 + 0.5, hue.to_radians().sin() * far * 0.5 + 0.5);
                 let wheel = div().absolute().inset_0().child(img(DISC.clone()).size_full());
-                vec![wheel, dot(fx, fy, 12.).border_2().border_color(rgb(0x1b1f25)).bg(rgb(0xffffff))]
+                vec![wheel, dot(fx, fy, 12.).border_2().border_color(rgb(INK)).bg(rgb(0xffffff))]
             }
         };
         let board = div()

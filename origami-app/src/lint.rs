@@ -2,13 +2,12 @@ use crate::{
     Origami,
     complete::{DEFS, kind},
     knob::calls,
-    view::{BORDER, DIM, PANEL},
+    view::{BORDER, DIM, PANEL, RED},
 };
 use gpui::{Div, Window, div, prelude::*, px, rgb};
 use origami_lang::Kind;
 use std::{sync::Arc, time::Duration};
 
-const RED: u32 = 0xd07277;
 const MOST: usize = 500;
 
 #[derive(Clone)]
