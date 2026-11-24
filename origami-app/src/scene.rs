@@ -153,6 +153,17 @@ impl Origami {
         })
     }
 
+    pub fn touch(
+        cx: &Context<Self>,
+        f: impl Fn(&mut Self, &MouseDownEvent, &mut Window, &mut Context<Self>) + 'static,
+    ) -> impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static {
+        cx.listener(move |this, e, window, cx| {
+            f(this, e, window, cx);
+            cx.stop_propagation();
+            cx.notify();
+        })
+    }
+
     pub fn slots(&self) -> Vec<(u32, &'static str, f32)> {
         let mut out = vec![];
         for c in &self.tl.clips {

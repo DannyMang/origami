@@ -574,10 +574,8 @@ impl Origami {
             let wide = k.hi - k.lo;
             rail(label, start, text).on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, e: &MouseDownEvent, _, cx| {
-                    this.hold(Turn::Slide(i, f32::from(e.position.x), value, wide));
-                    cx.stop_propagation();
-                    cx.notify();
+                Self::touch(cx, move |this, e: &MouseDownEvent, _, _| {
+                    this.hold(Turn::Slide(i, f32::from(e.position.x), value, wide))
                 }),
             )
         });

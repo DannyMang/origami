@@ -57,11 +57,9 @@ impl Origami {
             .cursor_pointer()
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, e: &MouseDownEvent, window, cx| {
+                Self::touch(cx, |this, e: &MouseDownEvent, window, _| {
                     this.scrubbing = true;
                     this.glide(e.position.x, window);
-                    cx.stop_propagation();
-                    cx.notify();
                 }),
             )
             .child(groove(done * RAIL, rgb(BLUE)).w_full());

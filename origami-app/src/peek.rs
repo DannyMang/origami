@@ -215,14 +215,7 @@ impl Origami {
             .text_size(px(10.))
             .cursor_pointer()
             .child(if p.run.is_some() { "||" } else { "\u{25b6}" })
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    this.eye();
-                    cx.stop_propagation();
-                    cx.notify();
-                }),
-            );
+            .on_mouse_down(MouseButton::Left, Self::touch(cx, |this, _, _, _| this.eye()));
         let bar = div()
             .h(px(14.))
             .flex()
@@ -230,11 +223,9 @@ impl Origami {
             .cursor_pointer()
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, e: &MouseDownEvent, window, cx| {
+                Self::touch(cx, |this, e: &MouseDownEvent, window, _| {
                     this.eyeing = true;
                     this.scan(e.position.x, window);
-                    cx.stop_propagation();
-                    cx.notify();
                 }),
             )
             .child(groove(done * WIDE, rgb(BLUE)).w_full());

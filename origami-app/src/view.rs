@@ -298,14 +298,7 @@ impl Origami {
             .whitespace_nowrap()
             .cursor_pointer()
             .hover(|s| s.bg(rgb(BAR)).text_color(rgb(TEXT)))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, window, cx| {
-                    f(this, window, cx);
-                    cx.stop_propagation();
-                    cx.notify();
-                }),
-            )
+            .on_mouse_down(MouseButton::Left, Self::touch(cx, move |this, _, window, cx| f(this, window, cx)))
             .child(label)
     }
 
@@ -367,11 +360,7 @@ impl Origami {
                 .text_color(rgb(if (self.motion, self.web) == (motion, web) { TEXT } else { DIM }))
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| {
-                        (this.motion, this.web) = (motion, web);
-                        cx.stop_propagation();
-                        cx.notify();
-                    }),
+                    Self::touch(cx, move |this, _, _, _| (this.motion, this.web) = (motion, web)),
                 )
                 .child(label)
         };
@@ -661,14 +650,7 @@ impl Origami {
                 .text_color(rgb(DIM))
                 .cursor_pointer()
                 .children(region.map(|_| if shut { "\u{25b8}" } else { "\u{25be}" }))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| {
-                        this.fold(i, None);
-                        cx.stop_propagation();
-                        cx.notify();
-                    }),
-                );
+                .on_mouse_down(MouseButton::Left, Self::touch(cx, move |this, _, _, _| this.fold(i, None)));
             let number = div()
                 .w(px(3.5 * self.glyph()))
                 .flex_none()
@@ -832,7 +814,7 @@ impl Origami {
                         .child(label)
                         .on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(move |this, _, _, cx| {
+                            Self::touch(cx, move |this, _, _, cx| {
                                 (this.clash, this.dirty) = (false, mine);
                                 match mine {
                                     true => this.store(),
@@ -841,8 +823,6 @@ impl Origami {
                                         this.load(cx)
                                     }
                                 }
-                                cx.stop_propagation();
-                                cx.notify();
                             }),
                         )
                 };
@@ -872,14 +852,7 @@ impl Origami {
                         .cursor_pointer()
                         .hover(|s| s.bg(rgb(BAR)).text_color(rgb(TEXT)))
                         .child(label)
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _, _, cx| {
-                                this.hunt(Some(on));
-                                cx.stop_propagation();
-                                cx.notify();
-                            }),
-                        )
+                        .on_mouse_down(MouseButton::Left, Self::touch(cx, move |this, _, _, _| this.hunt(Some(on))))
                 };
                 let mode = |label: &'static str, i: usize| {
                     div()
@@ -890,14 +863,7 @@ impl Origami {
                         .when(self.modes[i], |d| d.bg(rgba(BLUE << 8 | 0x40)))
                         .cursor_pointer()
                         .child(label)
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _, _, cx| {
-                                this.flip(i);
-                                cx.stop_propagation();
-                                cx.notify();
-                            }),
-                        )
+                        .on_mouse_down(MouseButton::Left, Self::touch(cx, move |this, _, _, _| this.flip(i)))
                 };
                 let bad = self.seeker.is_none() && !q.is_empty();
                 div()
