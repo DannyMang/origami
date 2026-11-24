@@ -6,6 +6,7 @@ What changed in each version of Origami. The launch screen shows the version you
 
 ### Nov 23
 
+- The `:help` panel fits the window: long lines wrap, and in a window too short for all of it the panel scrolls. Before, it was wider than the window, so the first and last words of every line were cut off.
 - The timeline bar leaves out the buttons that do not fit when the left pane is narrow: first the timecode, then undo, redo, delete and the microphone, then the speed, T, ✎ and +. Before, in a small window or with the code pane dragged wide, the buttons were drawn on top of each other and the timecode ran over the code.
 - A JPEG used with `image` now shows in the preview and as its timeline thumbnail. Before, most JPEGs drew nothing there, though they did appear in exports.
 - A colour table (`.cube`) file edited or exported again while Origami is open now shows its new colours at once, in the preview and in exports. Before, a clip kept the table it was first drawn with until Origami was restarted.

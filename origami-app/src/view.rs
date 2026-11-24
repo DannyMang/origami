@@ -1173,8 +1173,13 @@ impl Render for Origami {
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
-        let help = div().absolute().inset_0().flex().items_center().justify_center().child(
+        let help = div().absolute().inset_0().p_4().flex().items_center().justify_center().child(
             div()
+                .id("help")
+                .debug_selector(|| "help".into())
+                .min_w_0()
+                .max_h_full()
+                .overflow_y_scroll()
                 .p_4()
                 .bg(rgb(PANEL))
                 .border_1()
@@ -1474,6 +1479,30 @@ mod tests {
         }
         let ([_, _, mid, _], pane) = laid(1512., 520.);
         assert!(((mid.0 + mid.1) / 2. - pane / 2.).abs() < 1., "{mid:?} {pane}");
+    }
+
+    // The :help panel stays inside the window with a margin around it, at the default size and at the
+    // smallest one, so none of its lines are cut off at the sides.
+    #[gpui::test]
+    fn help_fits(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            app.script = "edit.js".into();
+            window.focus(&app.focus);
+            app
+        });
+        cx.simulate_keystrokes("escape : h e l p enter");
+        assert!(view.update(cx, |o, _| o.help));
+        for (w, h) in [(1512., 900.), (680., 330.)] {
+            cx.simulate_resize(gpui::size(gpui::px(w), gpui::px(h)));
+            cx.run_until_parked();
+            let b = cx.debug_bounds("help").unwrap();
+            let edges = [b.left(), b.top(), b.right(), b.bottom()].map(f32::from);
+            assert!(
+                edges[0] >= 16. && edges[1] >= 16. && edges[2] <= w - 16. && edges[3] <= h - 16.,
+                "{edges:?}"
+            );
+        }
     }
 
     // Thumbnails shown lately are kept, but ones not shown since the timeline last held 500 are let go,
