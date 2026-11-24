@@ -38,6 +38,7 @@ What changed in each version of Origami. The launch screen shows the version you
 - Opening a clip in the Motion tab right after typing code that makes it follow another clip, before the script has been read again, no longer crashes Origami.
 - Triple-clicking the line of a trimmed sound whose file cannot be read as sound opens its small player without the wave. Before, it crashed Origami.
 - `:export --dry-run` says "could not write export.sh" when it could not, for example in a folder you may not write to. Before, it always said "wrote export.sh".
+- A voice recording whose file can no longer be written, for example because the disk is full, stops by itself and the status bar says "recording stopped: could not write to voice/take-1.wav" and that what was recorded is kept as `voice_1`. The kept take holds exactly the sound that reached the file. Before, the recording went on counting time that was never saved, and the take added to the script could be an empty or damaged sound file.
 
 ### Nov 22
 

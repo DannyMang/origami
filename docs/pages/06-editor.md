@@ -182,6 +182,8 @@ const voice_1 = sound("voice/take-1.wav")
 
 The microphone button at the left of the bar picks the input. A take of pure silence is not added: allow the microphone for Origami in System Settings, Privacy & Security. cmd+z removes a take from the script.
 
+If the take's file can no longer be written while you record, for example because the disk is full, the recording stops by itself and the status bar says "recording stopped". What was recorded up to then is kept and added to the script like any other take; when nothing was recorded, nothing is added.
+
 ## Full-screen preview
 
 The corner icon above the preview, `f`, or View › Full-screen Preview fills the window with the picture. Move the mouse to show a bar with play, the time and a line to drag the playhead along. It hides again after two seconds. Space and the arrows still work. Esc, `f` or the icon in the bar goes back.

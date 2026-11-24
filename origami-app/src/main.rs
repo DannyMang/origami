@@ -469,6 +469,7 @@ impl Origami {
         }
         let wait = self.boot.is_some_and(|b| !b.1 && b.0.elapsed() > Duration::from_millis(100));
         self.boot = self.boot.map(|b| (b.0, b.1 || wait));
+        self.heed();
         if wait || self.take.is_some() || self.full && (2.0..2.1).contains(&self.stir.elapsed().as_secs_f32()) {
             cx.notify();
         }

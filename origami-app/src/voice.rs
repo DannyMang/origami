@@ -130,7 +130,7 @@ fn voiced(lines: &mut Vec<String>, n: usize, at: f64) -> usize {
 impl Origami {
     pub fn record(&mut self) {
         if self.take.is_some() {
-            return self.finish(true);
+            return self.finish(true, false);
         }
         let dir = self.script.parent().unwrap().join("voice");
         if fs::symlink_metadata(&dir).is_ok_and(|m| m.is_symlink()) {
@@ -165,7 +165,13 @@ impl Origami {
         }
     }
 
-    pub fn finish(&mut self, keep: bool) {
+    pub fn heed(&mut self) {
+        if self.take.as_ref().and_then(|k| k.mic.as_ref()).is_some_and(Mic::cut) {
+            self.finish(true, true);
+        }
+    }
+
+    pub fn finish(&mut self, keep: bool, cut: bool) {
         let Some(take) = self.take.take() else { return };
         self.player = None;
         let dir = self.script.parent().unwrap().join("voice");
@@ -174,9 +180,10 @@ impl Origami {
         if silent || !keep {
             let _ = fs::remove_file(dir.join(format!("take-{}.wav", take.n)));
             let _ = fs::remove_dir(dir);
-            return self.note = match keep {
-                true => "heard only silence, nothing added: allow the microphone in System Settings, Privacy & Security".into(),
-                false => "discarded the take".into(),
+            return self.note = match (keep, cut) {
+                (true, true) => format!("recording stopped: could not write to voice/take-{}.wav, nothing added", take.n),
+                (true, false) => "heard only silence, nothing added: allow the microphone in System Settings, Privacy & Security".into(),
+                (false, _) => "discarded the take".into(),
             };
         }
         let mut row = 0;
@@ -184,7 +191,13 @@ impl Origami {
         self.sel = Some(self.tl.clips.len() as u32);
         self.reveal(row);
         pulse::beat("voiceover recorded");
-        self.note = format!("added voice_{0} \u{b7} voice/take-{0}.wav \u{b7} cmd+z removes it", take.n);
+        self.note = match cut {
+            true => format!(
+                "recording stopped: could not write to voice/take-{0}.wav \u{b7} kept what was recorded as voice_{0} \u{b7} cmd+z removes it",
+                take.n
+            ),
+            false => format!("added voice_{0} \u{b7} voice/take-{0}.wav \u{b7} cmd+z removes it", take.n),
+        };
     }
 
     pub fn recorder(&self, cx: &mut Context<Self>) -> Div {
@@ -367,8 +380,9 @@ mod tests {
         assert_eq!(lines, ["stack(cat(a, b), c.at(2)) // x"]);
     }
 
-    // Stopping a recording should add the take to the script and save it, undo should remove it, and
-    // cancelling should delete the unused audio file without touching earlier takes.
+    // Stopping a recording should add the take to the script and save it, undo should remove it,
+    // cancelling should delete the unused audio file without touching earlier takes, and a recording
+    // that stopped by itself because its file could not be written keeps what was recorded and says so.
     #[gpui::test]
     fn takes(cx: &mut gpui::TestAppContext) {
         let dir = std::env::temp_dir().join("origami-voice-test");
@@ -442,6 +456,21 @@ mod tests {
         cx.simulate_keystrokes("escape");
         assert!(!dir.join("voice").exists());
         assert_eq!(view.update(cx, |o, _| o.lines.clone()), lines);
+        fs::create_dir(dir.join("voice")).unwrap();
+        start(cx);
+        let (got, note) = view.update(cx, |o, _| {
+            o.finish(true, true);
+            (o.lines.join("\n"), o.note.clone())
+        });
+        assert!(
+            got.contains("const voice_1 = sound(\"voice/take-1.wav\")") && got.contains("  voice_1.at(1.5),"),
+            "{got}"
+        );
+        assert_eq!(
+            note,
+            "recording stopped: could not write to voice/take-1.wav \u{b7} kept what was recorded as voice_1 \u{b7} cmd+z removes it"
+        );
+        assert_eq!(files(), ["take-1.wav"]);
     }
 
     // A take number whose file name is already a link, even one leading nowhere, is skipped so a failed
