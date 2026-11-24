@@ -2,8 +2,9 @@ use std::{env, fs, process::Command};
 
 // The origami command evaluates a script in its helper process, reading media it has not seen before,
 // and prints exactly the timeline or the error that evaluating it in-process gives, and a script that
-// fills memory or hands back a timeline too big to read is stopped with a plain error instead of taking
-// the Mac's memory, and reading a large timeline with a bad clip stays small in the app.
+// fills memory, hands back a timeline too big to read or nests brackets so deep behind a quote mark in
+// a pattern that reading it crashes the helper is stopped with a plain error instead of taking the
+// Mac's memory, and reading a large timeline with a bad clip stays small in the app.
 #[test]
 fn scripts_run_in_a_helper() {
     let dir = env::temp_dir().join("origami-engine-helper");
@@ -46,6 +47,8 @@ stack(cat(t, rect(300, 80, { radius: 9 }).for(1).loop(2)), tag, line(0, 0, 1, 1)
     }
     let fat = there("text('a')\nconst a = []\nfor (let i = 0; i < 400; i++) a.push(new Float64Array(2 ** 23))\ntext('b')");
     assert!(fat.starts_with("Error: script used too much memory: stopped at 2048 MB"), "{fat}");
+    let deep = there(&format!("const r = /'/, x = {}{}\ntext('a')", "[".repeat(20000), "]".repeat(20000)));
+    assert!(deep.ends_with("Error: line 1: brackets are nested more than 100 deep\n"), "{deep}");
     let big = there("const t = text('a')\nt.$.label = 'a'.repeat(1 << 12).repeat(1 << 12)\nt");
     assert!(
         big.starts_with("Error: the timeline is over 16 MB as text"),

@@ -25,6 +25,7 @@ use std::{
     os::unix::{
         ffi::OsStrExt,
         fs::{MetadataExt, OpenOptionsExt},
+        process::ExitStatusExt,
     },
     panic,
     path::{Path, PathBuf},
@@ -973,6 +974,48 @@ fn uncaught(e: &anyhow::Error, saved: bool) -> Option<Error> {
     FAIL.take().filter(|f| saved && f.to_string() == e.to_string())
 }
 
+fn nested(text: &str, plain: bool) -> Result<()> {
+    let (mut depth, mut mode, mut last, mut skip, mut holes) = (0, 0, 0, false, vec![]);
+    let nest = |b| {
+        let was = mem::replace(&mut last, b);
+        let turn = matches!(b, b'(' | b'[' | b'{') as i32 - matches!(b, b')' | b']' | b'}') as i32;
+        if plain {
+            depth += turn;
+        } else if mem::take(&mut skip) {
+            last = 0;
+        } else if b == b'\\' && !matches!(mode, b'/' | b'*') {
+            skip = true;
+        } else {
+            match (mode, was, b) {
+                (0, b'/', b'/' | b'*') => (mode, last) = (b, 0),
+                (0, _, b'\'' | b'"' | b'`') => mode = b,
+                (0, _, b'}') if holes.last() == Some(&depth) => {
+                    holes.pop();
+                    (depth, mode) = (depth - 1, b'`');
+                }
+                (0, ..) => depth += turn,
+                (b'`', b'$', b'{') => {
+                    depth += 1;
+                    holes.push(depth);
+                    mode = 0;
+                }
+                (b'*', b'*', b'/') => (mode, last) = (0, 0),
+                (b'/' | b'\'' | b'"', _, b'\n') => mode = 0,
+                (b'\'' | b'"' | b'`', ..) if b == mode => mode = 0,
+                _ => {}
+            }
+        }
+        depth > 100
+    };
+    match text.bytes().position(nest) {
+        Some(i) => bail!(
+            "line {}: brackets are nested more than 100 deep",
+            text[..i].matches('\n').count() + 1
+        ),
+        None => Ok(()),
+    }
+}
+
 fn remote(script: &Path, relock: bool, src: Option<&str>, measure: Measure) -> Result<Timeline> {
     let job = serde_json::to_vec(&(script, relock, src))?;
     let mut slot = HELPER.lock().unwrap_or_else(PoisonError::into_inner);
@@ -982,16 +1025,19 @@ fn remote(script: &Path, relock: bool, src: Option<&str>, measure: Measure) -> R
         None => fresh()?,
     };
     let _ = send(&mut h.1, &job);
-    let got = wait(&h);
+    let (got, mut sunk) = (wait(&h), false);
     *slot = match got {
         Ok(_) => Some(h),
         Err(_) => {
             let _ = h.0.kill();
-            let _ = h.0.wait();
+            sunk = h.0.wait().is_ok_and(|s| s.signal() == Some(6));
             fresh().ok()
         }
     };
     drop(slot);
+    if sunk && let Some(text) = src.map(String::from).or_else(|| load(script).ok()) {
+        nested(&text, true)?;
+    }
     open(&got?, measure)
 }
 
@@ -1049,25 +1095,7 @@ fn half(cx: &mut Context, script: &Path, relock: bool, src: Option<&str>, measur
         .and_then(|b| serde_json::from_str(&b).ok())
         .unwrap_or_default();
     let text = src.map_or_else(|| load(&script).map_err(|e| anyhow!("{}: {e}", script.display())), |s| Ok(s.into()))?;
-    let (mut depth, mut quote, mut skip) = (0, 0, false);
-    let nest = |b| {
-        if mem::take(&mut skip) {
-        } else if b == b'\\' {
-            skip = true;
-        } else if quote == 0 {
-            depth += matches!(b, b'(' | b'[' | b'{') as i32 - matches!(b, b')' | b']' | b'}') as i32;
-            quote = if matches!(b, b'\'' | b'"') { b } else { 0 };
-        } else if b == quote || b == b'\n' {
-            quote = 0;
-        }
-        depth > 100
-    };
-    if let Some(i) = text.bytes().position(nest) {
-        bail!(
-            "line {}: brackets are nested more than 100 deep",
-            text[..i].matches('\n').count() + 1
-        );
-    }
+    nested(&text, false)?;
     let run = |cx: &mut Context, code: &str| cx.eval(Source::from_bytes(code)).map_err(js);
     let set = |cx: &mut Context, k: JsString, v: JsValue| cx.register_global_property(k, v, Attribute::all()).map_err(js);
     let say = |cx: &mut Context, v: JsValue| Ok::<_, anyhow::Error>(v.to_string(cx).map_err(js)?.to_std_string_escaped());
@@ -2342,23 +2370,37 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         assert_eq!(e.downcast_ref::<Error>().map(Error::line), Some(2));
     }
 
-    // Brackets inside quoted text are not counted as nesting, while real nesting after a stray or
-    // escaped quote mark is still refused, and a script path with no folder is an error, not a crash.
+    // Brackets inside quoted text, backtick text and comments are not counted as nesting, while real
+    // nesting after a stray or escaped quote mark or inside ${} is still refused, nesting hidden behind
+    // a quote mark in a pattern is still found by the plain count used after a crash, and a script path
+    // with no folder is an error, not a crash.
     #[test]
     fn quoted_brackets_are_not_nesting() {
         let (open, shut) = ("(".repeat(101), ")".repeat(101));
         let t = tl(&format!("stack(text('{open}').for(1),\n  text(\"it's {open}\"))"));
         assert_eq!(t.clips[0].src, open);
+        let t = tl(&format!(
+            "// don't {open}\n/* it's\n{open} */\nstack(text(`it's {open}`).for(1), text(`a${{'b'}}c{open}`))"
+        ));
+        assert_eq!((&t.clips[0].src, &t.clips[1].src), (&format!("it's {open}"), &format!("abc{open}")));
         let dir = scratch("quoted");
         for src in [
             format!("// don't\n{open}text('a'){shut}"),
             format!("text('\\'')\n{open}text('a'){shut}"),
+            format!("text(`\\${{`)\n{open}text('a'){shut}"),
+            format!("/* a */ /* b */\ntext(`${{{open}1{shut}}}`)"),
         ] {
             assert!(
                 fails(&dir, &src).starts_with("line 2: brackets are nested more than 100 deep"),
                 "{src}"
             );
         }
+        let slip = format!("text('a')\nconst r = /'/, x = {open}1{shut}");
+        assert!(nested(&slip, false).is_ok());
+        assert_eq!(
+            nested(&slip, true).unwrap_err().to_string(),
+            "line 2: brackets are nested more than 100 deep"
+        );
         let e = eval(Path::new("/"), false, size).unwrap_err().to_string();
         assert!(!e.contains("crashed"), "{e}");
     }
