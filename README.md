@@ -20,20 +20,8 @@ Origami runs on Macs with Apple silicon (M1 or later) and macOS 15 or later. It 
 ### Download
 
 1. Install ffmpeg with [Homebrew](https://brew.sh): `brew install ffmpeg`.
-2. Download `Origami.dmg` from [Releases](https://github.com/DannyMang/origami/releases/latest), open it and drag Origami to Applications.
-3. Open Origami from Applications. Origami is not signed with an Apple Developer ID yet, so macOS stops it with "“Origami” Not Opened: Apple could not verify “Origami” is free of malware that may harm your Mac or compromise your privacy." Click **Done**, not Move to Trash.
-4. Open **System Settings › Privacy & Security** and scroll down to Security, where it says Origami was blocked. Click **Open Anyway**. The button is there for about an hour after step 3.
-5. Confirm with **Open Anyway** and your login password or Touch ID. Origami opens, and from then on it opens like any other app.
-
-To check the download, run `shasum -a 256 ~/Downloads/Origami.dmg` in Terminal and compare the result with the SHA-256 in the release notes.
-
-Control-click › Open no longer skips this check on macOS 15 and later. If you prefer the Terminal, run this instead of steps 3 to 5:
-
-```
-/usr/bin/xattr -dr com.apple.quarantine /Applications/Origami.app
-```
-
-Each new version you download asks again once.
+2. Download [Origami.dmg](https://origami.video/Origami.dmg) from [origami.video](https://origami.video), open it and drag Origami to Applications.
+3. Open Origami from Applications. It is signed with an Apple Developer ID and notarized, so macOS asks once whether to open an app downloaded from the internet: click **Open**.
 
 ### Build from source
 
@@ -45,7 +33,7 @@ cd origami
 cargo run --release --manifest-path origami-app/Cargo.toml -- path/to/edit.js
 ```
 
-With no script it opens the launch screen. To make an app you can keep in Applications, run `./bundle.sh`: it builds `dist/Origami.app` and `dist/Origami.dmg`. An app you build yourself opens without the steps above.
+With no script it opens the launch screen. To make an app you can keep in Applications, run `./bundle.sh`: it builds `dist/Origami.app` and `dist/Origami.dmg`.
 
 ## Your first project
 
@@ -74,13 +62,11 @@ The app also contains the `origami` command-line tool, which renders a script wi
 /Applications/Origami.app/Contents/MacOS/origami render edit.js out.mp4
 ```
 
-If macOS stops it the first time, allow it in Privacy & Security as above, or run the `xattr` command.
-
 ## Docs
 
 The guide and language reference are in [`docs/pages`](docs/pages): [Intro](docs/pages/00-intro.md), [Basics](docs/pages/01-basics.md), [Video](docs/pages/02-video.md), [Arranging](docs/pages/03-arranging.md), [Methods](docs/pages/04-methods.md), [Color](docs/pages/05-color.md), [Editor](docs/pages/06-editor.md), [Motion](docs/pages/07-motion.md) and the [Changelog](docs/pages/08-changelog.md).
 
-Read them online, with every example rendered, at https://origami-docs.veri-web.workers.dev.
+Read them online, with every example rendered, at https://origami.video.
 
 `CONTRIBUTING.md` maps the code and `docs/README.md` explains how to build the docs.
 
@@ -94,7 +80,7 @@ Your scripts, footage and exports stay on your Mac. Origami keeps:
 
 What it sends, in short:
 
-- **Update check.** Each time it opens, Origami downloads one small file from GitHub to see if a newer version is out. It sends nothing about you or your project; GitHub sees the request come from your internet address, as with any download. Start it with `ORIGAMI_NO_UPDATE_CHECK=1` to turn this off.
+- **Update check.** Each time it opens, Origami downloads one small file from origami.video to see if a newer version is out. It sends nothing about you or your project; GitHub sees the request come from your internet address, as with any download. Start it with `ORIGAMI_NO_UPDATE_CHECK=1` to turn this off.
 - **Usage and crash reports, only if you say yes.** The launch screen asks once. Nothing is sent before you click Yes or after you click No thanks. After a yes, a few anonymous events go to PostHog, such as "app opened" and "exported", with a random install id and no script contents, file names, paths or user name. Each carries the Origami and macOS versions and the kind of chip; "exported" adds the format, size, length and whether it worked, and a crash report only the kind of error and the file and line in Origami's own code where it happened. Origami › Share Usage and Crash Reports turns them off, and `ORIGAMI_NO_TELEMETRY=1` sends nothing and never asks.
 - `ORIGAMI_NO_TELEMETRY` and `ORIGAMI_NO_UPDATE_CHECK` only apply when Origami is started from a terminal that sets them, such as `ORIGAMI_NO_TELEMETRY=1 /Applications/Origami.app/Contents/MacOS/origami-app`; opening it from the Dock or Finder does not read them.
 - **Built from source:** a copy you build yourself never asks and never sends reports, unless you add your own PostHog key. It still checks for updates unless you turn that off.
@@ -106,7 +92,6 @@ What it sends, in short:
 - Apple silicon and macOS 15 or later only.
 - A project is a script file (`.js`). There is no import from other editors.
 - ffmpeg is not included: install it with `brew install ffmpeg`.
-- Not signed with an Apple Developer ID or notarized yet. macOS asks you to allow each downloaded version once, as above, and may ask again for access to your folders and the microphone after an update.
 
 ## Report a bug
 

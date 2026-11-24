@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BUNDLE_ID=com.origami.app
+BUNDLE_ID=video.origami.app
 
 cd "$(dirname "$0")"
 if [ -f .env ]; then
