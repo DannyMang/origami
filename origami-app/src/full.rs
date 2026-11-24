@@ -1,7 +1,8 @@
 use crate::{
     Origami,
     keys::stamp,
-    view::{BLUE, BORDER, MUTED, PANEL},
+    knob::groove,
+    view::{BLUE, MUTED, PANEL},
 };
 use gpui::{Context, Div, MouseButton, MouseDownEvent, Pixels, Window, div, prelude::*, px, rgb, rgba};
 use std::time::{Duration, Instant};
@@ -63,24 +64,7 @@ impl Origami {
                     cx.notify();
                 }),
             )
-            .child(
-                div()
-                    .relative()
-                    .w_full()
-                    .h(px(4.))
-                    .rounded(px(2.))
-                    .bg(rgb(BORDER))
-                    .child(div().h_full().w(px(done * RAIL)).rounded(px(2.)).bg(rgb(BLUE)))
-                    .child(
-                        div()
-                            .absolute()
-                            .top(px(-4.))
-                            .left(px(done * RAIL - 6.))
-                            .size(px(12.))
-                            .rounded_full()
-                            .bg(rgb(BLUE)),
-                    ),
-            );
+            .child(groove(done * RAIL, rgb(BLUE)).w_full());
         let play = if self.player.is_some() { "||" } else { "\u{25b6}" };
         let bar = div()
             .w(px(WIDE))

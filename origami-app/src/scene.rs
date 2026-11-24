@@ -2,7 +2,7 @@ use crate::{
     Origami,
     complete::faces,
     motion::{ATTRS, Cord, FOLLOWS, Form, Link, Pull, Row, STILL, curve, name, secs},
-    view::{BAR, BG, BLUE, BORDER, DIM, MUTED, ORANGE, PANEL, RULER, TEXT, tint},
+    view::{BAR, BG, BLUE, BORDER, DIM, MUTED, ORANGE, RULER, TEXT, card, tint},
 };
 use gpui::{
     App, Bounds, Context, Div, MouseButton, MouseDownEvent, PathBuilder, Pixels, Point, ScrollWheelEvent, Window, canvas, deferred, div,
@@ -105,7 +105,7 @@ fn top(slots: &[(u32, &'static str, f32)], at: (u32, &str)) -> f32 {
 }
 
 fn sheet(left: f32, bottom: f32) -> Div {
-    div()
+    card()
         .absolute()
         .left(px(left))
         .bottom(px(bottom))
@@ -113,10 +113,6 @@ fn sheet(left: f32, bottom: f32) -> Div {
         .p_1()
         .flex()
         .flex_col()
-        .bg(rgb(PANEL))
-        .border_1()
-        .border_color(rgb(BORDER))
-        .rounded(px(6.))
         .text_size(px(12.))
         .occlude()
 }

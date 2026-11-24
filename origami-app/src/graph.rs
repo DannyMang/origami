@@ -3,7 +3,7 @@ use crate::{
     knob::{TRACK, rail},
     motion::{ATTRS, EASES, Form, Key, Pull, Row, bend, curve, handle, secs},
     scene::{FOOT, LEAD, lozenge, tick, track},
-    view::{BAR, BLUE, BORDER, DIM, GREEN, MUTED, ORANGE, PANEL, PURPLE, RED, RULER, TEXT},
+    view::{BAR, BLUE, DIM, GREEN, MUTED, ORANGE, PANEL, PURPLE, RED, RULER, TEXT, card},
 };
 use gpui::{
     App, Bounds, Context, Div, MouseButton, PathBuilder, Pixels, Window, canvas, div, fill, point, prelude::*, px, relative, rgb, rgba,
@@ -221,7 +221,7 @@ impl Origami {
         });
         let eases: Vec<Div> = eases.collect();
         Some(
-            div()
+            card()
                 .absolute()
                 .left(px(x.min(w - self.side - 344.).max(8.)))
                 .top(px(y))
@@ -229,10 +229,6 @@ impl Origami {
                 .p(px(10.))
                 .flex()
                 .flex_col()
-                .bg(rgb(PANEL))
-                .border_1()
-                .border_color(rgb(BORDER))
-                .rounded(px(6.))
                 .text_size(px(12.))
                 .occlude()
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())

@@ -1,7 +1,8 @@
 use crate::{
     Asset, Origami, bitmap,
     keys::stamp,
-    view::{BG, BLUE, BORDER, DIM, GREEN, PANEL, TEXT},
+    knob::groove,
+    view::{BG, BLUE, BORDER, DIM, GREEN, TEXT, card},
 };
 use gpui::{
     App, Bounds, Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent, ObjectFit, PathBuilder, Pixels, RenderImage, StyledImage,
@@ -236,30 +237,13 @@ impl Origami {
                     cx.notify();
                 }),
             )
-            .child(
-                div()
-                    .relative()
-                    .w_full()
-                    .h(px(4.))
-                    .rounded(px(2.))
-                    .bg(rgb(BORDER))
-                    .child(div().h_full().w(px(done * WIDE)).rounded(px(2.)).bg(rgb(BLUE)))
-                    .child(
-                        div()
-                            .absolute()
-                            .top(px(-4.))
-                            .left(px(done * WIDE - 6.))
-                            .size(px(12.))
-                            .rounded_full()
-                            .bg(rgb(BLUE)),
-                    ),
-            );
+            .child(groove(done * WIDE, rgb(BLUE)).w_full());
         let about = match c.video {
             true => format!("{}\u{d7}{}{}", c.w, c.h, if c.audio { " \u{b7} sound" } else { "" }),
             false => c.src.rsplit('/').next().unwrap_or_default().to_string(),
         };
         Some(
-            div()
+            card()
                 .absolute()
                 .left(px(left))
                 .top(px(top))
@@ -268,10 +252,6 @@ impl Origami {
                 .flex()
                 .flex_col()
                 .gap_2()
-                .bg(rgb(PANEL))
-                .border_1()
-                .border_color(rgb(BORDER))
-                .rounded(px(6.))
                 .text_size(px(12.))
                 .text_color(rgb(TEXT))
                 .occlude()

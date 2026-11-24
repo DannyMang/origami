@@ -1,7 +1,7 @@
 use crate::{
     Mode, Origami,
     shelf::{DAY, Entry, Shelf, diff, now},
-    view::{BAR, BG, BLUE, BORDER, COMMENT, DIM, GREEN, GUTTER, INK, MUTED, PANEL, RED, TEXT, tokens},
+    view::{BAR, BG, BLUE, BORDER, COMMENT, DIM, GREEN, GUTTER, INK, MUTED, PANEL, RED, TEXT, card, tokens},
 };
 use gpui::{
     Context, Div, HighlightStyle, MouseButton, PromptLevel, ScrollWheelEvent, StyledText, Window, deferred, div, prelude::*, px, rgb, rgba,
@@ -445,7 +445,7 @@ impl Origami {
 
     pub fn dial(&self, cx: &mut Context<Self>) -> Div {
         let open = self.saves.is_some();
-        let hint = div()
+        let hint = card()
             .absolute()
             .top(px(32.))
             .right(px(-5.))
@@ -453,10 +453,6 @@ impl Origami {
             .px(px(8.))
             .items_center()
             .gap(px(10.))
-            .bg(rgb(PANEL))
-            .border_1()
-            .border_color(rgb(BORDER))
-            .rounded(px(6.))
             .text_size(px(12.))
             .text_color(rgb(TEXT))
             .whitespace_nowrap()

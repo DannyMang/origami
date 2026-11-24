@@ -1,9 +1,9 @@
 use crate::{
     Origami, bitmap,
     keys::secs,
-    view::{BLUE, BORDER, DIM, GREEN, INK, PANEL, RED, TEXT},
+    view::{BLUE, BORDER, DIM, GREEN, INK, RED, TEXT, card},
 };
-use gpui::{Context, Div, MouseButton, MouseDownEvent, Pixels, Point, RenderImage, Window, div, img, prelude::*, px, rgb, rgba};
+use gpui::{Context, Div, MouseButton, MouseDownEvent, Pixels, Point, RenderImage, Rgba, Window, div, img, prelude::*, px, rgb, rgba};
 use origami_engine::tone;
 use origami_lang::Clip;
 use std::{
@@ -301,6 +301,24 @@ fn show(v: f64, lo: f64, hi: f64) -> String {
     }
 }
 
+pub fn groove(done: f32, fill: Rgba) -> Div {
+    div()
+        .relative()
+        .h(px(4.))
+        .rounded(px(2.))
+        .bg(rgb(BORDER))
+        .child(div().h_full().w(px(done)).rounded(px(2.)).bg(fill))
+        .child(
+            div()
+                .absolute()
+                .top(px(-4.))
+                .left(px(done - 6.))
+                .size(px(12.))
+                .rounded_full()
+                .bg(rgb(BLUE)),
+        )
+}
+
 pub fn rail(label: String, start: f32, text: String) -> Div {
     div()
         .h(px(24.))
@@ -308,24 +326,7 @@ pub fn rail(label: String, start: f32, text: String) -> Div {
         .items_center()
         .cursor_pointer()
         .child(div().w(px(84.)).text_color(rgb(DIM)).child(label))
-        .child(
-            div()
-                .relative()
-                .w(px(TRACK))
-                .h(px(4.))
-                .rounded(px(2.))
-                .bg(rgb(BORDER))
-                .child(div().h_full().w(px(start * TRACK)).rounded(px(2.)).bg(rgba(BLUE << 8 | 0xa0)))
-                .child(
-                    div()
-                        .absolute()
-                        .top(px(-4.))
-                        .left(px(start * TRACK - 6.))
-                        .size(px(12.))
-                        .rounded_full()
-                        .bg(rgb(BLUE)),
-                ),
-        )
+        .child(groove(start * TRACK, rgba(BLUE << 8 | 0xa0)).w(px(TRACK)))
         .child(div().w(px(70.)).pl_3().child(text))
 }
 
@@ -606,17 +607,13 @@ impl Origami {
                 .on_mouse_down(MouseButton::Left, Self::tap(cx, open))
         });
         Some(
-            div()
+            card()
                 .absolute()
                 .left(px(x))
                 .top(px(y))
                 .p(px(10.))
                 .flex()
                 .flex_col()
-                .bg(rgb(PANEL))
-                .border_1()
-                .border_color(rgb(BORDER))
-                .rounded(px(6.))
                 .text_size(px(12.))
                 .on_mouse_down(
                     MouseButton::Left,

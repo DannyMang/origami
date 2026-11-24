@@ -169,6 +169,10 @@ pub fn tint(kind: Kind) -> u32 {
     }
 }
 
+pub fn card() -> Div {
+    div().bg(rgb(PANEL)).border_1().border_color(rgb(BORDER)).rounded(px(6.))
+}
+
 impl Origami {
     fn timecode(&self) -> String {
         let (f, s) = ((self.t * self.fps()).round() as u64, self.t as u64);
@@ -320,16 +324,12 @@ impl Origami {
     }
 
     pub fn list(items: Vec<Div>) -> Div {
-        div()
+        card()
             .absolute()
             .bottom(px(26.))
             .p_1()
             .flex()
             .flex_col()
-            .bg(rgb(PANEL))
-            .border_1()
-            .border_color(rgb(BORDER))
-            .rounded(px(6.))
             .text_size(px(13.))
             .children(items)
     }
@@ -1179,17 +1179,13 @@ impl Render for Origami {
             .to_string_lossy()
             .to_string();
         let help = div().absolute().inset_0().p_4().flex().items_center().justify_center().child(
-            div()
+            card()
                 .id("help")
                 .debug_selector(|| "help".into())
                 .min_w_0()
                 .max_h_full()
                 .overflow_y_scroll()
                 .p_4()
-                .bg(rgb(PANEL))
-                .border_1()
-                .border_color(rgb(BORDER))
-                .rounded(px(6.))
                 .children(HELP.lines().map(|l| div().child(l.to_string()))),
         );
         let h = f32::from(window.viewport_size().height);

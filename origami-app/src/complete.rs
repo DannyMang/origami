@@ -1,6 +1,6 @@
 use crate::{
     Origami,
-    view::{BLUE, BORDER, DIM, PANEL},
+    view::{BLUE, DIM, card},
 };
 use gpui::{Div, Styled, Window, div, prelude::*, px, rgb, rgba};
 use std::{collections::HashSet, fs, mem, path::Path, sync::LazyLock};
@@ -516,7 +516,7 @@ impl Origami {
                 .child(div().text_color(rgb(DIM)).child(*args))
         });
         Some(
-            div()
+            card()
                 .absolute()
                 .left(px((w - self.side + self.inset() + *start as f32 * glyph - 9.).min(w - wide - 4.)))
                 .map(|d| match down {
@@ -527,10 +527,6 @@ impl Origami {
                 .p_1()
                 .flex()
                 .flex_col()
-                .bg(rgb(PANEL))
-                .border_1()
-                .border_color(rgb(BORDER))
-                .rounded(px(6.))
                 .text_size(px(self.font))
                 .children(rows)
                 .children((list.len() > shown).then(|| {
