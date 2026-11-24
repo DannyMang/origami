@@ -781,9 +781,7 @@ pub mod tests {
     #[test]
     fn refuses_links() {
         let (first, script) = shelf("links");
-        let decoy = env::temp_dir().join("origami-saves-decoy-test");
-        let _ = fs::remove_dir_all(&decoy);
-        fs::create_dir_all(&decoy).unwrap();
+        let decoy = crate::tests::scratch("saves-decoy");
         fs::write(decoy.join("log"), "precious").unwrap();
         fs::create_dir_all(first.dir.parent().unwrap()).unwrap();
         std::os::unix::fs::symlink(&decoy, &first.dir).unwrap();

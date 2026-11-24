@@ -764,7 +764,7 @@ mod tests {
     use super::*;
     use crate::shelf::tests::{NOW, owned, save, shelf};
     use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext, point};
-    use std::{env, fs, path::PathBuf};
+    use std::{fs, path::PathBuf};
 
     // Versions read back newest first and grouped by day after a restart; one numeric call changed on a
     // named clip reads as the clip and setting, any other change as its first changed line, the first
@@ -863,9 +863,7 @@ mod tests {
     }
 
     fn open<'a>(cx: &'a mut TestAppContext, name: &str, versions: &[&[&str]]) -> (Entity<Origami>, &'a mut VisualTestContext, PathBuf) {
-        let dir = env::temp_dir().join(format!("origami-saves-{name}-test"));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = crate::tests::scratch(&format!("saves-{name}"));
         let path = fs::canonicalize(&dir).unwrap().join("edit.js");
         let last = versions.last().unwrap();
         fs::write(&path, last.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();

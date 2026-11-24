@@ -428,9 +428,7 @@ mod tests {
     }
 
     fn project<'a>(cx: &'a mut TestAppContext, name: &str) -> (Entity<Origami>, &'a mut VisualTestContext, PathBuf) {
-        let dir = env::temp_dir().join(format!("origami-{name}-test"));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = crate::tests::scratch(name);
         let path = fs::canonicalize(&dir).unwrap().join("edit.js");
         let src = "stack(\n  color(\"#203040\").for(4),\n  text(\"a\").for(4),\n)";
         fs::write(&path, src).unwrap();

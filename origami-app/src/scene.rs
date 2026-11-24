@@ -990,11 +990,7 @@ stack(a, b, c)";
             window.focus(&app.focus);
             app
         });
-        let click = |cx: &mut VisualTestContext, x: f32, y: f32| {
-            cx.simulate_mouse_move(point(px(x), px(y)), None, Modifiers::default());
-            cx.simulate_mouse_down(point(px(x), px(y)), MouseButton::Left, Modifiers::default());
-            cx.simulate_mouse_up(point(px(x), px(y)), MouseButton::Left, Modifiers::default());
-        };
+        let click = |cx: &mut VisualTestContext, x: f32, y: f32| cx.simulate_click(point(px(x), px(y)), Modifiers::default());
         let open = |cx: &mut VisualTestContext, row: usize| {
             let at = view.update_in(cx, |o, window, cx| {
                 (o.cursor, o.menu, o.shut) = (Some((row, 10)), "", "");

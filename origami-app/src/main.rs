@@ -748,3 +748,38 @@ fn main() {
         cx.activate(true);
     });
 }
+
+#[cfg(test)]
+pub mod tests {
+    use crate::Origami;
+    use gpui::{Entity, TestAppContext, VisualTestContext};
+    use origami_lang::{ffmpeg, status};
+    use std::{
+        env, fs,
+        path::{Path, PathBuf},
+        sync::Arc,
+    };
+
+    pub fn scratch(name: &str) -> PathBuf {
+        let dir = env::temp_dir().join(format!("origami-{name}-test"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    pub fn film(out: &Path, src: &str, more: &[&str]) {
+        let made = status(ffmpeg().args(["-v", "error", "-y", "-f", "lavfi", "-i", src]).args(more).arg(out));
+        assert!(made.unwrap().success());
+    }
+
+    pub(crate) fn window<'a>(cx: &'a mut TestAppContext, name: &str, src: &str) -> (Entity<Origami>, &'a mut VisualTestContext) {
+        let path = env::temp_dir().join(format!("origami-{name}-test.js"));
+        fs::write(&path, src).unwrap();
+        let tl = origami_lang::eval(&path, false, origami_engine::footprint).unwrap();
+        cx.add_window_view(|_, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            (app.script, app.lines, app.tl) = (path, src.lines().map(String::from).collect(), Arc::new(tl));
+            app
+        })
+    }
+}

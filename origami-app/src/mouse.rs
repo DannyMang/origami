@@ -311,6 +311,7 @@ impl Origami {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tests::{film, window};
     use gpui::TestAppContext;
     use std::{cell::RefCell, env, rc::Rc};
 
@@ -319,9 +320,7 @@ mod tests {
     // writes nothing, and a timeline evaluated for the script open before never shows under the new one.
     #[gpui::test]
     fn opens_with_its_own_code(cx: &mut TestAppContext) {
-        let dir = env::temp_dir().join("origami-open-test");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = crate::tests::scratch("open");
         let (a, b) = (dir.join("a.js"), dir.join("b.js"));
         fs::write(&a, "stack(text(\"a\"),\n  text(\"b\"))\n").unwrap();
         fs::write(&b, "text(\"c\").for(1)\n").unwrap();
@@ -363,9 +362,7 @@ mod tests {
     // changed after it was evaluated; and the first picture starts as soon as its area is laid out.
     #[gpui::test]
     fn uses_the_early_timeline(cx: &mut TestAppContext) {
-        let dir = env::temp_dir().join("origami-early-test");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = crate::tests::scratch("early");
         let (a, other) = (dir.join("a.js"), dir.join("other.js"));
         fs::write(&a, "text(\"a\").for(2)\n").unwrap();
         fs::write(&other, "stack(text(\"x\"), text(\"y\"), text(\"z\"))\n").unwrap();
@@ -402,9 +399,7 @@ mod tests {
     // an empty editor that is never saved over it, while a script that is gone can be saved again.
     #[gpui::test]
     fn never_saves_over_an_unread_script(cx: &mut TestAppContext) {
-        let dir = env::temp_dir().join("origami-unread-test");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = crate::tests::scratch("unread");
         let (odd, gone) = (dir.join("odd.js"), dir.join("gone.js"));
         fs::write(&odd, b"text(\"caf\xe9\")\n").unwrap();
         let (view, cx) = cx.add_window_view(|_, cx| crate::fresh(cx.focus_handle(), vec![]));
@@ -430,16 +425,9 @@ mod tests {
     // start once it is shown.
     #[gpui::test]
     fn thumbnails_wait_for_the_first_picture(cx: &mut TestAppContext) {
-        let dir = env::temp_dir().join("origami-thumbs-test");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = crate::tests::scratch("thumbs");
         let film = dir.join("v.mp4");
-        let made = origami_lang::status(
-            origami_lang::ffmpeg()
-                .args(["-v", "error", "-f", "lavfi", "-i", "color=red:s=64x64:d=1"])
-                .arg(&film),
-        );
-        assert!(made.unwrap().success());
+        crate::tests::film(&film, "color=red:s=64x64:d=1", &[]);
         fs::write(dir.join("a.js"), "video(\"v.mp4\")\n").unwrap();
         let (view, cx) = cx.add_window_view(|_, cx| crate::fresh(cx.focus_handle(), vec![]));
         view.update(cx, |o, cx| o.open(dir.join("a.js"), cx));
@@ -467,9 +455,7 @@ mod tests {
     // the window is redrawn once to show it however late the first tick after that tenth comes.
     #[gpui::test]
     fn tells_what_is_loading(cx: &mut TestAppContext) {
-        let dir = env::temp_dir().join("origami-wait-test");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = crate::tests::scratch("wait");
         let (a, bad) = (dir.join("a.js"), dir.join("bad.js"));
         fs::write(&a, "text(\"a\").for(2)\n").unwrap();
         fs::write(&bad, "stack(\n").unwrap();
@@ -551,18 +537,7 @@ mod tests {
     // scrolling back never zooms out further than showing the whole timeline.
     #[gpui::test]
     fn zooms(cx: &mut gpui::TestAppContext) {
-        let path = env::temp_dir().join("origami-zoom-test.js");
-        fs::write(&path, "stack(color(\"#203040\").for(40))\n").unwrap();
-        let tl = origami_lang::eval(&path, false, origami_engine::footprint).unwrap();
-        let (view, cx) = cx.add_window_view(|_, cx| {
-            let mut app = crate::fresh(cx.focus_handle(), vec![]);
-            (app.script, app.lines, app.tl) = (
-                path.clone(),
-                vec!["stack(color(\"#203040\").for(40))".into()],
-                std::sync::Arc::new(tl),
-            );
-            app
-        });
+        let (view, cx) = window(cx, "zoom", "stack(color(\"#203040\").for(40))");
         cx.run_until_parked();
         let h = view.update_in(cx, |_, window, _| f32::from(window.viewport_size().height));
         let wheel = |cx: &mut gpui::VisualTestContext, y: f32| {
@@ -723,17 +698,6 @@ mod tests {
         );
     }
 
-    fn window<'a>(cx: &'a mut gpui::TestAppContext, name: &str, src: &str) -> (gpui::Entity<Origami>, &'a mut gpui::VisualTestContext) {
-        let path = env::temp_dir().join(format!("origami-{name}-test.js"));
-        fs::write(&path, src).unwrap();
-        let tl = origami_lang::eval(&path, false, origami_engine::footprint).unwrap();
-        cx.add_window_view(|_, cx| {
-            let mut app = crate::fresh(cx.focus_handle(), vec![]);
-            (app.script, app.lines, app.tl) = (path, src.lines().map(String::from).collect(), std::sync::Arc::new(tl));
-            app
-        })
-    }
-
     // Clicking a clip that the timeline still shows after its lines were deleted from the script,
     // or picking its layer in the Motion tab, should select it without crashing.
     #[gpui::test]
@@ -871,11 +835,7 @@ mod tests {
     #[gpui::test]
     fn short_media_trims(cx: &mut gpui::TestAppContext) {
         let click = env::temp_dir().join("origami-click-test.wav");
-        let made = origami_lang::ffmpeg()
-            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "sine=d=0.02"])
-            .arg(&click)
-            .status();
-        assert!(made.unwrap().success());
+        film(&click, "sine=d=0.02", &[]);
         let src = "sound(\"origami-click-test.wav\")";
         let (view, cx) = window(cx, "click", src);
         for grab in [Grab::Left, Grab::Right] {
@@ -908,21 +868,7 @@ mod tests {
     #[gpui::test]
     fn play_builds_the_player_aside(cx: &mut gpui::TestAppContext) {
         let media = env::temp_dir().join("origami-play-test.mp4");
-        let args = [
-            "-v",
-            "error",
-            "-y",
-            "-f",
-            "lavfi",
-            "-i",
-            "color=red:s=64x36:r=30:d=2",
-            "-f",
-            "lavfi",
-            "-i",
-            "anullsrc",
-        ];
-        let made = origami_lang::status(origami_lang::ffmpeg().args(args).args(["-t", "2"]).arg(&media));
-        assert!(made.unwrap().success());
+        film(&media, "color=red:s=64x36:r=30:d=2", &["-f", "lavfi", "-i", "anullsrc", "-t", "2"]);
         let (view, cx) = window(cx, "play", "stack(video(\"origami-play-test.mp4\"))");
         let tick = |cx: &mut gpui::VisualTestContext| view.update_in(cx, |o, window, cx| o.tick(window, cx));
         let state = |cx: &mut gpui::VisualTestContext| {

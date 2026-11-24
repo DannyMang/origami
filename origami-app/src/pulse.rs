@@ -339,9 +339,7 @@ mod tests {
     // link or a pipe, and moves to origami.log.old once it is over 4 MB.
     #[test]
     fn reads_only_new_crashes() {
-        let dir = env::temp_dir().join("origami-tail-test");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = crate::tests::scratch("tail");
         let log = dir.join("origami.log");
         fs::write(&log, vec![b'x'; 3 << 20]).unwrap();
         let read = |mark| tail(&log, mark).map(|(text, end)| (text.len(), end));

@@ -1415,12 +1415,7 @@ mod tests {
     fn waves_keep_their_shape(cx: &mut gpui::TestAppContext) {
         let dir = std::env::temp_dir().join("origami-waves-test");
         fs::create_dir_all(&dir).unwrap();
-        let made = origami_lang::status(
-            origami_lang::ffmpeg()
-                .args(["-v", "error", "-y", "-f", "lavfi", "-i", "anullsrc", "-t", "4"])
-                .arg(dir.join("s.wav")),
-        );
-        assert!(made.unwrap().success());
+        crate::tests::film(&dir.join("s.wav"), "anullsrc", &["-t", "4"]);
         let (path, src) = (dir.join("edit.js"), "stack(sound(\"s.wav\"))");
         fs::write(&path, src).unwrap();
         let tl = origami_lang::eval(&path, false, origami_engine::footprint).unwrap();
