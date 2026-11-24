@@ -7,7 +7,10 @@ use std::{
     fs::{self, DirBuilder},
     io::{self, BufRead, BufReader, ErrorKind, Read, Write},
     iter,
-    os::unix::fs::{DirBuilderExt, MetadataExt},
+    os::unix::{
+        fs::{DirBuilderExt, MetadataExt},
+        process::CommandExt,
+    },
     path::{Path, PathBuf},
     process::{self, Child, Command, Stdio},
     sync::{
@@ -62,7 +65,7 @@ fn span(tl: &Timeline, o: &Opts) -> (f64, f64) {
 }
 
 static ROOMS: AtomicUsize = AtomicUsize::new(0);
-static LIVE: Mutex<Vec<u32>> = Mutex::new(vec![]);
+static LIVE: Mutex<Vec<(u32, String, PathBuf)>> = Mutex::new(vec![]);
 const STALL: Duration = Duration::from_secs(if cfg!(test) { 5 } else { 30 });
 
 fn kill(pid: u32) {
@@ -71,7 +74,10 @@ fn kill(pid: u32) {
 
 pub fn halt() {
     let live = LIVE.lock().map(|l| l.clone()).unwrap_or_default();
-    live.into_iter().for_each(kill);
+    for (pid, part, dir) in live {
+        kill(pid);
+        let _ = (fs::remove_file(part), fs::remove_dir_all(dir));
+    }
 }
 
 fn tether(pid: u32, part: &str, dir: &Path) -> Option<Child> {
@@ -84,6 +90,7 @@ fn tether(pid: u32, part: &str, dir: &Path) -> Option<Child> {
                 part,
             ])
             .arg(dir)
+            .process_group(0)
             .stdin(Stdio::piped())
             .stderr(Stdio::null()),
     )
@@ -477,7 +484,7 @@ pub fn render(tl: &Timeline, out: &str, o: &Opts, mut progress: impl FnMut(f64))
     .inspect_err(|_| drop(fs::remove_dir_all(&dir)))?;
     let (pipe, pid, stuck) = (child.stdin.take(), child.id(), &AtomicBool::new(false));
     let (mut said, dir) = (child.stderr.take().unwrap(), dir.as_path());
-    LIVE.lock().unwrap().push(pid);
+    LIVE.lock().unwrap().push((pid, part.into(), dir.into()));
     let err = thread::scope(|s| {
         let err = s.spawn(move || {
             let mut err = vec![];
@@ -515,7 +522,7 @@ pub fn render(tl: &Timeline, out: &str, o: &Opts, mut progress: impl FnMut(f64))
         }
         err.join().unwrap_or_default()
     });
-    LIVE.lock().unwrap().retain(|p| *p != pid);
+    LIVE.lock().unwrap().retain(|l| l.0 != pid);
     let err = String::from_utf8_lossy(&err);
     let done = child.wait()?.success();
     let _ = fs::remove_dir_all(dir);
@@ -824,6 +831,38 @@ mod tests {
         });
         let _ = ff.kill();
         assert!(gone);
+    }
+
+    // Halting, which the app does as it quits, should leave neither the hidden file a running export was
+    // writing nor its temporary folder by the time it returns, since the app may be gone a moment later.
+    #[test]
+    fn halting_leaves_nothing() {
+        let _tidy = TIDY.write();
+        let dir = scratch("halt");
+        let src = "settings({ size: [3840, 2160] })\ntext('hi').for(600).opacity(keys([0, 0], [600, 1]))";
+        fs::write(dir.join("edit.js"), src).unwrap();
+        let tl = origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap();
+        let out = dir.join("out.mp4").to_string_lossy().to_string();
+        let mine = format!("origami-{}-", process::id());
+        let left = || {
+            let named = |at: &Path, start: &str| {
+                let all = fs::read_dir(at).unwrap().flatten();
+                all.filter(|e| e.file_name().to_string_lossy().starts_with(start)).count()
+            };
+            (named(&dir, "."), named(&env::temp_dir(), &mine))
+        };
+        thread::scope(|s| {
+            let job = s.spawn(|| render(&tl, &out, &Opts::default(), |_| {}));
+            let since = Instant::now();
+            while left() != (1, 1) && since.elapsed() < Duration::from_secs(30) {
+                thread::sleep(Duration::from_millis(50));
+            }
+            let before = left();
+            halt();
+            let after = left();
+            assert!(job.join().unwrap().is_err());
+            assert_eq!((before, after), ((1, 1), (0, 0)));
+        });
     }
 
     // Each export's temporary folder is a new one that only its owner can open, never a folder or link

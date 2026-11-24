@@ -9,6 +9,7 @@ What changed in each version of Origami. The launch screen shows the version you
 - A JPEG used with `image` now shows in the preview and as its timeline thumbnail. Before, most JPEGs drew nothing there, though they did appear in exports.
 - A colour table (`.cube`) file edited or exported again while Origami is open now shows its new colours at once, in the preview and in exports. Before, a clip kept the table it was first drawn with until Origami was restarted.
 - Exporting while the script has an error, from the Export dialog or with `:export`, first shows the error and asks whether to export the last version that worked. Before, it exported that older version without a word.
+- Quitting during an export, and choosing Quit when asked, removes the hidden half-written file next to the output and the export's temporary folder before Origami closes. Before, both were often left behind, the file as large as the export had got. Stopping `origami render` with ctrl-C in a terminal now cleans up the same way; before, it left both too.
 - Saving no longer hangs if another program swaps the script for a pipe at the very moment of the save; the save fails with its reason and your changes stay marked as unsaved.
 
 ### Nov 22
