@@ -1156,7 +1156,7 @@ mod tests {
     use super::*;
     use crate::{
         export::hold,
-        tests::{TIDY, clip, film, scratch},
+        tests::{TIDY, clip, film, scratch, timeline},
     };
 
     // Each timeline frame shows the source frame a plain export shows, for 29.97 fps footage on a 30 fps
@@ -1333,13 +1333,7 @@ mod tests {
                 end: 4.,
                 ..clip("video", "")
             };
-            let tl = Timeline {
-                fps: 30,
-                size: (64, 36),
-                duration: 4.,
-                clips: vec![c],
-                ..Default::default()
-            };
+            let tl = timeline(30, (64, 36), 4., vec![c]);
             let mut pv = Preview {
                 fast: true,
                 ..Default::default()
@@ -1418,13 +1412,7 @@ mod tests {
             scale: Val::Fixed(1. - i as f64 * 0.05),
             ..clip("video", "")
         });
-        let tl = Timeline {
-            fps: 30,
-            size: (64, 36),
-            duration: 0.8,
-            clips: clips.collect(),
-            ..Default::default()
-        };
+        let tl = timeline(30, (64, 36), 0.8, clips.collect());
         let mut pv = Preview::default();
         pv.frame(&tl, 0., (64, 36));
         assert!(pv.decoders.iter().any(|(k, _)| k.1 == 64));
@@ -1444,13 +1432,7 @@ mod tests {
             scale: Val::Fixed(1. - i as f64 * 0.1),
             ..clip("video", "")
         };
-        let tl = Timeline {
-            fps: 30,
-            size: (64, 36),
-            duration: 1.,
-            clips: (0..n).map(layer).collect(),
-            ..Default::default()
-        };
+        let tl = timeline(30, (64, 36), 1., (0..n).map(layer).collect());
         let mut pv = Preview::default();
         let ids = |pv: &Preview| {
             let mut ids: Vec<u32> = pv.decoders.iter().flat_map(|(_, d)| d.child.as_ref().map(Child::id)).collect();
@@ -1481,13 +1463,7 @@ mod tests {
             end: 2.,
             ..clip("video", "")
         };
-        let tl = Timeline {
-            fps: 30,
-            size: (64, 36),
-            duration: 2.,
-            clips: vec![c],
-            ..Default::default()
-        };
+        let tl = timeline(30, (64, 36), 2., vec![c]);
         let mut pv = Preview::default();
         let blue = |pv: &mut Preview| pv.frame(&tl, 1., (64, 36))[(18 * 64 + 32) * 4] > 128;
         assert!(!blue(&mut pv));
@@ -1513,19 +1489,18 @@ mod tests {
             "yuv420p",
         ];
         film(&file, src, &x264);
-        let tl = Timeline {
-            fps: 30,
-            size: (64, 36),
-            duration: 2.,
-            clips: vec![Clip {
+        let tl = timeline(
+            30,
+            (64, 36),
+            2.,
+            vec![Clip {
                 src: file.to_string_lossy().into(),
                 w: 64,
                 h: 36,
                 end: 2.,
                 ..clip("video", "")
             }],
-            ..Default::default()
-        };
+        );
         let mut played = Preview::default();
         let wrong: Vec<usize> = (0..60)
             .filter(|k| played.frame(&tl, *k as f64 / 30., (64, 36)) != Preview::default().frame(&tl, *k as f64 / 30., (64, 36)))
@@ -1539,19 +1514,18 @@ mod tests {
     fn stepping_back_reads_ahead() {
         let file = scratch("back").join("a.mp4");
         film(&file, "testsrc=s=64x36:r=30:d=4", &[]);
-        let tl = Timeline {
-            fps: 30,
-            size: (64, 36),
-            duration: 4.,
-            clips: vec![Clip {
+        let tl = timeline(
+            30,
+            (64, 36),
+            4.,
+            vec![Clip {
                 src: file.to_string_lossy().into(),
                 w: 64,
                 h: 36,
                 end: 4.,
                 ..clip("video", "")
             }],
-            ..Default::default()
-        };
+        );
         let (mut back, mut played) = (Preview::default(), Preview::default());
         let shown = |pv: &mut Preview, k: i64| pv.frame(&tl, k as f64 / 30., (64, 36));
         let mut stepped: Vec<_> = (60..=100).rev().map(|k| shown(&mut back, k)).collect();
@@ -1584,13 +1558,7 @@ mod tests {
             end: 2. * i as f64 + 2.,
             ..clip("video", "")
         };
-        let tl = Timeline {
-            fps: 30,
-            size: (64, 36),
-            duration: 4.,
-            clips: vec![part(0), part(1)],
-            ..Default::default()
-        };
+        let tl = timeline(30, (64, 36), 4., vec![part(0), part(1)]);
         let (mut back, mut played) = (Preview::default(), Preview::default());
         let shown = |pv: &mut Preview, k: i64| pv.frame(&tl, k as f64 / 30., (64, 36));
         let mut stepped: Vec<_> = (70..=80).rev().map(|k| shown(&mut back, k)).collect();
@@ -1612,19 +1580,18 @@ mod tests {
     fn dead_decoders_are_replaced() {
         let file = scratch("dead").join("a.mp4");
         film(&file, "testsrc=s=64x36:r=30:d=4", &[]);
-        let tl = Timeline {
-            fps: 30,
-            size: (64, 36),
-            duration: 4.,
-            clips: vec![Clip {
+        let tl = timeline(
+            30,
+            (64, 36),
+            4.,
+            vec![Clip {
                 src: file.to_string_lossy().into(),
                 w: 64,
                 h: 36,
                 end: 4.,
                 ..clip("video", "")
             }],
-            ..Default::default()
-        };
+        );
         let (mut cut, mut played) = (Preview::default(), Preview::default());
         let shown = |pv: &mut Preview, k: i64| pv.frame(&tl, k as f64 / 30., (64, 36));
         let mut seen: Vec<_> = (0..40).map(|k| shown(&mut cut, k)).collect();
@@ -1641,19 +1608,18 @@ mod tests {
     fn playing_reads_ahead() {
         let file = scratch("ahead").join("a.mp4");
         film(&file, "testsrc=s=256x144:r=30:d=1", &[]);
-        let tl = Timeline {
-            fps: 30,
-            size: (256, 144),
-            duration: 1.,
-            clips: vec![Clip {
+        let tl = timeline(
+            30,
+            (256, 144),
+            1.,
+            vec![Clip {
                 src: file.to_string_lossy().into(),
                 w: 256,
                 h: 144,
                 end: 1.,
                 ..clip("video", "")
             }],
-            ..Default::default()
-        };
+        );
         let mut pv = Preview::default();
         let ids = |pv: &Preview| {
             pv.decoders
@@ -1711,13 +1677,7 @@ mod tests {
                 ..clip("video", "")
             })
             .collect();
-        let tl = Timeline {
-            fps: 30,
-            size: (64, 36),
-            duration: 1.2,
-            clips,
-            ..Default::default()
-        };
+        let tl = timeline(30, (64, 36), 1.2, clips);
         let found = |tl: &Timeline| {
             let lands = LANDS.lock().unwrap();
             tl.clips
@@ -1769,19 +1729,18 @@ mod tests {
             "color=black:s=64x36:r=25:d=2,format=yuv444p,geq=lum='16+4*N':cb=128:cr=128",
             &[],
         );
-        let tl = Timeline {
-            fps: 30,
-            size: (64, 36),
-            duration: 2.,
-            clips: vec![Clip {
+        let tl = timeline(
+            30,
+            (64, 36),
+            2.,
+            vec![Clip {
                 src: path.clone(),
                 w: 64,
                 h: 36,
                 end: 2.,
                 ..clip("video", "")
             }],
-            ..Default::default()
-        };
+        );
         let shown = |pv: &mut Preview| (0..30).map(|k| pv.frame(&tl, k as f64 / 30., (64, 36))).collect::<Vec<_>>();
         let mut pv = Preview::default();
         shown(&mut pv);
@@ -1892,13 +1851,7 @@ mod tests {
             shown: Val::Fixed(0.5),
             ..clip("color", "")
         };
-        let tl = Timeline {
-            fps: 30,
-            size: (64, 36),
-            duration: 1.,
-            clips: vec![c],
-            ..Default::default()
-        };
+        let tl = timeline(30, (64, 36), 1., vec![c]);
         let mid = (18 * 64 + 32) * 4;
         assert_eq!(Preview::default().frame(&tl, 0.5, (64, 36))[mid..mid + 4], [0, 0, 255, 255]);
     }
@@ -1944,13 +1897,7 @@ mod tests {
             rotate: Val::Fixed(30.),
             ..clip("rect", "")
         };
-        let tl = Timeline {
-            fps: 30,
-            size: (2, 2),
-            duration: 1.,
-            clips: vec![turned],
-            ..Default::default()
-        };
+        let tl = timeline(30, (2, 2), 1., vec![turned]);
         assert!(Preview::default().frame(&tl, 0., (0, 0)).is_empty());
     }
 
@@ -1988,13 +1935,7 @@ mod tests {
             w: 80,
             ..clip("rect", "")
         };
-        let tl = Timeline {
-            fps: 30,
-            size: (200, 100),
-            duration: 2.,
-            clips: flash.chain([stay]).collect(),
-            ..Default::default()
-        };
+        let tl = timeline(30, (200, 100), 2., flash.chain([stay]).collect());
         let mut p = Preview::default();
         let wide = |p: &Preview| p.stills.values().flatten().find(|px| px.len() == 80 * 20 * 4).cloned().unwrap();
         p.frame(&tl, 0., (200, 100));
@@ -2011,16 +1952,15 @@ mod tests {
     #[test]
     fn effects_on_stills_are_kept() {
         let fx = r#"[{"roughen":{"border":4,"scale":20,"sharp":1,"seed":[1,[0,0,1,1]]}},{"blur":2}]"#;
-        let tl = Timeline {
-            fps: 4,
-            size: (200, 100),
-            duration: 1.,
-            clips: vec![Clip {
+        let tl = timeline(
+            4,
+            (200, 100),
+            1.,
+            vec![Clip {
                 fx: serde_json::from_str(fx).unwrap(),
                 ..clip("rect", "")
             }],
-            ..Default::default()
-        };
+        );
         let mut pv = Preview::default();
         let mut made = vec![];
         for k in 0..4 {
@@ -2037,11 +1977,11 @@ mod tests {
     #[test]
     fn letters_take_effects() {
         let ink = |fx: &str, shown: f64| {
-            let tl = Timeline {
-                fps: 4,
-                size: (200, 100),
-                duration: 1.,
-                clips: vec![Clip {
+            let tl = timeline(
+                4,
+                (200, 100),
+                1.,
+                vec![Clip {
                     src: "HH".into(),
                     size: 60.,
                     color: "#ffffff".into(),
@@ -2049,8 +1989,7 @@ mod tests {
                     fx: serde_json::from_str(fx).unwrap(),
                     ..clip("text", "")
                 }],
-                ..Default::default()
-            };
+            );
             let px = Preview::default().frame(&tl, 0., (200, 100));
             px.chunks(4).filter(|p| p[0] > 250 && p[1] > 250 && p[2] > 250).count()
         };
@@ -2064,17 +2003,16 @@ mod tests {
     // picture and grade it was made from, and shows the same pixels as a fresh preview.
     #[test]
     fn fixed_effects_keep_only_the_result() {
-        let tl = Timeline {
-            fps: 4,
-            size: (200, 100),
-            duration: 1.,
-            clips: vec![Clip {
+        let tl = timeline(
+            4,
+            (200, 100),
+            1.,
+            vec![Clip {
                 fx: serde_json::from_str(r#"[{"roughen":{"border":4,"scale":20,"sharp":1,"seed":2}}]"#).unwrap(),
                 grade: serde_json::from_str(r#"{"exposure":1}"#).unwrap(),
                 ..clip("rect", "")
             }],
-            ..Default::default()
-        };
+        );
         let mut pv = Preview::default();
         let mut made = vec![];
         for k in 0..3 {
@@ -2099,13 +2037,7 @@ mod tests {
                 fx: serde_json::from_str(r#"[{"blur":2}]"#).unwrap(),
                 ..clip("video", "")
             };
-            let tl = Timeline {
-                fps: 30,
-                size: (64, 36),
-                duration: 1.,
-                clips: vec![c],
-                ..Default::default()
-            };
+            let tl = timeline(30, (64, 36), 1., vec![c]);
             let mut pv = Preview::default();
             let same = (0..6).all(|k| pv.frame(&tl, k as f64 / 30., (64, 36)) == Preview::default().frame(&tl, k as f64 / 30., (64, 36)));
             (same, pv.stills.keys().any(|k| k.contains("Blur")))
@@ -2165,11 +2097,11 @@ mod tests {
                 matte: Some((5, how.into())),
                 ..clip("rect", "")
             };
-            let tl = Timeline {
-                fps: 30,
-                size: (64, 36),
-                duration: 1.,
-                clips: vec![
+            let tl = timeline(
+                30,
+                (64, 36),
+                1.,
+                vec![
                     Clip {
                         src: "#00ff00".into(),
                         ..clip("color", "")
@@ -2177,8 +2109,7 @@ mod tests {
                     red,
                     cut,
                 ],
-                ..Default::default()
-            };
+            );
             let px = Preview::default().frame(&tl, 0.5, (64, 36));
             [(10, 0), (50, 0), (10, 35), (50, 35)].map(|(x, y)| px[(y * 64 + x) * 4 + 2] > 128)
         };
@@ -2206,13 +2137,7 @@ mod tests {
             scale: Val::Fixed([1., 1., 0.5][i]),
             ..clip("video", "")
         };
-        let tl = |n: usize| Timeline {
-            fps: 30,
-            size: (64, 36),
-            duration: 2.,
-            clips: (0..n).map(layer).collect(),
-            ..Default::default()
-        };
+        let tl = |n: usize| timeline(30, (64, 36), 2., (0..n).map(layer).collect());
         assert_eq!(hold(&tl(1), (64, 36), 1.), 2 * 64 * 36 * 4);
         let mut pv = Preview {
             room: hold(&tl(3), (64, 36), 1.),

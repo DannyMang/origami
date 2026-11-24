@@ -561,7 +561,7 @@ mod tests {
     use super::*;
     use crate::{
         footprint,
-        tests::{TIDY, film, scratch},
+        tests::{TIDY, film, scratch, script},
     };
     use origami_lang::status;
     use std::time::Instant;
@@ -580,10 +580,7 @@ mod tests {
                 &["-f", "lavfi", "-i", "sine=d=10", "-shortest"],
             );
         }
-        let tl = |src: &str| {
-            fs::write(dir.join("edit.js"), src).unwrap();
-            origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap()
-        };
+        let tl = |src: &str| script(&dir, src);
         let out = |name: &str| dir.join(name).to_string_lossy().to_string();
         for (i, src) in [
             "video('a.mp4').trim(0, 2).speed(0.25)",
@@ -649,8 +646,7 @@ mod tests {
         let dir = scratch("opts");
         film(&dir.join("s.wav"), "sine=d=3", &[]);
         let src = "settings({ fps: 30, size: [64, 36] })\nstack(cat(color('#ff0000').for(1), color('#00ff00').for(1)), sound('s.wav').trim(0, 2))";
-        fs::write(dir.join("edit.js"), src).unwrap();
-        let tl = origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap();
+        let tl = script(&dir, src);
         let at = |size, height| sized(&Timeline { size, ..tl.clone() }, &Opts { height, ..Opts::default() }).1;
         assert_eq!([0, 720, 1080, 2160].map(|h| at((16384, 2), h)), [(16384, 2); 4]);
         assert_eq!(
@@ -713,8 +709,7 @@ mod tests {
         film(&dir.join("w.mp4"), "color=white:s=64x36:r=30:d=2", &[]);
         let src =
             "settings({ fps: 30, size: [64, 36] })\ncat(color('#ff0000').for(0.1), color('#00ff00').for(0.2), video('w.mp4').trim(0, 1))";
-        fs::write(dir.join("edit.js"), src).unwrap();
-        let tl = origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap();
+        let tl = script(&dir, src);
         assert!(tl.clips[2].start > 0.3);
         let out = dir.join("meet.mp4").to_string_lossy().to_string();
         render(&tl, &out, &Opts::default(), |_| {}).unwrap();
@@ -735,8 +730,7 @@ mod tests {
             film(&dir.join(file), &format!("color=white:s=64x36:r={rate}:d=6"), &[]);
         }
         let src = "settings({ fps: 30 })\ncat(video('w30.mp4').trim(4.01), video('w30.mp4').trim(0, 1).speed(0.5), video('w15.mp4').trim(0, 1), video('w30.mp4').trim(5.51))";
-        fs::write(dir.join("edit.js"), src).unwrap();
-        let tl = origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap();
+        let tl = script(&dir, src);
         let n = (tl.duration * 30.).round() as usize;
         let mut pv = Preview::default();
         let shown: Vec<u8> = (0..n)
@@ -809,12 +803,7 @@ mod tests {
         film(&dir.join("a.mp4"), "color=white:s=64x36:r=30:d=1", &[]);
         fs::write(dir.join("subs.srt"), "1\n00:00:00,000 --> 00:00:01,000\nhi\n").unwrap();
         std::os::unix::fs::symlink(dir.join("a.mp4"), dir.join("link.mp4")).unwrap();
-        fs::write(
-            dir.join("edit.js"),
-            "text('a').for(1)\nvideo('a.mp4').trim(0, 1)\ncaptions('subs.srt')",
-        )
-        .unwrap();
-        let tl = origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap();
+        let tl = script(&dir, "text('a').for(1)\nvideo('a.mp4').trim(0, 1)\ncaptions('subs.srt')");
         let before = fs::read(dir.join("a.mp4")).unwrap();
         for (out, line) in [("A.MP4", 2), ("sub/../a.mp4", 2), ("link.mp4", 2), ("subs.srt", 3)] {
             let out = dir.join(out).to_string_lossy().to_string();
@@ -859,8 +848,7 @@ mod tests {
         let _tidy = TIDY.read();
         let dir = scratch("stall");
         film(&dir.join("a.mp4"), "color=white:s=64x36:r=30:d=1", &[]);
-        fs::write(dir.join("edit.js"), "video('a.mp4').trim(0, 1)").unwrap();
-        let mut tl = origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap();
+        let mut tl = script(&dir, "video('a.mp4').trim(0, 1)");
         assert!(status(Command::new("mkfifo").arg(dir.join("never.mp4"))).unwrap().success());
         tl.clips[0].src = dir.join("never.mp4").to_string_lossy().to_string();
         let out = dir.join("out.mp4").to_string_lossy().to_string();
@@ -896,8 +884,7 @@ mod tests {
         let _tidy = TIDY.write();
         let dir = scratch("halt");
         let src = "settings({ size: [3840, 2160] })\ntext('hi').for(600).opacity(keys([0, 0], [600, 1]))";
-        fs::write(dir.join("edit.js"), src).unwrap();
-        let tl = origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap();
+        let tl = script(&dir, src);
         let out = dir.join("out.mp4").to_string_lossy().to_string();
         let mine = format!("origami-{}-", process::id());
         let left = || {
@@ -929,8 +916,7 @@ mod tests {
         let dir = scratch("late");
         film(&dir.join("s.wav"), "sine=d=2", &[]);
         let src = "settings({ size: [64, 36] })\nstack(color('#203040').for(3), sound('s.wav').trim(0, 1).at(2))";
-        fs::write(dir.join("edit.js"), src).unwrap();
-        let tl = origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap();
+        let tl = script(&dir, src);
         let out = dir.join("late.mp4").to_string_lossy().to_string();
         render(&tl, &out, &Opts::default(), |_| {}).unwrap();
         let heard = |args: Vec<String>| {
@@ -953,10 +939,7 @@ mod tests {
         let _tidy = TIDY.write();
         let dir = scratch("dry");
         film(&dir.join("a.mp4"), "color=white:s=64x36:r=30:d=1", &[]);
-        let tl = |src: &str| {
-            fs::write(dir.join("edit.js"), src).unwrap();
-            origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap()
-        };
+        let tl = |src: &str| script(&dir, src);
         let mine = format!("origami-{}-", process::id());
         let rooms = || {
             let all = fs::read_dir(env::temp_dir()).unwrap().flatten();

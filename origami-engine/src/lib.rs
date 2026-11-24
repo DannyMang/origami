@@ -16,7 +16,7 @@ pub use text::tone;
 
 #[cfg(test)]
 mod tests {
-    use origami_lang::{Clip, ffmpeg, status};
+    use origami_lang::{Clip, Timeline, ffmpeg, status};
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -36,6 +36,21 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    pub fn timeline(fps: u32, size: (u32, u32), duration: f64, clips: Vec<Clip>) -> Timeline {
+        Timeline {
+            fps,
+            size,
+            duration,
+            clips,
+            ..Default::default()
+        }
+    }
+
+    pub fn script(dir: &Path, src: &str) -> Timeline {
+        fs::write(dir.join("edit.js"), src).unwrap();
+        origami_lang::eval(&dir.join("edit.js"), false, crate::footprint).unwrap()
     }
 
     pub fn film(out: &Path, src: &str, more: &[&str]) {
