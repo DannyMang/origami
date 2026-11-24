@@ -432,6 +432,9 @@ impl Origami {
                 .when(lit, |d| d.bg(rgb(LINE)));
             if let Some(r) = row.filter(|r| matches!(r.form, Form::Linked(_))) {
                 let (s, fps) = (curve(c, r.name), self.fps());
+                if s.is_empty() {
+                    return out;
+                }
                 let (lo, hi) = s.iter().fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(*v), hi.max(*v)));
                 let trace = move |b: Bounds<Pixels>, _, window: &mut Window, _: &mut App| {
                     let x = |t: f64| b.origin.x + b.size.width * ((start + t - pan) / d) as f32;
@@ -1067,5 +1070,35 @@ stack(a, b, c)";
             o.fount(window).map(|f| (f.0, f.1))
         });
         assert_eq!(motion, Some((2, 128.)));
+    }
+
+    // A clip opened in the Motion tab whose code now follows another clip's position, before the
+    // script has been read again, draws an empty lane instead of crashing.
+    #[gpui::test]
+    fn unread_links_draw_empty(cx: &mut gpui::TestAppContext) {
+        let dir = std::env::temp_dir().join("origami-link-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = "let title = text(\"t\").for(2).pos(0.5, 0.5)\nlet tag = text(\"g\").for(2)\nstack(title, tag)";
+        std::fs::write(dir.join("edit.js"), src).unwrap();
+        let tl = origami_lang::eval(&dir.join("edit.js"), false, origami_engine::footprint).unwrap();
+        let lines: Vec<String> = src
+            .replace("for(2)\n", "for(2).pos(title.pos.x, 0.5)\n")
+            .lines()
+            .map(String::from)
+            .collect();
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            let z = tl.clips[1].z;
+            (app.motion, app.sel, app.open) = (true, Some(z), vec![z]);
+            (app.script, app.lines, app.tl) = (dir.join("edit.js"), lines, std::sync::Arc::new(tl));
+            window.focus(&app.focus);
+            app
+        });
+        cx.run_until_parked();
+        let linked = view.update(cx, |o, _| {
+            let c = o.tl.clips[1].clone();
+            o.rows(&c).iter().any(|r| r.name == "x" && matches!(r.form, Form::Linked(_)))
+        });
+        assert!(linked);
     }
 }
