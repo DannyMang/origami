@@ -486,8 +486,40 @@ fn read(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
     })
 }
 
+pub type Table = (usize, bool, Vec<[f32; 3]>);
+
+pub fn table(text: &str) -> Option<Table> {
+    let (mut n, mut cube, mut t) = (0, true, vec![]);
+    for line in text.lines().map(str::trim) {
+        let mut words = line.split_whitespace();
+        let (Some(head), rest) = (words.next(), words.flat_map(str::parse::<f32>).collect::<Vec<_>>()) else {
+            continue;
+        };
+        match (head, &rest[..]) {
+            ("LUT_3D_SIZE", [size]) => n = *size as usize,
+            ("LUT_1D_SIZE", [size]) => (n, cube) = (*size as usize, false),
+            ("DOMAIN_MIN", lo) if lo != [0.; 3] => return None,
+            ("DOMAIN_MAX", hi) if hi != [1.; 3] => return None,
+            (r, [g, b]) => t.extend(r.parse().ok().map(|r| [r, *g, *b])),
+            _ => {}
+        }
+    }
+    (n > 1 && Some(t.len()) == if cube { n.checked_pow(3) } else { Some(n) }).then_some((n, cube, t))
+}
+
+static TABLES: Mutex<BTreeMap<PathBuf, (u64, i64, i64)>> = Mutex::new(BTreeMap::new());
+
 fn lut(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
-    host(args, cx, "__lut", cube, |_, path| Ok(path.to_string_lossy().into()))
+    host(args, cx, "__lut", cube, |_, path| {
+        let m = fs::metadata(path)?;
+        let stamp = (m.len(), m.mtime(), m.mtime_nsec());
+        let mut whole = TABLES.lock().unwrap_or_else(PoisonError::into_inner);
+        if whole.get(path) != Some(&stamp) {
+            table(&load(path)?).ok_or_else(|| anyhow!("not a .cube file with a 0 to 1 domain"))?;
+            whole.insert(path.into(), stamp);
+        }
+        Ok(path.to_string_lossy().into())
+    })
 }
 
 fn font(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
@@ -1148,7 +1180,9 @@ fn finish(out: &str, kept: Vec<Vec<f32>>, files: Vec<(u32, PathBuf)>, measure: M
             && s.iter().any(|v| v.abs() > 170.)
         {
             s.iter_mut().for_each(|v| *v = v.clamp(-170., 170.));
-            tl.note = format!("line {n}: lens goes past 170 either way and is held at 170, the most it takes");
+            if tl.note.is_empty() {
+                tl.note = format!("line {n}: lens goes past 170 either way and is held at 170, the most it takes");
+            }
         }
     }
     tl.files = files;
@@ -1210,6 +1244,30 @@ mod tests {
         assert_eq!(tl("color('#f00').sharpen(5)").clips[0].grade, None);
         let e = run(&scratch("look"), "color('#f00')\n  .look('none')").unwrap_err();
         assert_eq!(e.downcast_ref::<Error>().map(Error::line), Some(2));
+    }
+
+    // A look or input table file that is empty, is not a colour table, has too few rows or reaches past
+    // 0 to 1 stops the script with an error on its line, also when it replaces a table that was read.
+    #[test]
+    fn broken_tables_name_the_line() {
+        let (dir, rows) = (scratch("tables"), "0 0 0\n".repeat(8));
+        let whole = format!("LUT_3D_SIZE 2\n{rows}");
+        let ranged = format!("LUT_3D_SIZE 2\nDOMAIN_MAX 2 2 2\n{rows}");
+        let look = |text: &str, call: &str| {
+            fs::write(dir.join("a.cube"), text).unwrap();
+            let got = run(&dir, &format!("color('#f00')\n  .{call}('a.cube')"));
+            got.map(|_| ()).map_err(|e| e.to_string())
+        };
+        assert_eq!(look(&whole, "look"), Ok(()));
+        for (text, call) in [
+            ("", "look"),
+            ("hello this is not a lut", "inputLut"),
+            ("LUT_3D_SIZE 2\n0 0 0\n", "look"),
+            (ranged.as_str(), "inputLut"),
+        ] {
+            let want = format!("line 2: {call}(\"a.cube\"): not a .cube file with a 0 to 1 domain");
+            assert_eq!(look(text, call), Err(want));
+        }
     }
 
     // Keyframes should give the right value on every frame: between keys, before the first and after
@@ -1568,7 +1626,8 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
     }
 
     // An effect value outside what the effect can draw, keys included, is brought to the nearest value
-    // it takes with a note naming its line, while values inside are kept and NaN or Infinity stop the script.
+    // it takes with a note naming its line, the first such value when there are several, while values
+    // inside are kept and NaN or Infinity stop the script.
     #[test]
     fn effects_stay_in_range() {
         let t = tl(
@@ -1593,6 +1652,22 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         ] {
             assert_eq!(tl(&format!("rect(9, 9).for(1)\n  .{src}")).note, format!("line 2: {note}"));
         }
+        for (src, note) in [
+            (
+                "rect(9, 9).for(1).roughen({ border: -3, scale: 0 })\n  .blur(1e9).lens(keys([0, 0], [1, -200]))",
+                "line 1: roughen border -3 is raised to 0, the least it takes",
+            ),
+            (
+                "settings({ size: [641, 360] })\nrect(9, 9).for(1).blur(1e9).lens(200)",
+                "line 1: size [641, 360] is rounded to [642, 360], video files need even numbers",
+            ),
+            (
+                "rect(9, 9).for(1).blur(1e9)\n  .lens(200)",
+                "line 1: blur 1000000000 is lowered to 16384, the widest a picture can be",
+            ),
+        ] {
+            assert_eq!(tl(src).note, note);
+        }
         let Fx::Lens(v) = &tl("rect(9, 9).for(1).lens(keys([0, 0], [1, -200]))").clips[0].fx[0] else {
             panic!()
         };
@@ -1611,8 +1686,10 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
     }
 
     // Values that make no sense (a negative length, zero speed, a frame rate of 0, a loop without end,
-    // a day-long timeline) and common slips (a number among clips, an unclosed string or bracket, an
-    // error thrown by a function of time) should be refused with a message that names the line.
+    // a day-long timeline) and common slips (a number among clips, an unclosed string or bracket, a
+    // misspelt name or method, a curve or wheel without its name, a font that is not installed, an
+    // error thrown by a function of time) should be refused with a message that names the line, and a
+    // name or loop that could be on several lines names no line.
     #[test]
     fn slips_name_the_line() {
         let deep = format!("{}text('a'){}", "\nstack(".repeat(101), ")".repeat(101));
@@ -1649,6 +1726,42 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
             ("text('a')\ncolor()", 2, "color is written color(\"#203040\")"),
             ("stack(text('a'),\n  text('c').scale(t => { throw new Error('x') }))", 2, "x"),
             ("const a = text('a')\n\nstack(a, bb)", 3, "ReferenceError: bb is not defined"),
+            (
+                "text('a')\n  .curve([[0, 0], [1, 1]])",
+                2,
+                "curve takes \"luma\", \"red\", \"green\" or \"blue\" first",
+            ),
+            (
+                "text('a')\n  .wheel({ hue: 20 })",
+                2,
+                "wheel takes \"shadows\", \"midtones\" or \"highlights\" first",
+            ),
+            (
+                "text('a')\ntext('x', { font: 'NoSuchFontName' })",
+                2,
+                "font(\"NoSuchFontName\") is not a font installed on this Mac, or a font file next to the script",
+            ),
+            (
+                "text('x', { font: 'fonts/none.ttf' })",
+                1,
+                "font(\"fonts/none.ttf\") points to a file that does not exist",
+            ),
+            ("const a = text('a')\n\n\n\nvidoe('x')", 5, "ReferenceError: vidoe is not defined"),
+            ("vidoe('x')\ntext('a')", 1, "ReferenceError: vidoe is not defined"),
+            ("const f = () => {\n  return nope\n}\nf()", 2, "ReferenceError: nope is not defined"),
+            ("const a = text('a')\n\nb\nconst b = a", 3, "b is defined below, on line 4"),
+            (
+                "const a = text('a')\n\nwhile (true) {}\ntext('b')",
+                3,
+                "script took too long: a loop, or a function",
+            ),
+            (
+                "const a = text('a')\nconst b = = 3",
+                2,
+                "SyntaxError: unexpected token '=', primary expression",
+            ),
+            ("const a = text('😀').scael(2).rotaet(3)", 1, "scael is not a clip method"),
+            ("text('a')\n  .scael(text('b').rotaet(3))", 2, "rotaet is not a clip method"),
             ("text('a')\n  .opacity(t => NaN)", 2, "a function of time must return a number"),
             (
                 "cat(text('a').for(80000),\n  text('b').for(80000))",
@@ -1664,6 +1777,18 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         ] {
             let e = fails(&scratch("slip"), src);
             assert!(e.starts_with(&format!("line {line}: {says}")), "{e}");
+        }
+        for (src, says) in [
+            (
+                "const a = text('a')\n// nope\nnope\ntext('b')",
+                "ReferenceError: nope is not defined",
+            ),
+            (
+                "const a = text('a')\nfor (const c of [a]) c\nwhile (true) {}\ntext('b')",
+                "script took too long: a loop, or a function that calls itself, never ends",
+            ),
+        ] {
+            assert_eq!(fails(&scratch("slip"), src), says);
         }
         let fine = format!("{}text('a'){}", "stack(".repeat(99), ")".repeat(99));
         assert_eq!(tl(&fine).clips.len(), 1);
@@ -1807,7 +1932,7 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
     }
 
     // A name every object inherits, such as valueOf, toString or constructor, is not a clip method:
-    // calling one fails like any unknown method, which the error names when it is the only unknown call
+    // calling one fails like any unknown method, which the error names even with a second unknown call
     // on its line, instead of silently dropping or copying the clip.
     #[test]
     fn inherited_names_are_not_clip_methods() {
@@ -1815,10 +1940,7 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         let unknown =
             |name: &str| format!("line 2: {name} is not a clip method: check the spelling, or the script may need a newer Origami");
         assert_eq!(fails(&dir, "text('z')\ntext('a').for(2).nope(1)"), unknown("nope"));
-        assert_eq!(
-            fails(&dir, "text('z')\ntext('a').nope().nada()"),
-            "line 2: TypeError: not a callable function"
-        );
+        assert_eq!(fails(&dir, "text('z')\ntext('a').nope().nada()"), unknown("nope"));
         for name in [
             "valueOf",
             "toString",
@@ -1892,7 +2014,7 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
                 2,
                 "__lut(\"[object Object]\") points to a file that does not exist",
             ),
-            ("__font('x', 'font', -1)", 2, "font(\"x\") points to a file that does not exist"),
+            ("__font('x', 'font', -1)", 2, "font(\"x\") is not a font installed on this Mac"),
             ("__read('x'.repeat(5e5))", 2, "__read(\"xxxxxxxx"),
             ("const v = video\nv('x')", 3, "video(\"x\") points to a file that does not exist"),
             (

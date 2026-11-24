@@ -7,13 +7,20 @@ fn main() -> Result<()> {
     let args: Vec<String> = env::args_os().skip(1).map(|a| a.to_string_lossy().into()).collect();
     let flag = |f: &str| args.iter().any(|a| a == f);
     let pos: Vec<&str> = args.iter().map(String::as_str).filter(|a| !a.starts_with("--")).collect();
+    let read = |script: &str| {
+        let tl = origami_lang::eval(script.as_ref(), flag("--relock"), footprint)?;
+        if !tl.note.is_empty() {
+            eprintln!("{}", tl.note);
+        }
+        anyhow::Ok(tl)
+    };
     match pos[..] {
         ["ir", script] => println!(
             "{}",
             serde_json::to_string_pretty(&origami_lang::eval(script.as_ref(), true, footprint)?)?
         ),
         ["render", script, out] => {
-            let tl = origami_lang::eval(script.as_ref(), flag("--relock"), footprint)?;
+            let tl = read(script)?;
             if flag("--dry-run") {
                 let quote = |a: String| format!("'{}'", a.replace('\'', "'\\''"));
                 println!(
@@ -30,7 +37,7 @@ fn main() -> Result<()> {
             }
         }
         ["frame", script, t, out] => {
-            let tl = origami_lang::eval(script.as_ref(), flag("--relock"), footprint)?;
+            let tl = read(script)?;
             origami_engine::guard(&tl, out)?;
             let size = format!("{}x{}", tl.size.0, tl.size.1);
             let px = Preview::default().frame(&tl, t.parse()?, (tl.size.0 as usize, tl.size.1 as usize));

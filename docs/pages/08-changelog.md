@@ -6,6 +6,11 @@ What changed in each version of Origami. The launch screen shows the version you
 
 ### Nov 23
 
+- `origami frame` and `origami render` print the script's note, such as "line 3: lens 200 is lowered to 170, the most it takes", before they draw. Before, only `origami ir` and the app showed it. When a script has several such values the note is about the first one; before, it was about the last.
+- A font name that is not installed, such as `text("Hi", { font: "NoSuchFontName" })`, now says it "is not a font installed on this Mac, or a font file next to the script". Before, it said the name "points to a file that does not exist", as if a file had been asked for.
+- `curve` without its channel, as in `curve([[0, 0], [1, 1]])`, and `wheel` without its range now say which name goes first. Before, `curve` said it "takes points of two numbers", which the script had given, and `wheel` gave a JavaScript type error.
+- A colour table (`.cube`) file that is empty, cut short or not a colour table at all, used with `look` or `inputLut`, now gives an error on its line as soon as the script is read. Before, the preview drew the clip without the look and said nothing, and only the export refused the file.
+- An error for a misspelt or unknown name, such as `vidoe("x")`, names the line the name is on. Before, it named the line of an earlier clip, or no line. A loop that never ends names its line when the script has one loop, a mistake in the grammar reads `line 2: SyntaxError: …` like every other error, and two misspelt methods on one line name the one that failed instead of saying "not a callable function".
 - A JPEG used with `image` now shows in the preview and as its timeline thumbnail. Before, most JPEGs drew nothing there, though they did appear in exports.
 - A colour table (`.cube`) file edited or exported again while Origami is open now shows its new colours at once, in the preview and in exports. Before, a clip kept the table it was first drawn with until Origami was restarted.
 - Exporting while the script has an error, from the Export dialog or with `:export`, first shows the error and asks whether to export the last version that worked. Before, it exported that older version without a word.
