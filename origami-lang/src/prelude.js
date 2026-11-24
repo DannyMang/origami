@@ -1,7 +1,7 @@
 (() => {
   const T = t => typeof t === 'number' ? t : String(t).split(':').reduce((a, x) => a * 60 + +x, 0)
   const S = { fps: 30, size: null, preview: 'auto', proxy: true }
-  let L = {}, at = 0, N = 0, P = [], D = 0, W = [1, 1], note
+  let L = {}, code = '', at = 0, N = 0, P = [], D = 0, W = [1, 1], note
   const M = new Map(), reads = ['x', 'y', 'scale', 'rotate', 'opacity'], even = n => Math.round(n / 2) * 2
   const digits = /^\d+$/, share = /^[\d.]+%$/, written = 'keys are written keys([0, 0], ["50%", 1], [-0.5, 0])', named = /(?:const|let|var)\s+(\w+)\s*=/, made = 'video sound image text captions caption color', bare = 'keys rect line path add mul cat stack settings delay bezier'
   const DAY = 86400, run = Symbol(), calm = Symbol()
@@ -374,7 +374,7 @@
       const m = s.match(named)
       if (m) L[n] = m[1]
     })
-    return __tag(src, made, bare, called)
+    return code = __tag(src, made, bare, called)
   }
   const tail = () => __src.split('\n').findLastIndex(s => /^\s*[^\s/]/.test(s)) + 1 || 1
   const loose = () => {
@@ -386,14 +386,22 @@
     }) + 1
   }
   globalThis.__late = m => {
-    const [, name, n] = m.match(/\b(\w+) is not defined.*?:(\d+):/) ?? [], below = Object.keys(L).find(l => L[l] === name && +l > +n)
-    if (below) return `line ${n}: ${name} is defined below, on line ${below}; a clip can only follow one defined above it`
-    const head = m.split('\n')[0].replace(/ \((unknown at |script:|native\)).*/, '').replace(/^Error: /, '')
+    const [top, ...stack] = m.split('\n'), [, n, col] = m.match(/\n.*script:(\d+):(\d+)/) ?? m.match(/script:(\d+):(\d+)/) ?? []
+    const head = top.replace(/ \((unknown at |script:|native\)).*/, '').replace(/^Error: /, '')
       .replace(/^RuntimeLimitError.*/, 'script took too long: a loop, or a function that calls itself, never ends')
-    const row = /\bline \d/.test(head) ? 0 : /unterminated string/.test(head) ? loose() : /abrupt end/.test(head) ? tail() : (m.match(/\n.*script:(\d+):/) ?? m.match(/script:(\d+):/))?.[1]
-    const odd = head === 'TypeError: not a callable function' ? [...(__src.split('\n')[row - 1] ?? '').matchAll(/\.\s*(\w+)\s*\(/g)].map(c => c[1]).filter(k => !(k in ops)) : []
-    const what = odd.length === 1 ? `${odd[0]} is not a clip method: check the spelling, or the script may need a newer Origami` : head
-    return row ? `line ${row}: ${what}` : head
+    const lines = f => __src.split('\n').flatMap((s, i) => f(s, i + 1) ? [i + 1] : []), only = l => l.length === 1 ? l[0] : 0
+    const name = head.match(/^ReferenceError: (.+) is not defined$/)?.[1]
+    if (name) {
+      const uses = lines((s, i) => s.split(/[^\w$]+/).filter(w => w === name).length > (L[i] === name))
+      const row = only(uses) || (uses.includes(+n) ? +n : 0), below = Object.keys(L).find(l => L[l] === name && +l > row)
+      return !row ? head : below ? `line ${row}: ${name} is defined below, on line ${below}; a clip can only follow one defined above it` : `line ${row}: ${head}`
+    }
+    const [, slip, spot] = head.match(/^(SyntaxError: .*) at line (\d+), col \d+$/) ?? []
+    const spins = /iteration loops/.test(top) && stack[0]?.includes('(script:')
+    const row = /\bline \d/.test(head) && !slip ? 0 : /unterminated string/.test(head) ? loose() : /abrupt end/.test(head) ? tail() : spot ?? (spins ? only(lines(s => /(?<![.\w$])(for|while|do)(?![\w$])/.test(s))) : n)
+    const odd = head === 'TypeError: not a callable function' && [...code.split('\n')[n - 1] ?? ''].slice(0, col - 1).join('').match(/\.\s*([\w$]+)\s*$/)?.[1]
+    const what = odd ? `${odd} is not a clip method: check the spelling, or the script may need a newer Origami` : slip ?? head
+    return row ? `line ${row}: ${what}` : what
   }
   const frames = d => Math.max(1, Math.ceil(d * S.fps - 1e-6))
   const sample = (c, v) => {

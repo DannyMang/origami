@@ -6,6 +6,7 @@ What changed in each version of Origami. The launch screen shows the version you
 
 ### Nov 23
 
+- An error for a misspelt or unknown name, such as `vidoe("x")`, names the line the name is on. Before, it named the line of an earlier clip, or no line. A loop that never ends names its line when the script has one loop, a mistake in the grammar reads `line 2: SyntaxError: …` like every other error, and two misspelt methods on one line name the one that failed instead of saying "not a callable function".
 - A JPEG used with `image` now shows in the preview and as its timeline thumbnail. Before, most JPEGs drew nothing there, though they did appear in exports.
 - A colour table (`.cube`) file edited or exported again while Origami is open now shows its new colours at once, in the preview and in exports. Before, a clip kept the table it was first drawn with until Origami was restarted.
 - Exporting while the script has an error, from the Export dialog or with `:export`, first shows the error and asks whether to export the last version that worked. Before, it exported that older version without a word.

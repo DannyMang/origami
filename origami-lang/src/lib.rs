@@ -1611,8 +1611,9 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
     }
 
     // Values that make no sense (a negative length, zero speed, a frame rate of 0, a loop without end,
-    // a day-long timeline) and common slips (a number among clips, an unclosed string or bracket, an
-    // error thrown by a function of time) should be refused with a message that names the line.
+    // a day-long timeline) and common slips (a number among clips, an unclosed string or bracket, a
+    // misspelt name or method, an error thrown by a function of time) should be refused with a message
+    // that names the line, and a name or loop that could be on several lines names no line.
     #[test]
     fn slips_name_the_line() {
         let deep = format!("{}text('a'){}", "\nstack(".repeat(101), ")".repeat(101));
@@ -1649,6 +1650,22 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
             ("text('a')\ncolor()", 2, "color is written color(\"#203040\")"),
             ("stack(text('a'),\n  text('c').scale(t => { throw new Error('x') }))", 2, "x"),
             ("const a = text('a')\n\nstack(a, bb)", 3, "ReferenceError: bb is not defined"),
+            ("const a = text('a')\n\n\n\nvidoe('x')", 5, "ReferenceError: vidoe is not defined"),
+            ("vidoe('x')\ntext('a')", 1, "ReferenceError: vidoe is not defined"),
+            ("const f = () => {\n  return nope\n}\nf()", 2, "ReferenceError: nope is not defined"),
+            ("const a = text('a')\n\nb\nconst b = a", 3, "b is defined below, on line 4"),
+            (
+                "const a = text('a')\n\nwhile (true) {}\ntext('b')",
+                3,
+                "script took too long: a loop, or a function",
+            ),
+            (
+                "const a = text('a')\nconst b = = 3",
+                2,
+                "SyntaxError: unexpected token '=', primary expression",
+            ),
+            ("const a = text('😀').scael(2).rotaet(3)", 1, "scael is not a clip method"),
+            ("text('a')\n  .scael(text('b').rotaet(3))", 2, "rotaet is not a clip method"),
             ("text('a')\n  .opacity(t => NaN)", 2, "a function of time must return a number"),
             (
                 "cat(text('a').for(80000),\n  text('b').for(80000))",
@@ -1664,6 +1681,18 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         ] {
             let e = fails(&scratch("slip"), src);
             assert!(e.starts_with(&format!("line {line}: {says}")), "{e}");
+        }
+        for (src, says) in [
+            (
+                "const a = text('a')\n// nope\nnope\ntext('b')",
+                "ReferenceError: nope is not defined",
+            ),
+            (
+                "const a = text('a')\nfor (const c of [a]) c\nwhile (true) {}\ntext('b')",
+                "script took too long: a loop, or a function that calls itself, never ends",
+            ),
+        ] {
+            assert_eq!(fails(&scratch("slip"), src), says);
         }
         let fine = format!("{}text('a'){}", "stack(".repeat(99), ")".repeat(99));
         assert_eq!(tl(&fine).clips.len(), 1);
@@ -1807,7 +1836,7 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
     }
 
     // A name every object inherits, such as valueOf, toString or constructor, is not a clip method:
-    // calling one fails like any unknown method, which the error names when it is the only unknown call
+    // calling one fails like any unknown method, which the error names even with a second unknown call
     // on its line, instead of silently dropping or copying the clip.
     #[test]
     fn inherited_names_are_not_clip_methods() {
@@ -1815,10 +1844,7 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         let unknown =
             |name: &str| format!("line 2: {name} is not a clip method: check the spelling, or the script may need a newer Origami");
         assert_eq!(fails(&dir, "text('z')\ntext('a').for(2).nope(1)"), unknown("nope"));
-        assert_eq!(
-            fails(&dir, "text('z')\ntext('a').nope().nada()"),
-            "line 2: TypeError: not a callable function"
-        );
+        assert_eq!(fails(&dir, "text('z')\ntext('a').nope().nada()"), unknown("nope"));
         for name in [
             "valueOf",
             "toString",
