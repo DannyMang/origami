@@ -59,22 +59,7 @@ impl Lut {
     }
 
     pub fn parse(text: &str) -> Option<Self> {
-        let (mut n, mut cube, mut t) = (0, true, vec![]);
-        for line in text.lines().map(str::trim) {
-            let mut words = line.split_whitespace();
-            let (Some(head), rest) = (words.next(), words.flat_map(str::parse::<f32>).collect::<Vec<_>>()) else {
-                continue;
-            };
-            match (head, &rest[..]) {
-                ("LUT_3D_SIZE", [size]) => n = *size as usize,
-                ("LUT_1D_SIZE", [size]) => (n, cube) = (*size as usize, false),
-                ("DOMAIN_MIN", lo) if lo != [0.; 3] => return None,
-                ("DOMAIN_MAX", hi) if hi != [1.; 3] => return None,
-                (r, [g, b]) => t.extend(r.parse().ok().map(|r| [r, *g, *b])),
-                _ => {}
-            }
-        }
-        (n > 1 && Some(t.len()) == if cube { n.checked_pow(3) } else { Some(n) }).then_some(Self { n, cube, t })
+        origami_lang::table(text).map(|(n, cube, t)| Self { n, cube, t })
     }
 
     pub fn read(path: &str) -> Option<Arc<Self>> {

@@ -486,8 +486,40 @@ fn read(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
     })
 }
 
+pub type Table = (usize, bool, Vec<[f32; 3]>);
+
+pub fn table(text: &str) -> Option<Table> {
+    let (mut n, mut cube, mut t) = (0, true, vec![]);
+    for line in text.lines().map(str::trim) {
+        let mut words = line.split_whitespace();
+        let (Some(head), rest) = (words.next(), words.flat_map(str::parse::<f32>).collect::<Vec<_>>()) else {
+            continue;
+        };
+        match (head, &rest[..]) {
+            ("LUT_3D_SIZE", [size]) => n = *size as usize,
+            ("LUT_1D_SIZE", [size]) => (n, cube) = (*size as usize, false),
+            ("DOMAIN_MIN", lo) if lo != [0.; 3] => return None,
+            ("DOMAIN_MAX", hi) if hi != [1.; 3] => return None,
+            (r, [g, b]) => t.extend(r.parse().ok().map(|r| [r, *g, *b])),
+            _ => {}
+        }
+    }
+    (n > 1 && Some(t.len()) == if cube { n.checked_pow(3) } else { Some(n) }).then_some((n, cube, t))
+}
+
+static TABLES: Mutex<BTreeMap<PathBuf, (u64, i64, i64)>> = Mutex::new(BTreeMap::new());
+
 fn lut(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
-    host(args, cx, "__lut", cube, |_, path| Ok(path.to_string_lossy().into()))
+    host(args, cx, "__lut", cube, |_, path| {
+        let m = fs::metadata(path)?;
+        let stamp = (m.len(), m.mtime(), m.mtime_nsec());
+        let mut whole = TABLES.lock().unwrap_or_else(PoisonError::into_inner);
+        if whole.get(path) != Some(&stamp) {
+            table(&load(path)?).ok_or_else(|| anyhow!("not a .cube file with a 0 to 1 domain"))?;
+            whole.insert(path.into(), stamp);
+        }
+        Ok(path.to_string_lossy().into())
+    })
 }
 
 fn font(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
@@ -1210,6 +1242,30 @@ mod tests {
         assert_eq!(tl("color('#f00').sharpen(5)").clips[0].grade, None);
         let e = run(&scratch("look"), "color('#f00')\n  .look('none')").unwrap_err();
         assert_eq!(e.downcast_ref::<Error>().map(Error::line), Some(2));
+    }
+
+    // A look or input table file that is empty, is not a colour table, has too few rows or reaches past
+    // 0 to 1 stops the script with an error on its line, also when it replaces a table that was read.
+    #[test]
+    fn broken_tables_name_the_line() {
+        let (dir, rows) = (scratch("tables"), "0 0 0\n".repeat(8));
+        let whole = format!("LUT_3D_SIZE 2\n{rows}");
+        let ranged = format!("LUT_3D_SIZE 2\nDOMAIN_MAX 2 2 2\n{rows}");
+        let look = |text: &str, call: &str| {
+            fs::write(dir.join("a.cube"), text).unwrap();
+            let got = run(&dir, &format!("color('#f00')\n  .{call}('a.cube')"));
+            got.map(|_| ()).map_err(|e| e.to_string())
+        };
+        assert_eq!(look(&whole, "look"), Ok(()));
+        for (text, call) in [
+            ("", "look"),
+            ("hello this is not a lut", "inputLut"),
+            ("LUT_3D_SIZE 2\n0 0 0\n", "look"),
+            (ranged.as_str(), "inputLut"),
+        ] {
+            let want = format!("line 2: {call}(\"a.cube\"): not a .cube file with a 0 to 1 domain");
+            assert_eq!(look(text, call), Err(want));
+        }
     }
 
     // Keyframes should give the right value on every frame: between keys, before the first and after
