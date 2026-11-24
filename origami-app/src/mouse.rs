@@ -98,6 +98,7 @@ impl Origami {
         (self.script, self.mtime, self.t, self.dirty, self.clash) = (path, None, 0., false, false);
         (self.past, self.future, self.cursor, self.top, self.left) = (Default::default(), Default::default(), None, 0., 0.);
         (self.folded, self.fresh, self.saves) = (vec![], true, None);
+        self.marks.clear();
         (self.tl, self.rev, self.shown, self.boot) = (Arc::default(), self.rev + 1, None, Some((Instant::now(), false)));
         if let Some(old) = self.image.take() {
             cx.drop_image(old, None);
@@ -653,6 +654,29 @@ mod tests {
         cx.simulate_keystrokes("backspace x y");
         assert_eq!(view.update(cx, |o, _| (o.lines[0].clone(), o.chosen())), ("sxyck(".into(), None));
         assert_eq!(drag(cx, 2. * glyph), Some(((0, 3), (0, 5))));
+    }
+
+    // A mark set on one script's timeline is gone once another script is opened, so the ruler never
+    // shows a mark that belongs to a different film.
+    #[gpui::test]
+    fn marks_stay_with_their_script(cx: &mut gpui::TestAppContext) {
+        let dir = env::temp_dir().join("origami-marks-test");
+        fs::create_dir_all(&dir).unwrap();
+        let (one, two) = (dir.join("one.js"), dir.join("two.js"));
+        for path in [&one, &two] {
+            fs::write(path, "color('#203040').for(4)").unwrap();
+        }
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            app.open(one.clone(), cx);
+            window.focus(&app.focus);
+            app
+        });
+        cx.run_until_parked();
+        cx.simulate_keystrokes("escape m a");
+        assert_eq!(view.update(cx, |o, _| o.marks.len()), 1);
+        view.update(cx, |o, cx| o.open(two.clone(), cx));
+        assert_eq!(view.update(cx, |o, _| o.marks.len()), 0);
     }
 
     // Clicking in the code while the search bar is open should send typing to the code, and Find should send it back to the bar.
