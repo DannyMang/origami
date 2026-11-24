@@ -514,7 +514,7 @@ mod tests {
         assert_eq!(view.update(cx, |o, _| o.lines.clone()), ["stack("]);
     }
 
-    // A script that never ends reports that it took too long and one with a mistake marks the wrong line,
+    // A script that never ends reports on its line that it took too long and one with a mistake marks the wrong line,
     // undoing back to an empty script saves it empty, deleting the script file outside the app keeps the
     // code on screen and offers to save it again, :e with a name that does not exist opens nothing, and a
     // save replaces a link put where the script was instead of writing through it and keeps the file's
@@ -534,7 +534,7 @@ mod tests {
         settle(&view, cx);
         fs::write(&path, "while (true) {}").unwrap();
         settle(&view, cx);
-        assert!(view.update(cx, |o, _| o.err.starts_with("script took too long")));
+        assert!(view.update(cx, |o, _| o.err.starts_with("line 1: script took too long")));
         let a = "const a = text(\"a\").for(1)\n";
         for (src, want) in [
             (
