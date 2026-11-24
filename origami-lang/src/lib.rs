@@ -296,14 +296,11 @@ fn find(dir: &Path, rel: &str) -> Option<PathBuf> {
         return Some(path);
     }
     let named = |p: &PathBuf| p.is_file() && p.file_stem() == path.file_name();
-    let mut near = path
-        .parent()
-        .and_then(|p| fs::read_dir(p).ok())
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path());
-    near.find(named)
+    path.parent().into_iter().flat_map(inside).find(named)
+}
+
+fn inside(dir: &Path) -> impl Iterator<Item = PathBuf> + use<> {
+    fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path())
 }
 
 fn cube(dir: &Path, name: &str) -> Option<PathBuf> {
@@ -314,10 +311,9 @@ fn cube(dir: &Path, name: &str) -> Option<PathBuf> {
         let n = p.file_name().unwrap_or_default().to_string_lossy();
         n.starts_with("Adobe Premiere Pro ") && n.ends_with(end)
     };
-    let list = |p: &Path| fs::read_dir(p).into_iter().flatten().flatten().map(|e| e.path());
-    let apps = list("/Applications".as_ref())
+    let apps = inside("/Applications".as_ref())
         .filter(|p| named(p, ""))
-        .flat_map(|p| list(&p))
+        .flat_map(|p| inside(&p))
         .filter(|p| named(p, ".app"));
     let file = format!("{name}.cube");
     let luts = apps.flat_map(|p| ["Creative", "Technical"].map(|f| p.join("Contents/Lumetri/LUTs").join(f)));
@@ -350,7 +346,7 @@ fn face(dir: &Path, name: &str) -> Option<PathBuf> {
 }
 
 pub fn fonts() -> Vec<String> {
-    let files = installed().flat_map(|p| fs::read_dir(p).into_iter().flatten().flatten().map(|e| e.path()));
+    let files = installed().flat_map(|p| inside(&p));
     let typed = files.filter(|p| p.extension().is_some_and(|e| FACES.iter().any(|f| e == *f)));
     let stems = typed.filter_map(|p| Some(p.file_stem()?.to_str()?.to_string()));
     let mut out: Vec<String> = stems.filter(|n| bare(n) && !n.starts_with('.')).collect();
@@ -1001,7 +997,7 @@ fn ask(script: &Path, relock: bool, src: Option<&str>, measure: Measure) -> Resu
     }
     let (script, src, (back, got)) = (script.to_path_buf(), src.map(String::from), mpsc::channel());
     let job = move |cx: &mut Context| {
-        let tl = build(cx, &script, relock, src.as_deref(), measure);
+        let tl = half(cx, &script, relock, src.as_deref(), measure).and_then(|(out, kept, files)| finish(&out, kept, files, measure));
         drop(back.send(tl.map_err(|e| uncaught(&e, src.is_none()).map_or(e, Into::into))));
     };
     let mut vm = VM.lock().unwrap();
@@ -1015,7 +1011,7 @@ fn ask(script: &Path, relock: bool, src: Option<&str>, measure: Measure) -> Resu
                 vm.take();
                 match e {
                     mpsc::RecvTimeoutError::Timeout => bail!("script took too long: stopped after {} seconds", LIMIT.as_secs() * 3),
-                    mpsc::RecvTimeoutError::Disconnected => bail!("script evaluation crashed: edit the script and try again"),
+                    mpsc::RecvTimeoutError::Disconnected => return Err(crashed()),
                 }
             }
         }
@@ -1028,11 +1024,6 @@ pub fn eval(script: &Path, relock: bool, measure: Measure) -> Result<Timeline> {
 
 pub fn peek(script: &Path, src: &str, measure: Measure) -> Result<Timeline> {
     ask(script, false, Some(src), measure)
-}
-
-fn build(cx: &mut Context, script: &Path, relock: bool, src: Option<&str>, measure: Measure) -> Result<Timeline> {
-    let (out, kept, files) = half(cx, script, relock, src, measure)?;
-    finish(&out, kept, files, measure)
 }
 
 type Half = (String, Vec<Vec<f32>>, Vec<(u32, PathBuf)>);
