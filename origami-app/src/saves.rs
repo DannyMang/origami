@@ -1,7 +1,7 @@
 use crate::{
     Mode, Origami,
     shelf::{DAY, Entry, Shelf, diff, now},
-    view::{BAR, BG, BLUE, BORDER, COMMENT, DIM, GREEN, GUTTER, INK, MUTED, PANEL, RED, TEXT, tokens},
+    view::{BAR, BG, BLUE, BORDER, COMMENT, DIM, GREEN, GUTTER, INK, MUTED, PANEL, RED, TEXT, card, tokens},
 };
 use gpui::{
     Context, Div, HighlightStyle, MouseButton, PromptLevel, ScrollWheelEvent, StyledText, Window, deferred, div, prelude::*, px, rgb, rgba,
@@ -445,7 +445,7 @@ impl Origami {
 
     pub fn dial(&self, cx: &mut Context<Self>) -> Div {
         let open = self.saves.is_some();
-        let hint = div()
+        let hint = card()
             .absolute()
             .top(px(32.))
             .right(px(-5.))
@@ -453,10 +453,6 @@ impl Origami {
             .px(px(8.))
             .items_center()
             .gap(px(10.))
-            .bg(rgb(PANEL))
-            .border_1()
-            .border_color(rgb(BORDER))
-            .rounded(px(6.))
             .text_size(px(12.))
             .text_color(rgb(TEXT))
             .whitespace_nowrap()
@@ -480,14 +476,7 @@ impl Origami {
                 true => d.bg(rgba(BLUE << 8 | 0x40)),
                 false => d.hover(|s| s.bg(rgb(BAR)).text_color(rgb(TEXT))).child(deferred(hint)),
             })
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    this.history(None);
-                    cx.stop_propagation();
-                    cx.notify();
-                }),
-            )
+            .on_mouse_down(MouseButton::Left, Self::touch(cx, |this, _, _, _| this.history(None)))
             .child("\u{21ba}")
     }
 
@@ -557,14 +546,7 @@ impl Origami {
                     true => d.bg(rgba(BLUE << 8 | 0x40)),
                     false => d.hover(|s| s.bg(rgb(BAR))),
                 })
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| {
-                        this.compare(i, cx);
-                        cx.stop_propagation();
-                        cx.notify();
-                    }),
-                )
+                .on_mouse_down(MouseButton::Left, Self::touch(cx, move |this, _, _, cx| this.compare(i, cx)))
                 .child(div().w(px(84.)).flex_none().text_color(rgb(TEXT)).child(e.ago(now)))
                 .child(div().flex_1().min_w_0().truncate().child(what))
                 .child(div().w(px(48.)).flex_none().flex().justify_end().child(tally(e.adds, e.dels)))
@@ -592,15 +574,13 @@ impl Origami {
                 .child(label)
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| {
+                    Self::touch(cx, move |this, _, _, cx| {
                         if let Some(s) = &mut this.saves {
                             s.sure = !sure;
                         }
                         if wipe {
                             this.wipe(cx);
                         }
-                        cx.stop_propagation();
-                        cx.notify();
                     }),
                 )
         };
@@ -745,14 +725,7 @@ impl Origami {
                     .text_color(rgb(INK))
                     .text_size(px(12.))
                     .cursor_pointer()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _, _, cx| {
-                            this.restore();
-                            cx.stop_propagation();
-                            cx.notify();
-                        }),
-                    )
+                    .on_mouse_down(MouseButton::Left, Self::touch(cx, |this, _, _, _| this.restore()))
                     .child("Restore this version"),
             );
         div().flex_1().min_h_0().flex().flex_col().child(bar).child(body).child(foot)
@@ -764,7 +737,7 @@ mod tests {
     use super::*;
     use crate::shelf::tests::{NOW, owned, save, shelf};
     use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext, point};
-    use std::{env, fs, path::PathBuf};
+    use std::{fs, path::PathBuf};
 
     // Versions read back newest first and grouped by day after a restart; one numeric call changed on a
     // named clip reads as the clip and setting, any other change as its first changed line, the first
@@ -863,9 +836,7 @@ mod tests {
     }
 
     fn open<'a>(cx: &'a mut TestAppContext, name: &str, versions: &[&[&str]]) -> (Entity<Origami>, &'a mut VisualTestContext, PathBuf) {
-        let dir = env::temp_dir().join(format!("origami-saves-{name}-test"));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = crate::tests::scratch(&format!("saves-{name}"));
         let path = fs::canonicalize(&dir).unwrap().join("edit.js");
         let last = versions.last().unwrap();
         fs::write(&path, last.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();

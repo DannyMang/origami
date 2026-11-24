@@ -1,9 +1,11 @@
 use crate::{
-    export::{alpha, grown, live, place, plain, seat},
     fx, grade,
     lut::spread,
+    pixels::{blit, nudge, spin, straight},
+    place::{alpha, grown, live, place, plain, seat},
     shape,
     text::{self, Glyph},
+    timing::{index, seam, stamp},
 };
 use lru::LruCache;
 use origami_lang::{Clip, Kind, Part, Timeline, Val, ffmpeg, ffprobe, literal, output, start, watch};
@@ -252,141 +254,6 @@ pub fn peaks(path: &str) -> Vec<f32> {
     peaks.into_iter().map(|p| p / top).collect()
 }
 
-fn spin((x, y): (f64, f64), k: f64, deg: f64) -> (f64, f64) {
-    let (s, c) = deg.to_radians().sin_cos();
-    (k * (x * c - y * s), k * (x * s + y * c))
-}
-
-fn blit(
-    out: &mut [u8],
-    (pw, ph): (usize, usize),
-    src: &[u8],
-    (sw, sh): (usize, usize),
-    k: f64,
-    deg: f64,
-    (cx, cy): (f64, f64),
-    a: f64,
-    mul: bool,
-) {
-    if !(k > 0. && a > 0.) || out.is_empty() {
-        return;
-    }
-    let ((sin, cos), (hw, hh)) = (deg.to_radians().sin_cos(), (sw as f64 / 2., sh as f64 / 2.));
-    let (rx, ry) = (
-        k * (hw * cos.abs() + hh * sin.abs()) + 1.,
-        k * (hw * sin.abs() + hh * cos.abs()) + 1.,
-    );
-    let span = |c: f64, r: f64, n: usize| ((c - r).clamp(0., n as f64) as usize, (c + r).ceil().clamp(0., n as f64) as usize);
-    let ((x0, x1), (y0, y1)) = (span(cx, rx, pw), span(cy, ry, ph));
-    let uv = |dx: f64, dy: f64| ((dx * cos + dy * sin) / k + hw - 0.5, (dy * cos - dx * sin) / k + hh - 0.5);
-    let cols: Vec<f64> = match sin == 0. {
-        true => (x0..x1).map(|x| uv(x as f64 + 0.5 - cx, 0.).0).collect(),
-        false => vec![],
-    };
-    let paint = |from: usize, rows: &mut [u8]| {
-        for (y, row) in (y0 + from / (pw * 4)..).zip(rows.chunks_exact_mut(pw * 4)) {
-            let dy = y as f64 + 0.5 - cy;
-            let flat = uv(0., dy).1;
-            for (x, d) in (x0..x1).zip(row[x0 * 4..].chunks_exact_mut(4)) {
-                let (u, v) = match cols.get(x - x0) {
-                    Some(&u) => (u, flat),
-                    None => uv(x as f64 + 0.5 - cx, dy),
-                };
-                let ((ux, vy), mut sum) = ((u.floor(), v.floor()), [0.; 4]);
-                let (fx, fy) = (u - ux, v - vy);
-                let mut tap = |ox: i64, oy: i64, w: f64| {
-                    let (sx, sy) = (ux as i64 + ox, vy as i64 + oy);
-                    if sx < 0 || sy < 0 || sx >= sw as i64 || sy >= sh as i64 {
-                        return;
-                    }
-                    let s = &src[(sy as usize * sw + sx as usize) * 4..][..4];
-                    let w = w * s[3] as f64 / 255.;
-                    for i in 0..3 {
-                        sum[i] += s[i] as f64 * w;
-                    }
-                    sum[3] += w;
-                };
-                match fx == 0. && fy == 0. {
-                    true => tap(0, 0, 1.),
-                    false => {
-                        for (ox, oy, w) in [
-                            (0, 0, (1. - fx) * (1. - fy)),
-                            (1, 0, fx * (1. - fy)),
-                            (0, 1, (1. - fx) * fy),
-                            (1, 1, fx * fy),
-                        ] {
-                            tap(ox, oy, w);
-                        }
-                    }
-                }
-                if sum[3] == 0. {
-                    continue;
-                }
-                for i in 0..3 {
-                    let ink = if mul {
-                        sum[i] * (d[i] as f64 + 255. - d[3] as f64) / 255.
-                    } else {
-                        sum[i]
-                    };
-                    d[i] = (ink * a + d[i] as f64 * (1. - sum[3] * a)) as u8;
-                }
-                d[3] = (d[3] as f64 + (255. - d[3] as f64) * sum[3] * a) as u8;
-            }
-        }
-    };
-    let rows = &mut out[y0 * pw * 4..y1 * pw * 4];
-    if (x1 - x0) * (y1 - y0) < 1 << 16 {
-        paint(0, rows)
-    } else {
-        spread(rows, pw * 4, paint)
-    }
-}
-
-fn straight(mut px: Vec<u8>) -> Vec<u8> {
-    spread(&mut px, 4, |_, part| {
-        for p in part.chunks_exact_mut(4).filter(|p| p[3] > 0 && p[3] < 255) {
-            for i in 0..3 {
-                p[i] = (p[i] as u32 * 255 / p[3] as u32).min(255) as u8;
-            }
-        }
-    });
-    px
-}
-
-fn nudge(px: &[u8], w: usize, (fx, fy): (f64, f64)) -> Vec<u8> {
-    let (mut out, n, cut) = (px.to_vec(), w * 4, |f: f64| (f as usize, (f.fract() * 256.) as u32));
-    let ((kx, a), (ky, b), h) = (cut(fx), cut(fy), px.len() / n.max(1));
-    if kx + ky == 0 && a + b == 0 {
-        return out;
-    }
-    let mix = |t: u8, u: u8, l: u8, v: u8| {
-        let (top, low) = (t as u32 * (256 - a) + u as u32 * a, l as u32 * (256 - a) + v as u32 * a);
-        ((top * (256 - b) + low * b) >> 16) as u8
-    };
-    let band = h.div_ceil(thread::available_parallelism().map_or(1, usize::from)).max(1) * n;
-    thread::scope(|s| {
-        for (j, rows) in out.chunks_mut(band).enumerate() {
-            s.spawn(move || {
-                for (y, row) in rows.chunks_exact_mut(n).enumerate() {
-                    let [top, low] = [0, 1].map(|d| &px[(j * band / n + y + ky + d).min(h - 1) * n..][..n]);
-                    let m = (w - 1).saturating_sub(kx) * 4;
-                    let ((head, tail), (i, k)) = (row.split_at_mut(m), (n - 4 - m, n - m));
-                    for ((((p, t), u), l), v) in head.iter_mut().zip(&top[i..]).zip(&top[k..]).zip(&low[i..]).zip(&low[k..]) {
-                        *p = mix(*t, *u, *l, *v);
-                    }
-                    for (x, p) in (m / 4..).zip(tail.chunks_exact_mut(4)) {
-                        let (i, k) = ((x + kx).min(w - 1) * 4, (x + kx + 1).min(w - 1) * 4);
-                        for c in 0..4 {
-                            p[c] = mix(top[i + c], top[k + c], low[i + c], low[k + c]);
-                        }
-                    }
-                }
-            });
-        }
-    });
-    out
-}
-
 fn reach(src: &str) -> i64 {
     if src.ends_with(".LRF") { 20 } else { 30 }
 }
@@ -406,121 +273,6 @@ fn recycle(spare: &mut Vec<Vec<u8>>, give: &Sender<Vec<u8>>, len: usize) {
 
 fn kept<V: Clone>(now: &mut HashMap<String, V>, was: &mut HashMap<String, V>, key: String, make: impl FnOnce() -> V) -> V {
     now.entry(key).or_insert_with_key(|k| was.remove(k).unwrap_or_else(make)).clone()
-}
-
-fn index(c: &Clip, t: f64, fps: f64, (n, d, tb): (f64, f64, f64), dur: f64) -> i64 {
-    let (rate, per) = (n / d, tb * d / n);
-    let (step, at, first) = (fps / rate / c.speed, (t - c.start) * fps, (c.src_in * rate - 1e-6).ceil());
-    let tail = if dur > 0. { (dur * rate + 1e-3).round() - first } else { f64::MAX };
-    let last = ((c.end - c.start) * fps / step - 1e-6).ceil().min(tail) - 1.;
-    let i = match tb > 0. && per.fract() == 0. {
-        true => {
-            let tick = |i: f64| ((i * per / c.speed + c.start / (1. / tb) + 1e-6) as i64 * fps as i64 + tb as i64 / 2) / tb as i64;
-            let (k, mut i) = ((t * fps).round() as i64, (at / step - 3.).floor().max(0.));
-            while tick(i + 1.) <= k {
-                i += 1.;
-            }
-            while i > 0. && tick(i - 1.) == tick(i) {
-                i -= 1.;
-            }
-            i
-        }
-        false => {
-            let i = ((at - 0.5) / step - 1e-6).ceil().max(0.);
-            if i * step < at + 0.5 - 1e-6 { i } else { i - 1. }
-        }
-    };
-    (first + i.min(last).max(0.)) as i64
-}
-
-fn seam(c: &Clip, t: f64, fps: f64, (n, d, tb): (f64, f64, f64), dur: f64, seq: bool) -> Option<(f64, f64, f64, f64)> {
-    let at = |c: &Clip, t: f64| index(c, t, fps, (n, d, tb), dur);
-    let shown = |p: &[&Clip], k: i64| p.iter().rev().find(|c| live(c, k as f64 / fps)).map(|c| at(c, k as f64 / fps));
-    let (a, v, i, first) = (c.src_in, c.speed, at(c, t), |s: f64| (s * n / d - 1e-6).ceil() as i64);
-    let (b, cut) = (a + (c.end - c.start) * v, |f: i64| a + (f - first(a)) as f64 * d / n);
-    let span = ((c.start + (cut(i) - 4. * d / n - a) / v) * fps).floor() as i64..(c.end * fps).ceil() as i64 + 2;
-    let was: Vec<_> = span.clone().map(|k| shown(&[c], k)).collect();
-    let read = |v: f64| serde_json::from_str(&v.to_string()).unwrap_or(v);
-    let edge = if tb > 0. { 0.6 / tb } else { 1e-4 };
-    let reads = |from: f64, to: f64, j: i64| (j - first(from)) as f64 * d / n + edge <= to - from;
-    let tail = was.iter().rev().find_map(|w| *w).filter(|j| reads(a, b, *j));
-    let tiers: [&[i64]; 7] = [&[i, i + 1], &[i + 2], &[i - 1], &[i + 3], &[i - 2], &[i + 4], &[i - 3]];
-    let order = tiers
-        .into_iter()
-        .flat_map(|near| (3..7).flat_map(move |p| [true, false].map(|whole| (near, p, whole))));
-    for (near, p, whole) in order {
-        let k = 10f64.powi(p);
-        let reach = if p == 3 { (d / n * k) as i64 + 3 } else { (edge * k) as i64 + 10 };
-        let grid = |v: f64| (v * k).round() / k;
-        let flat = |v: f64| (grid(v) - v).abs() < 1e-9;
-        for &f in near {
-            let mid = (cut(f) * k).round() as i64;
-            let fit = |mut s: i64| {
-                while first(s as f64 / k) > f {
-                    s -= 1;
-                }
-                while first(s as f64 / k) < f {
-                    s += 1;
-                }
-                s
-            };
-            let mut tries: Vec<_> = (mid - reach..=mid + reach).map(|m| (m, fit(m))).collect();
-            tries.sort_by_key(|(m, s)| ((m - s).abs(), (m - mid).abs()));
-            for (m, s) in tries.into_iter().map(|(m, s)| (m as f64 / k, s as f64 / k)) {
-                let by = if seq { (m - a) / v } else { grid((m - a) / v) };
-                let end = s + (b - a) - by * v;
-                let end = if flat(end) {
-                    grid(end)
-                } else if (end - b).abs() < 1e-9 {
-                    b
-                } else {
-                    continue;
-                };
-                let x = if seq || !flat(c.start + by) {
-                    c.start + by
-                } else {
-                    grid(c.start + by)
-                };
-                let stop = read(x + (end - s) / v);
-                let cuts = first(s - 5e-6) == f && tail.is_none_or(|j| reads(s, end, j));
-                if m - a < 0.04 || end - s < 0.04 || (stop == c.end) != whole || !cuts {
-                    continue;
-                }
-                let one = Clip {
-                    end: read(c.start + (m - a) / v),
-                    ..c.clone()
-                };
-                let two = Clip {
-                    start: read(x),
-                    end: stop,
-                    src_in: s,
-                    ..c.clone()
-                };
-                let k = ((one.end.min(two.start) - 1e-6) * fps).ceil() as i64 - 1;
-                let last = was
-                    .get((k - span.start) as usize)
-                    .copied()
-                    .flatten()
-                    .filter(|_| live(&one, k as f64 / fps));
-                if last.is_none_or(|j| reads(a, m, j)) && span.clone().zip(&was).all(|(k, w)| shown(&[&one, &two], k) == *w) {
-                    return Some((m, s, by, end));
-                }
-            }
-        }
-    }
-    None
-}
-
-fn stamp(c: &Clip, t: f64, fps: f64, tb: f64, stamps: &[(f64, bool)]) -> i64 {
-    let at = |s: f64| stamps.partition_point(|p| p.0 < s.round());
-    let first = at(c.src_in * tb).min(stamps.len() - 1);
-    let end = at(stamps[first].0 + (c.end - c.start) * c.speed * tb).max(first + 1);
-    let tick = |p: &(f64, bool)| {
-        (((p.0 - stamps[first].0) / c.speed + c.start / (1. / tb) + 1e-6) as i64 * fps as i64 + tb as i64 / 2) / tb as i64
-    };
-    let (k, kept) = ((t * fps).round() as i64, &stamps[first..end]);
-    let (before, by) = (kept.partition_point(|p| tick(p) < k), kept.partition_point(|p| tick(p) <= k));
-    (first + before.min(by.max(1) - 1)) as i64
 }
 
 fn rate(src: &str, fps: f64) -> (f64, f64, f64) {
@@ -1156,159 +908,8 @@ mod tests {
     use super::*;
     use crate::{
         export::hold,
-        tests::{TIDY, clip, film, scratch},
+        tests::{TIDY, clip, film, scratch, timeline},
     };
-
-    // Each timeline frame shows the source frame a plain export shows, for 29.97 fps footage on a 30 fps
-    // timeline, faster, slower and trimmed clips, last frames held to the clip's end, and frames landing
-    // half-way between two timeline frames whatever the file's time base.
-    #[test]
-    fn frames_match_export() {
-        let held = |(start, end, src_in, speed): (f64, f64, f64, f64), fps: f64, rate: (f64, f64, f64), dur: f64, frames: &[i64]| {
-            let c = Clip {
-                start,
-                end,
-                src_in,
-                speed,
-                ..clip("video", "")
-            };
-            frames
-                .iter()
-                .map(|n| index(&c, *n as f64 / fps, fps, rate, dur))
-                .collect::<Vec<_>>()
-        };
-        let see = |span, fps, rate, frames: &[i64]| held(span, fps, rate, 0., frames);
-        let (film, thirty, day) = ((30000., 1001., 30000.), (30., 1., 15360.), (24., 1., 12288.));
-        assert_eq!(
-            see((0., 40., 0., 1.), 30., film, &[0, 1, 499, 500, 501, 1199]),
-            [0, 1, 499, 499, 500, 1198]
-        );
-        assert_eq!(see((2., 3.666, 4.334, 1.), 30., film, &[60, 61, 109]), [130, 131, 179]);
-        assert_eq!(see((3.666, 4.166, 1.5, 2.), 30., film, &[110, 111, 124]), [45, 47, 73]);
-        assert_eq!(
-            see((4.166, 6.166, 3., 0.5), 30., film, &[125, 126, 127, 183, 184]),
-            [90, 90, 91, 119, 119]
-        );
-        assert_eq!(
-            see((9.426, 13.526, 7.77, 0.3), 30., film, &[400, 402, 403, 405]),
-            [268, 268, 269, 269]
-        );
-        assert_eq!(
-            see((13.526, 15.7193, 30.01, 1.5), 30., film, &[406, 407, 408, 409]),
-            [900, 902, 903, 905]
-        );
-        assert_eq!(see((0., 3., 1., 1.), 24., film, &[0, 1, 2, 3, 70, 71]), [30, 31, 32, 34, 117, 119]);
-        assert_eq!(see((0., 2., 0.5, 1.), 30., thirty, &[0, 1, 59]), [15, 16, 74]);
-        assert_eq!(held((0., 1.99, 4.01, 1.), 30., thirty, 6., &[0, 58, 59]), [121, 179, 179]);
-        assert_eq!(see((0., 0.99, 1.01, 1.), 30., thirty, &[0, 28, 29]), [31, 59, 60]);
-        assert_eq!(
-            held((0.4, 0.606, 5.8, 1.), 30., (24000., 1001., 24000.), 6.006, &[12, 15, 17]),
-            [140, 142, 143]
-        );
-        assert_eq!(held((0., 1., 5.98, 1.), 24., day, 6., &[0, 5]), [144, 144]);
-        assert_eq!(see((0.05, 3.05, 0., 1.), 60., day, &[3, 5, 60, 65]), [0, 1, 23, 25]);
-        assert_eq!(see((0., 2., 0., 2.), 30., thirty, &[0, 1, 2, 30]), [0, 1, 3, 59]);
-        assert_eq!(see((0.05, 3.05, 0., 1.), 60., (24., 1., 0.), &[5, 60]), [0, 22]);
-    }
-
-    // Splitting a clip in a cat or a stack leaves every timeline frame showing the source frame it showed
-    // before, at common rates, time bases, speeds and trims, with times of at most six decimals, a first
-    // piece that still reads its last frame, and only a few cuts near the clip's ends refused.
-    #[test]
-    fn seams_keep_every_frame() {
-        let rates = [
-            (30000., 1001., 30000.),
-            (30., 1., 15360.),
-            (25., 1., 12800.),
-            (24., 1., 12288.),
-            (60., 1., 15360.),
-        ];
-        let read = |v: f64| serde_json::from_str::<f64>(&v.to_string()).unwrap();
-        let (mut changed, mut longer, mut refused, mut early) = (vec![], vec![], vec![], vec![]);
-        for (rate, fps) in rates.into_iter().flat_map(|rate| [24., 25., 30., 60.].map(|fps| (rate, fps))) {
-            let shown = |clips: &[Clip], t: f64| clips.iter().rev().find(|c| live(c, t)).map(|c| (c.z, index(c, t, fps, rate, 0.)));
-            let (mut bad, mut more, mut no, mut held) = (0, 0, 0, 0);
-            for (seq, (speed, src_in, start, len)) in [true, false].into_iter().flat_map(|seq| {
-                [
-                    (0.5, 0., 0., 3.),
-                    (0.5, 0.37, 0.2, 2.),
-                    (1., 0., 0., 3.),
-                    (1., 0.51, 0.7, 2.9),
-                    (1.5, 0., 1.234, 2.),
-                    (1.5, 0.2, 0., 2.5),
-                    (2., 0.1, 0., 3.),
-                    (2., 0., 0.5, 2.),
-                    (0.5, 0.1, 0.35, 2.5),
-                    (0.5, 0.021, 0.2, 2.5),
-                    (1., 0.021, 0.05, 2.5),
-                    (1., 0.333, 0.35, 2.5),
-                    (2., 0.063, 0.15, 2.5),
-                ]
-                .map(|case| (seq, case))
-            }) {
-                let b = src_in + len * speed;
-                let c = Clip {
-                    start,
-                    end: read(start + (b - src_in) / speed),
-                    src_in,
-                    speed,
-                    ..clip("video", "")
-                };
-                let next = Clip {
-                    start: c.end,
-                    end: c.end + 1.,
-                    z: 1,
-                    ..clip("video", "")
-                };
-                for k in (start * fps).ceil() as usize + 1..(c.end * fps) as usize {
-                    let Some((m, s, by, end)) = seam(&c, k as f64 / fps, fps, rate, 0., seq) else {
-                        no += 1;
-                        continue;
-                    };
-                    let x = if seq {
-                        start + by
-                    } else {
-                        format!("{:.9}", start + by).parse().unwrap()
-                    };
-                    let one = Clip {
-                        end: read(start + (m - src_in) / speed),
-                        ..c.clone()
-                    };
-                    let two = Clip {
-                        start: read(x),
-                        end: read(x + (end - s) / speed),
-                        src_in: s,
-                        ..c.clone()
-                    };
-                    let after = Clip {
-                        start: if seq { two.end } else { c.end },
-                        end: next.end,
-                        ..next.clone()
-                    };
-                    let (was, now) = ([next.clone(), c.clone()], [after, one, two]);
-                    let same = |j: usize| shown(&now, j as f64 / fps) == shown(&was, j as f64 / fps);
-                    assert!(same(k), "{rate:?} {fps} {speed} {k}");
-                    bad += (0..(next.end * fps) as usize + 2).filter(|j| !same(*j)).count();
-                    let alone = |j: &usize| live(&now[1], *j as f64 / fps) && !live(&now[2], *j as f64 / fps);
-                    let lead = (src_in * rate.0 / rate.1 - 1e-6).ceil() as i64;
-                    let cut = |j: usize| {
-                        (index(&now[1], j as f64 / fps, fps, rate, 0.) - lead) as f64 * rate.1 / rate.0 + 0.6 / rate.2 > m - src_in
-                    };
-                    held += (0..(next.end * fps) as usize).filter(alone).filter(|j| cut(*j)).count();
-                    let written = [m, s, end, if seq { 0. } else { by }];
-                    more += written.iter().any(|v| ((v * 1e3).round() / 1e3 - v).abs() > 1e-9) as usize;
-                    assert!(written.iter().all(|v| ((v * 1e6).round() / 1e6 - v).abs() < 1e-9), "{written:?}");
-                }
-            }
-            changed.push(bad);
-            longer.push(more);
-            refused.push(no);
-            early.push(held);
-        }
-        assert_eq!((changed, early), (vec![0; 20], vec![0; 20]));
-        assert_eq!(longer, [33, 70, 0, 23, 0, 0, 0, 0, 226, 0, 0, 247, 0, 100, 227, 40, 0, 0, 0, 0]);
-        assert_eq!(refused.iter().sum::<usize>(), 76);
-    }
 
     // While scrubbing, a sidecar that cannot be read, is a playlist or a named pipe, or ends before the
     // full file does should give way to the full file at once instead of leaving the clip out.
@@ -1333,13 +934,7 @@ mod tests {
                 end: 4.,
                 ..clip("video", "")
             };
-            let tl = Timeline {
-                fps: 30,
-                size: (64, 36),
-                duration: 4.,
-                clips: vec![c],
-                ..Default::default()
-            };
+            let tl = timeline(30, (64, 36), 4., vec![c]);
             let mut pv = Preview {
                 fast: true,
                 ..Default::default()
@@ -1418,13 +1013,7 @@ mod tests {
             scale: Val::Fixed(1. - i as f64 * 0.05),
             ..clip("video", "")
         });
-        let tl = Timeline {
-            fps: 30,
-            size: (64, 36),
-            duration: 0.8,
-            clips: clips.collect(),
-            ..Default::default()
-        };
+        let tl = timeline(30, (64, 36), 0.8, clips.collect());
         let mut pv = Preview::default();
         pv.frame(&tl, 0., (64, 36));
         assert!(pv.decoders.iter().any(|(k, _)| k.1 == 64));
@@ -1444,13 +1033,7 @@ mod tests {
             scale: Val::Fixed(1. - i as f64 * 0.1),
             ..clip("video", "")
         };
-        let tl = Timeline {
-            fps: 30,
-            size: (64, 36),
-            duration: 1.,
-            clips: (0..n).map(layer).collect(),
-            ..Default::default()
-        };
+        let tl = timeline(30, (64, 36), 1., (0..n).map(layer).collect());
         let mut pv = Preview::default();
         let ids = |pv: &Preview| {
             let mut ids: Vec<u32> = pv.decoders.iter().flat_map(|(_, d)| d.child.as_ref().map(Child::id)).collect();
@@ -1481,13 +1064,7 @@ mod tests {
             end: 2.,
             ..clip("video", "")
         };
-        let tl = Timeline {
-            fps: 30,
-            size: (64, 36),
-            duration: 2.,
-            clips: vec![c],
-            ..Default::default()
-        };
+        let tl = timeline(30, (64, 36), 2., vec![c]);
         let mut pv = Preview::default();
         let blue = |pv: &mut Preview| pv.frame(&tl, 1., (64, 36))[(18 * 64 + 32) * 4] > 128;
         assert!(!blue(&mut pv));
@@ -1513,19 +1090,18 @@ mod tests {
             "yuv420p",
         ];
         film(&file, src, &x264);
-        let tl = Timeline {
-            fps: 30,
-            size: (64, 36),
-            duration: 2.,
-            clips: vec![Clip {
+        let tl = timeline(
+            30,
+            (64, 36),
+            2.,
+            vec![Clip {
                 src: file.to_string_lossy().into(),
                 w: 64,
                 h: 36,
                 end: 2.,
                 ..clip("video", "")
             }],
-            ..Default::default()
-        };
+        );
         let mut played = Preview::default();
         let wrong: Vec<usize> = (0..60)
             .filter(|k| played.frame(&tl, *k as f64 / 30., (64, 36)) != Preview::default().frame(&tl, *k as f64 / 30., (64, 36)))
@@ -1539,19 +1115,18 @@ mod tests {
     fn stepping_back_reads_ahead() {
         let file = scratch("back").join("a.mp4");
         film(&file, "testsrc=s=64x36:r=30:d=4", &[]);
-        let tl = Timeline {
-            fps: 30,
-            size: (64, 36),
-            duration: 4.,
-            clips: vec![Clip {
+        let tl = timeline(
+            30,
+            (64, 36),
+            4.,
+            vec![Clip {
                 src: file.to_string_lossy().into(),
                 w: 64,
                 h: 36,
                 end: 4.,
                 ..clip("video", "")
             }],
-            ..Default::default()
-        };
+        );
         let (mut back, mut played) = (Preview::default(), Preview::default());
         let shown = |pv: &mut Preview, k: i64| pv.frame(&tl, k as f64 / 30., (64, 36));
         let mut stepped: Vec<_> = (60..=100).rev().map(|k| shown(&mut back, k)).collect();
@@ -1584,13 +1159,7 @@ mod tests {
             end: 2. * i as f64 + 2.,
             ..clip("video", "")
         };
-        let tl = Timeline {
-            fps: 30,
-            size: (64, 36),
-            duration: 4.,
-            clips: vec![part(0), part(1)],
-            ..Default::default()
-        };
+        let tl = timeline(30, (64, 36), 4., vec![part(0), part(1)]);
         let (mut back, mut played) = (Preview::default(), Preview::default());
         let shown = |pv: &mut Preview, k: i64| pv.frame(&tl, k as f64 / 30., (64, 36));
         let mut stepped: Vec<_> = (70..=80).rev().map(|k| shown(&mut back, k)).collect();
@@ -1612,19 +1181,18 @@ mod tests {
     fn dead_decoders_are_replaced() {
         let file = scratch("dead").join("a.mp4");
         film(&file, "testsrc=s=64x36:r=30:d=4", &[]);
-        let tl = Timeline {
-            fps: 30,
-            size: (64, 36),
-            duration: 4.,
-            clips: vec![Clip {
+        let tl = timeline(
+            30,
+            (64, 36),
+            4.,
+            vec![Clip {
                 src: file.to_string_lossy().into(),
                 w: 64,
                 h: 36,
                 end: 4.,
                 ..clip("video", "")
             }],
-            ..Default::default()
-        };
+        );
         let (mut cut, mut played) = (Preview::default(), Preview::default());
         let shown = |pv: &mut Preview, k: i64| pv.frame(&tl, k as f64 / 30., (64, 36));
         let mut seen: Vec<_> = (0..40).map(|k| shown(&mut cut, k)).collect();
@@ -1641,19 +1209,18 @@ mod tests {
     fn playing_reads_ahead() {
         let file = scratch("ahead").join("a.mp4");
         film(&file, "testsrc=s=256x144:r=30:d=1", &[]);
-        let tl = Timeline {
-            fps: 30,
-            size: (256, 144),
-            duration: 1.,
-            clips: vec![Clip {
+        let tl = timeline(
+            30,
+            (256, 144),
+            1.,
+            vec![Clip {
                 src: file.to_string_lossy().into(),
                 w: 256,
                 h: 144,
                 end: 1.,
                 ..clip("video", "")
             }],
-            ..Default::default()
-        };
+        );
         let mut pv = Preview::default();
         let ids = |pv: &Preview| {
             pv.decoders
@@ -1711,13 +1278,7 @@ mod tests {
                 ..clip("video", "")
             })
             .collect();
-        let tl = Timeline {
-            fps: 30,
-            size: (64, 36),
-            duration: 1.2,
-            clips,
-            ..Default::default()
-        };
+        let tl = timeline(30, (64, 36), 1.2, clips);
         let found = |tl: &Timeline| {
             let lands = LANDS.lock().unwrap();
             tl.clips
@@ -1769,59 +1330,24 @@ mod tests {
             "color=black:s=64x36:r=25:d=2,format=yuv444p,geq=lum='16+4*N':cb=128:cr=128",
             &[],
         );
-        let tl = Timeline {
-            fps: 30,
-            size: (64, 36),
-            duration: 2.,
-            clips: vec![Clip {
+        let tl = timeline(
+            30,
+            (64, 36),
+            2.,
+            vec![Clip {
                 src: path.clone(),
                 w: 64,
                 h: 36,
                 end: 2.,
                 ..clip("video", "")
             }],
-            ..Default::default()
-        };
+        );
         let shown = |pv: &mut Preview| (0..30).map(|k| pv.frame(&tl, k as f64 / 30., (64, 36))).collect::<Vec<_>>();
         let mut pv = Preview::default();
         shown(&mut pv);
         (0..301).for_each(|_| drop(probe(&path)));
         assert!(shown(&mut pv) == shown(&mut Preview::default()));
     }
-
-    // Variable-frame-rate footage should show the frame a plain export shows: the clip starts on the
-    // first frame at or after the trim point, each later frame shows from the timeline frame its time
-    // rounds to, and of two frames rounding to the same timeline frame the first one is shown there.
-    #[test]
-    fn stamps_match_export() {
-        let shown = |stamps: &[(f64, bool)], (start, end, src_in, speed): (f64, f64, f64, f64), fps: f64, frames: &[i64]| {
-            let c = Clip {
-                start,
-                end,
-                src_in,
-                speed,
-                ..clip("video", "")
-            };
-            frames
-                .iter()
-                .map(|k| stamp(&c, *k as f64 / fps, fps, 15360., stamps))
-                .collect::<Vec<_>>()
-        };
-        let uneven: Vec<_> = (0..180).map(|n| ((n + n / 2) as f64 * 512., n % 24 == 0)).collect();
-        let sixty: Vec<_> = (0..480).map(|n| ((n + n / 3 * 2) as f64 * 256., n % 30 == 0)).collect();
-        assert_eq!(
-            shown(&uneven, (0., 2.7, 0.5, 1.), 30., &[0, 1, 2, 3, 4, 5, 6, 7]),
-            [10, 11, 11, 12, 13, 13, 14, 15]
-        );
-        assert_eq!(shown(&uneven, (0., 1.334, 1., 1.5), 24., &[0, 1, 2, 3, 31]), [20, 21, 22, 24, 59]);
-        assert_eq!(shown(&uneven, (0., 0.466667, 8.5, 1.), 30., &[0, 1, 2, 13]), [170, 171, 171, 179]);
-        assert_eq!(
-            shown(&sixty, (0., 3., 0., 1.), 30., &[0, 1, 2, 3, 4, 5, 6, 7]),
-            [0, 1, 2, 3, 5, 6, 7, 8]
-        );
-        assert_eq!(shown(&sixty, (0., 1.98, 1.01, 0.5), 30., &[0, 1, 2, 3, 4]), [37, 38, 38, 38, 39]);
-    }
-
     // MPEG-TS and MPEG-PS footage, whose times start late and whose sound starts before its pictures,
     // should show the frame the export shows, played or jumped to: a trimmed clip starts on the first
     // frame at or after the trim point, not on a later keyframe, and runs to the last frame of the file.
@@ -1866,22 +1392,6 @@ mod tests {
         }
     }
 
-    // A sidecar picture is shifted by the drawn size of one full-size pixel, which is more than a
-    // pixel when the clip is drawn larger than its file: whole pixels should be carried and the rest
-    // blended, holding the edges, and nothing should move when there is nothing to shift.
-    #[test]
-    fn nudges_by_any_amount() {
-        let px: Vec<u8> = (0..12).flat_map(|i| [i as u8 * 20; 4]).collect();
-        let at = |out: &[u8], x: usize, y: usize| out[(y * 4 + x) * 4];
-        assert_eq!(nudge(&px, 4, (0., 0.)), px);
-        let two = nudge(&px, 4, (2., 0.));
-        assert_eq!([0, 1, 2, 3].map(|x| at(&two, x, 0)), [40, 60, 60, 60]);
-        let far = nudge(&px, 4, (1.5, 1.));
-        assert_eq!([at(&far, 0, 0), at(&far, 2, 1), at(&far, 3, 2)], [110, 220, 220]);
-        let tiny = nudge(&px, 4, (0.5, 0.25));
-        assert_eq!([at(&tiny, 0, 0), at(&tiny, 3, 2)], [30, 220]);
-    }
-
     // A clip that is not text is drawn as itself even when its internals carry text-only motion and a
     // huge text size, instead of being laid out as text.
     #[test]
@@ -1892,13 +1402,7 @@ mod tests {
             shown: Val::Fixed(0.5),
             ..clip("color", "")
         };
-        let tl = Timeline {
-            fps: 30,
-            size: (64, 36),
-            duration: 1.,
-            clips: vec![c],
-            ..Default::default()
-        };
+        let tl = timeline(30, (64, 36), 1., vec![c]);
         let mid = (18 * 64 + 32) * 4;
         assert_eq!(Preview::default().frame(&tl, 0.5, (64, 36))[mid..mid + 4], [0, 0, 255, 255]);
     }
@@ -1944,13 +1448,7 @@ mod tests {
             rotate: Val::Fixed(30.),
             ..clip("rect", "")
         };
-        let tl = Timeline {
-            fps: 30,
-            size: (2, 2),
-            duration: 1.,
-            clips: vec![turned],
-            ..Default::default()
-        };
+        let tl = timeline(30, (2, 2), 1., vec![turned]);
         assert!(Preview::default().frame(&tl, 0., (0, 0)).is_empty());
     }
 
@@ -1988,13 +1486,7 @@ mod tests {
             w: 80,
             ..clip("rect", "")
         };
-        let tl = Timeline {
-            fps: 30,
-            size: (200, 100),
-            duration: 2.,
-            clips: flash.chain([stay]).collect(),
-            ..Default::default()
-        };
+        let tl = timeline(30, (200, 100), 2., flash.chain([stay]).collect());
         let mut p = Preview::default();
         let wide = |p: &Preview| p.stills.values().flatten().find(|px| px.len() == 80 * 20 * 4).cloned().unwrap();
         p.frame(&tl, 0., (200, 100));
@@ -2011,16 +1503,15 @@ mod tests {
     #[test]
     fn effects_on_stills_are_kept() {
         let fx = r#"[{"roughen":{"border":4,"scale":20,"sharp":1,"seed":[1,[0,0,1,1]]}},{"blur":2}]"#;
-        let tl = Timeline {
-            fps: 4,
-            size: (200, 100),
-            duration: 1.,
-            clips: vec![Clip {
+        let tl = timeline(
+            4,
+            (200, 100),
+            1.,
+            vec![Clip {
                 fx: serde_json::from_str(fx).unwrap(),
                 ..clip("rect", "")
             }],
-            ..Default::default()
-        };
+        );
         let mut pv = Preview::default();
         let mut made = vec![];
         for k in 0..4 {
@@ -2037,11 +1528,11 @@ mod tests {
     #[test]
     fn letters_take_effects() {
         let ink = |fx: &str, shown: f64| {
-            let tl = Timeline {
-                fps: 4,
-                size: (200, 100),
-                duration: 1.,
-                clips: vec![Clip {
+            let tl = timeline(
+                4,
+                (200, 100),
+                1.,
+                vec![Clip {
                     src: "HH".into(),
                     size: 60.,
                     color: "#ffffff".into(),
@@ -2049,8 +1540,7 @@ mod tests {
                     fx: serde_json::from_str(fx).unwrap(),
                     ..clip("text", "")
                 }],
-                ..Default::default()
-            };
+            );
             let px = Preview::default().frame(&tl, 0., (200, 100));
             px.chunks(4).filter(|p| p[0] > 250 && p[1] > 250 && p[2] > 250).count()
         };
@@ -2064,17 +1554,16 @@ mod tests {
     // picture and grade it was made from, and shows the same pixels as a fresh preview.
     #[test]
     fn fixed_effects_keep_only_the_result() {
-        let tl = Timeline {
-            fps: 4,
-            size: (200, 100),
-            duration: 1.,
-            clips: vec![Clip {
+        let tl = timeline(
+            4,
+            (200, 100),
+            1.,
+            vec![Clip {
                 fx: serde_json::from_str(r#"[{"roughen":{"border":4,"scale":20,"sharp":1,"seed":2}}]"#).unwrap(),
                 grade: serde_json::from_str(r#"{"exposure":1}"#).unwrap(),
                 ..clip("rect", "")
             }],
-            ..Default::default()
-        };
+        );
         let mut pv = Preview::default();
         let mut made = vec![];
         for k in 0..3 {
@@ -2099,50 +1588,12 @@ mod tests {
                 fx: serde_json::from_str(r#"[{"blur":2}]"#).unwrap(),
                 ..clip("video", "")
             };
-            let tl = Timeline {
-                fps: 30,
-                size: (64, 36),
-                duration: 1.,
-                clips: vec![c],
-                ..Default::default()
-            };
+            let tl = timeline(30, (64, 36), 1., vec![c]);
             let mut pv = Preview::default();
             let same = (0..6).all(|k| pv.frame(&tl, k as f64 / 30., (64, 36)) == Preview::default().frame(&tl, k as f64 / 30., (64, 36)));
             (same, pv.stills.keys().any(|k| k.contains("Blur")))
         };
         assert_eq!([kept(0.), kept(10.)], [(true, false), (true, true)]);
-    }
-
-    // A layer drawn on whole pixels shows its own pixels, blends its half-clear ones, leaves the picture
-    // under its clear ones as it was, and multiplies into the picture when blended so.
-    #[test]
-    fn whole_pixel_layers_keep_their_pixels() {
-        let src = [[10, 20, 30, 255], [0, 0, 0, 0], [200, 100, 50, 128], [40, 80, 120, 255]].concat();
-        let drawn = |mul: bool| {
-            let mut out = [90, 90, 90, 255].repeat(16);
-            blit(&mut out, (4, 4), &src, (2, 2), 1., 0., (2., 2.), 1., mul);
-            [(0, 0), (1, 1), (2, 1), (1, 2), (2, 2)].map(|(x, y)| out[(y * 4 + x) * 4..][..4].to_vec())
-        };
-        assert_eq!(
-            drawn(false),
-            [
-                [90, 90, 90, 255],
-                [10, 20, 30, 255],
-                [90, 90, 90, 255],
-                [145, 95, 69, 255],
-                [40, 80, 120, 255]
-            ]
-        );
-        assert_eq!(
-            drawn(true),
-            [
-                [90, 90, 90, 255],
-                [3, 7, 10, 255],
-                [90, 90, 90, 255],
-                [80, 62, 53, 255],
-                [14, 28, 42, 255]
-            ]
-        );
     }
 
     // A matte shows its clip only where the matte is drawn, or only where it is not when inverted, keyed by
@@ -2165,11 +1616,11 @@ mod tests {
                 matte: Some((5, how.into())),
                 ..clip("rect", "")
             };
-            let tl = Timeline {
-                fps: 30,
-                size: (64, 36),
-                duration: 1.,
-                clips: vec![
+            let tl = timeline(
+                30,
+                (64, 36),
+                1.,
+                vec![
                     Clip {
                         src: "#00ff00".into(),
                         ..clip("color", "")
@@ -2177,8 +1628,7 @@ mod tests {
                     red,
                     cut,
                 ],
-                ..Default::default()
-            };
+            );
             let px = Preview::default().frame(&tl, 0.5, (64, 36));
             [(10, 0), (50, 0), (10, 35), (50, 35)].map(|(x, y)| px[(y * 64 + x) * 4 + 2] > 128)
         };
@@ -2206,13 +1656,7 @@ mod tests {
             scale: Val::Fixed([1., 1., 0.5][i]),
             ..clip("video", "")
         };
-        let tl = |n: usize| Timeline {
-            fps: 30,
-            size: (64, 36),
-            duration: 2.,
-            clips: (0..n).map(layer).collect(),
-            ..Default::default()
-        };
+        let tl = |n: usize| timeline(30, (64, 36), 2., (0..n).map(layer).collect());
         assert_eq!(hold(&tl(1), (64, 36), 1.), 2 * 64 * 36 * 4);
         let mut pv = Preview {
             room: hold(&tl(3), (64, 36), 1.),

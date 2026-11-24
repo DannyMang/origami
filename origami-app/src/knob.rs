@@ -1,8 +1,9 @@
 use crate::{
     Origami, bitmap,
-    view::{BLUE, BORDER, DIM, PANEL},
+    keys::secs,
+    view::{BLUE, BORDER, DIM, GREEN, INK, RED, TEXT, card},
 };
-use gpui::{Context, Div, MouseButton, MouseDownEvent, Pixels, Point, RenderImage, Window, div, img, prelude::*, px, rgb, rgba};
+use gpui::{Context, Div, MouseButton, MouseDownEvent, Pixels, Point, RenderImage, Rgba, Window, div, img, prelude::*, px, rgb, rgba};
 use origami_engine::tone;
 use origami_lang::Clip;
 use std::{
@@ -109,10 +110,6 @@ fn hsv(rgb: f64) -> (f32, f32, f32) {
 fn pack(hue: f32, vivid: f32, light: f32) -> f64 {
     let [b, g, r] = paint(hue / 60., vivid, light).map(u32::from);
     (r << 16 | g << 8 | b) as f64
-}
-
-fn secs(s: &str) -> Option<f64> {
-    s.split(':').try_fold(0., |a, x| x.parse::<f64>().ok().map(|x| a * 60. + x))
 }
 
 pub fn close(s: &[u8], open: usize) -> Option<usize> {
@@ -304,6 +301,24 @@ fn show(v: f64, lo: f64, hi: f64) -> String {
     }
 }
 
+pub fn groove(done: f32, fill: Rgba) -> Div {
+    div()
+        .relative()
+        .h(px(4.))
+        .rounded(px(2.))
+        .bg(rgb(BORDER))
+        .child(div().h_full().w(px(done)).rounded(px(2.)).bg(fill))
+        .child(
+            div()
+                .absolute()
+                .top(px(-4.))
+                .left(px(done - 6.))
+                .size(px(12.))
+                .rounded_full()
+                .bg(rgb(BLUE)),
+        )
+}
+
 pub fn rail(label: String, start: f32, text: String) -> Div {
     div()
         .h(px(24.))
@@ -311,39 +326,20 @@ pub fn rail(label: String, start: f32, text: String) -> Div {
         .items_center()
         .cursor_pointer()
         .child(div().w(px(84.)).text_color(rgb(DIM)).child(label))
-        .child(
-            div()
-                .relative()
-                .w(px(TRACK))
-                .h(px(4.))
-                .rounded(px(2.))
-                .bg(rgb(BORDER))
-                .child(div().h_full().w(px(start * TRACK)).rounded(px(2.)).bg(rgba(BLUE << 8 | 0xa0)))
-                .child(
-                    div()
-                        .absolute()
-                        .top(px(-4.))
-                        .left(px(start * TRACK - 6.))
-                        .size(px(12.))
-                        .rounded_full()
-                        .bg(rgb(BLUE)),
-                ),
-        )
+        .child(groove(start * TRACK, rgba(BLUE << 8 | 0xa0)).w(px(TRACK)))
         .child(div().w(px(70.)).pl_3().child(text))
 }
 
 impl Origami {
+    pub fn owns(&self, c: &Clip, row: usize) -> bool {
+        let last = (c.line as usize).saturating_sub(1);
+        let chain = self.lines.get(row + 1..=last);
+        last >= row && chain.is_some_and(|l| l.iter().all(|l| l.trim_start().starts_with('.')))
+    }
+
     pub fn board(&self, row: usize, at: usize) -> Option<(String, usize, usize, Vec<Knob>)> {
         let (call, name, end, mut found) = knobs(self.lines.get(row)?, at)?;
-        let linked = |c: &&Clip| {
-            let last = (c.line as usize).saturating_sub(1);
-            last >= row
-                && self
-                    .lines
-                    .get(row + 1..=last)
-                    .is_some_and(|l| l.iter().all(|l| l.trim_start().starts_with('.')))
-        };
-        let clip = self.tl.clips.iter().find(linked);
+        let clip = self.tl.clips.iter().find(|c| self.owns(c, row));
         let top = match call.as_str() {
             "trim" => clip.map(|c| c.total),
             "fade" => clip.map(|c| c.end - c.start),
@@ -377,16 +373,12 @@ impl Origami {
 
     fn origin(&self, window: &Window) -> Option<(f32, f32, usize, bool)> {
         let (row, call, name, found) = self.panel()?;
-        let (hidden, top) = (self.hidden(), self.top as usize);
-        if row < top || hidden.get(row) != Some(&false) {
-            return None;
-        }
+        let y = self.line_y(row)?;
         let (w, h) = (f32::from(window.viewport_size().width), f32::from(window.viewport_size().height));
         let pad = found.iter().any(|k| k.label == "hue" || k.label == "#") || CURVES.contains(&call.as_str());
         let rows = if CURVES.contains(&call.as_str()) { 1 } else { found.len() } + TYPED.contains(&call.as_str()) as usize;
         let tall = rows as f32 * 24. + 20. + if pad { PAD + 10. } else { 0. };
         let col = self.lines[row][..name].chars().count() as f32;
-        let y = self.head() + (top..row).filter(|i| !hidden[*i]).count() as f32 * self.row();
         let x = (w - self.side + self.inset() + col * self.glyph()).min(w - 344.);
         Some((
             x,
@@ -485,8 +477,8 @@ impl Origami {
                     .iter()
                     .position(|c| call == "curve" && args.contains(c))
                 {
-                    Some(i) => [0xd07277, 0xa1c181, BLUE][i],
-                    None => 0xdce0e5,
+                    Some(i) => [RED, GREEN, BLUE][i],
+                    None => TEXT,
                 };
                 let back = ["hueVsSat", "hueVsHue", "hueVsLuma", "lumaVsSat", "satVsSat"]
                     .iter()
@@ -497,7 +489,7 @@ impl Origami {
                         .inset_0()
                         .child(img(STRIPS[i.saturating_sub(2)].clone()).size_full())
                 });
-                let handle = |p: &(f32, f32)| dot(p.0, p.1, 14.).bg(rgb(ink)).border_2().border_color(rgb(0x1b1f25));
+                let handle = |p: &(f32, f32)| dot(p.0, p.1, 14.).bg(rgb(ink)).border_2().border_color(rgb(INK));
                 let handles: Vec<Div> = points.iter().map(handle).collect();
                 let rule = |i: usize| {
                     div().absolute().bg(rgba(BORDER << 8 | 0x90)).map(|d| match i < 3 {
@@ -523,7 +515,7 @@ impl Origami {
                 };
                 let (fx, fy) = (hue.to_radians().cos() * far * 0.5 + 0.5, hue.to_radians().sin() * far * 0.5 + 0.5);
                 let wheel = div().absolute().inset_0().child(img(DISC.clone()).size_full());
-                vec![wheel, dot(fx, fy, 12.).border_2().border_color(rgb(0x1b1f25)).bg(rgb(0xffffff))]
+                vec![wheel, dot(fx, fy, 12.).border_2().border_color(rgb(INK)).bg(rgb(0xffffff))]
             }
         };
         let board = div()
@@ -582,10 +574,8 @@ impl Origami {
             let wide = k.hi - k.lo;
             rail(label, start, text).on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, e: &MouseDownEvent, _, cx| {
-                    this.hold(Turn::Slide(i, f32::from(e.position.x), value, wide));
-                    cx.stop_propagation();
-                    cx.notify();
+                Self::touch(cx, move |this, e: &MouseDownEvent, _, _| {
+                    this.hold(Turn::Slide(i, f32::from(e.position.x), value, wide))
                 }),
             )
         });
@@ -615,17 +605,13 @@ impl Origami {
                 .on_mouse_down(MouseButton::Left, Self::tap(cx, open))
         });
         Some(
-            div()
+            card()
                 .absolute()
                 .left(px(x))
                 .top(px(y))
                 .p(px(10.))
                 .flex()
                 .flex_col()
-                .bg(rgb(PANEL))
-                .border_1()
-                .border_color(rgb(BORDER))
-                .rounded(px(6.))
                 .text_size(px(12.))
                 .on_mouse_down(
                     MouseButton::Left,

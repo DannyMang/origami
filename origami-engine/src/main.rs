@@ -22,15 +22,7 @@ fn main() -> Result<()> {
         ["render", script, out] => {
             let tl = read(script)?;
             if flag("--dry-run") {
-                let quote = |a: String| format!("'{}'", a.replace('\'', "'\\''"));
-                println!(
-                    "ffmpeg {}",
-                    origami_engine::command(&tl, out, &Default::default())
-                        .into_iter()
-                        .map(quote)
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                );
+                println!("{}", origami_engine::shell(&tl, out, &Default::default()));
             } else {
                 origami_engine::render(&tl, out, &Default::default(), |p| eprint!("\r{:3.0}%", p * 100.))?;
                 eprintln!();

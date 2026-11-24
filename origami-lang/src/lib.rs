@@ -1,5 +1,7 @@
+mod disk;
 mod error;
 mod grade;
+mod ir;
 mod tool;
 
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -7,257 +9,33 @@ use boa_engine::{
     Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue, NativeFunction, Source, js_string, object::builtins::JsArray,
     property::Attribute, script::Script,
 };
+pub use disk::{load, save};
 pub use error::Error;
 pub use grade::{Curves, Grade, Secondary, Vignette, Wheels};
-use serde::{
-    Deserialize, Deserializer, Serialize,
-    de::{self, DeserializeSeed, Error as _, SeqAccess, Visitor},
-};
+pub use ir::{Clip, Fx, Kind, Part, Timeline, Val};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
-    env,
-    ffi::{CString, c_char, c_void},
-    fmt, fs,
+    env, fs,
     io::{self, Read, Seek, SeekFrom, Write},
     mem,
-    os::unix::{
-        ffi::OsStrExt,
-        fs::{MetadataExt, OpenOptionsExt},
-    },
+    os::unix::fs::MetadataExt,
     panic,
     path::{Path, PathBuf},
     pin::pin,
-    process::{self, Child, ChildStdin, Command, Stdio},
-    ptr,
+    process::{Child, ChildStdin, Command, Stdio},
     sync::{
         Arc, Mutex, OnceLock, PoisonError,
-        atomic::{AtomicBool, AtomicU64, Ordering::Relaxed},
+        atomic::{AtomicBool, Ordering::Relaxed},
         mpsc::{self, RecvTimeoutError},
     },
     task::{self, Poll, Waker},
     thread,
     time::{Duration, Instant, UNIX_EPOCH},
 };
-pub use tool::{ffmpeg, ffprobe, literal, missing, output, start, status, watch};
-
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Kind {
-    Video,
-    Sound,
-    Image,
-    Text,
-    Color,
-    Rect,
-    Line,
-    Path,
-    Group,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(untagged)]
-pub enum Val {
-    Fixed(f64),
-    Frames(u32, Vec<f32>),
-}
-
-struct Shape;
-
-impl<'a> Visitor<'a> for Shape {
-    type Value = Val;
-
-    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str("a number or per-frame numbers")
-    }
-
-    fn visit_u64<E: de::Error>(self, v: u64) -> Result<Val, E> {
-        Ok(Val::Fixed(v as f64))
-    }
-
-    fn visit_i64<E: de::Error>(self, v: i64) -> Result<Val, E> {
-        Ok(Val::Fixed(v as f64))
-    }
-
-    fn visit_f64<E: de::Error>(self, v: f64) -> Result<Val, E> {
-        Ok(Val::Fixed(v))
-    }
-
-    fn visit_seq<A: SeqAccess<'a>>(self, mut s: A) -> Result<Val, A::Error> {
-        match (s.next_element()?, s.next_element_seed(Run)?) {
-            (Some(line), Some(run)) if !run.is_empty() => Ok(Val::Frames(line, run)),
-            _ => Err(A::Error::custom("no such run")),
-        }
-    }
-}
-
-impl<'a> Deserialize<'a> for Val {
-    fn deserialize<D: Deserializer<'a>>(d: D) -> Result<Val, D::Error> {
-        d.deserialize_any(Shape)
-    }
-}
-
-struct Run;
-
-impl<'a> Visitor<'a> for Run {
-    type Value = Vec<f32>;
-
-    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str("per-frame numbers")
-    }
-
-    fn visit_u64<E: de::Error>(self, i: u64) -> Result<Vec<f32>, E> {
-        Ok(KEPT.with_borrow_mut(|k| k.get_mut(i as usize).map(mem::take)).unwrap_or_default())
-    }
-
-    fn visit_seq<A: SeqAccess<'a>>(self, mut s: A) -> Result<Vec<f32>, A::Error> {
-        let mut out = vec![];
-        while let Some(v) = s.next_element::<f64>()? {
-            out.push(v as f32);
-        }
-        Ok(out)
-    }
-}
-
-impl<'a> DeserializeSeed<'a> for Run {
-    type Value = Vec<f32>;
-
-    fn deserialize<D: Deserializer<'a>>(self, d: D) -> Result<Vec<f32>, D::Error> {
-        d.deserialize_any(self)
-    }
-}
-
-impl Val {
-    pub fn at(&self, i: usize) -> f64 {
-        match self {
-            Self::Fixed(v) => *v,
-            Self::Frames(_, s) => s[i.min(s.len() - 1)] as f64,
-        }
-    }
-
-    pub fn max(&self) -> f64 {
-        match self {
-            Self::Fixed(v) => *v,
-            Self::Frames(_, s) => s.iter().fold(f32::MIN, |a, b| a.max(*b)) as f64,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Fx {
-    Lens(Val),
-    Blur(Val),
-    Levels(f64, f64, bool),
-    Noise(f64, Val),
-    Fractal { scale: f64, seed: Val },
-    Roughen { border: f64, scale: f64, sharp: f64, seed: Val },
-    Displace { amount: Val, size: f64, seed: Val },
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Part {
-    pub from: usize,
-    pub to: usize,
-    pub opacity: Val,
-    pub x: Val,
-    pub y: Val,
-    pub scale: Val,
-    pub rotate: Val,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Clip {
-    pub kind: Kind,
-    pub src: String,
-    pub w: u32,
-    pub h: u32,
-    pub start: f64,
-    pub end: f64,
-    pub src_in: f64,
-    pub speed: f64,
-    pub z: u32,
-    pub scale: Val,
-    pub pos: (Option<Val>, Option<Val>),
-    pub gain: f64,
-    pub fade: (f64, f64),
-    pub label: String,
-    #[serde(deserialize_with = "line")]
-    pub line: u32,
-    #[serde(default)]
-    pub home: u32,
-    #[serde(default)]
-    pub total: f64,
-    pub video: bool,
-    pub audio: bool,
-    pub size: f64,
-    pub color: String,
-    #[serde(default)]
-    pub font: String,
-    #[serde(default)]
-    pub radius: f64,
-    #[serde(default)]
-    pub ends: [f64; 4],
-    #[serde(default)]
-    pub background: String,
-    #[serde(default)]
-    pub align: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub grade: Option<Grade>,
-    pub opacity: Val,
-    pub rotate: Val,
-    pub shown: Val,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub parts: Vec<Part>,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub blend: String,
-    #[serde(default)]
-    pub step: f64,
-    #[serde(default)]
-    pub id: u32,
-    #[serde(default)]
-    pub into: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub matte: Option<(u32, String)>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub fx: Vec<Fx>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub points: Vec<(Val, Val)>,
-    #[serde(default)]
-    pub curve: bool,
-}
-
-impl Clip {
-    pub fn vals(&self) -> impl Iterator<Item = (&'static str, &Val)> {
-        [
-            ("scale", Some(&self.scale)),
-            ("x", self.pos.0.as_ref()),
-            ("y", self.pos.1.as_ref()),
-            ("opacity", Some(&self.opacity)),
-            ("rotate", Some(&self.rotate)),
-            ("shown", Some(&self.shown)),
-        ]
-        .into_iter()
-        .filter_map(|(n, v)| Some((n, v?)))
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Timeline {
-    pub fps: u32,
-    pub size: (u32, u32),
-    pub duration: f64,
-    #[serde(default)]
-    pub preview: String,
-    #[serde(default)]
-    pub proxy: bool,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub note: String,
-    pub clips: Vec<Clip>,
-    #[serde(skip)]
-    pub files: Vec<(u32, PathBuf)>,
-}
+pub use tool::{ffmpeg, ffprobe, literal, missing, output, start, status, stop, watch};
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 struct Media {
@@ -284,26 +62,17 @@ thread_local! {
     static LINE: RefCell<u32> = RefCell::default();
 }
 
-fn line<'a, D: Deserializer<'a>>(d: D) -> Result<u32, D::Error> {
-    let n = u32::deserialize(d)?;
-    LINE.set(n);
-    Ok(n)
-}
-
 fn find(dir: &Path, rel: &str) -> Option<PathBuf> {
     let path = dir.join(rel);
     if path.is_file() {
         return Some(path);
     }
     let named = |p: &PathBuf| p.is_file() && p.file_stem() == path.file_name();
-    let mut near = path
-        .parent()
-        .and_then(|p| fs::read_dir(p).ok())
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path());
-    near.find(named)
+    path.parent().into_iter().flat_map(inside).find(named)
+}
+
+fn inside(dir: &Path) -> impl Iterator<Item = PathBuf> + use<> {
+    fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path())
 }
 
 fn cube(dir: &Path, name: &str) -> Option<PathBuf> {
@@ -314,10 +83,9 @@ fn cube(dir: &Path, name: &str) -> Option<PathBuf> {
         let n = p.file_name().unwrap_or_default().to_string_lossy();
         n.starts_with("Adobe Premiere Pro ") && n.ends_with(end)
     };
-    let list = |p: &Path| fs::read_dir(p).into_iter().flatten().flatten().map(|e| e.path());
-    let apps = list("/Applications".as_ref())
+    let apps = inside("/Applications".as_ref())
         .filter(|p| named(p, ""))
-        .flat_map(|p| list(&p))
+        .flat_map(|p| inside(&p))
         .filter(|p| named(p, ".app"));
     let file = format!("{name}.cube");
     let luts = apps.flat_map(|p| ["Creative", "Technical"].map(|f| p.join("Contents/Lumetri/LUTs").join(f)));
@@ -350,7 +118,7 @@ fn face(dir: &Path, name: &str) -> Option<PathBuf> {
 }
 
 pub fn fonts() -> Vec<String> {
-    let files = installed().flat_map(|p| fs::read_dir(p).into_iter().flatten().flatten().map(|e| e.path()));
+    let files = installed().flat_map(|p| inside(&p));
     let typed = files.filter(|p| p.extension().is_some_and(|e| FACES.iter().any(|f| e == *f)));
     let stems = typed.filter_map(|p| Some(p.file_stem()?.to_str()?.to_string()));
     let mut out: Vec<String> = stems.filter(|n| bare(n) && !n.starts_with('.')).collect();
@@ -556,38 +324,6 @@ fn stray(c: &Clip, opened: impl Fn(&str) -> bool) -> Option<String> {
         "line {}: {} uses {f}, a file the script did not open with video, sound, image, font or look",
         c.line, c.label
     ))
-}
-
-pub fn save(path: &Path, data: impl AsRef<[u8]>) -> io::Result<()> {
-    static PARTS: AtomicU64 = AtomicU64::new(0);
-    let old = fs::symlink_metadata(path).ok().filter(|m| m.is_file());
-    if old.is_some() {
-        fs::OpenOptions::new().write(true).custom_flags(NONBLOCK_NOFOLLOW).open(path)?;
-    }
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let part = path.with_file_name(format!(".{name}.{}-{}", process::id(), PARTS.fetch_add(1, Relaxed)));
-    let _ = fs::remove_file(&part);
-    let wrote = fs::File::create_new(&part).and_then(|mut f| {
-        if let Some(m) = &old {
-            f.set_permissions(m.permissions())?;
-            let c = |p: &Path| CString::new(p.as_os_str().as_bytes()).unwrap_or_default();
-            unsafe { copyfile(c(path).as_ptr(), c(&part).as_ptr(), ptr::null_mut(), ACL_XATTR_NOFOLLOW) };
-        }
-        f.write_all(data.as_ref())?;
-        fs::rename(&part, path)
-    });
-    if wrote.is_err() {
-        let _ = fs::remove_file(&part);
-    }
-    wrote
-}
-
-pub fn load(path: &Path) -> io::Result<String> {
-    match fs::metadata(path)? {
-        m if !m.is_file() => Err(io::Error::other("not a plain file")),
-        m if m.len() > 1 << 24 => Err(io::Error::other("the file is over 16 MB")),
-        _ => fs::read_to_string(path),
-    }
 }
 
 fn assigns(_: &JsValue, args: &[JsValue], cx: &mut Context) -> JsResult<JsValue> {
@@ -812,13 +548,9 @@ static SERVING: AtomicBool = AtomicBool::new(false);
 type Helper = (Child, ChildStdin, mpsc::Receiver<Vec<u8>>);
 static HELPER: Mutex<Option<Helper>> = Mutex::new(None);
 
-const ACL_XATTR_NOFOLLOW: u32 = 1 | 4 | 1 << 18;
-const NONBLOCK_NOFOLLOW: i32 = 0x4 | 0x100;
-
 unsafe extern "C" {
     fn proc_pid_rusage(pid: i32, flavor: i32, info: *mut [u64; 12]) -> i32;
     fn _exit(code: i32) -> !;
-    fn copyfile(from: *const c_char, to: *const c_char, state: *mut c_void, flags: u32) -> i32;
 }
 
 fn heft(pid: u32) -> u64 {
@@ -1001,7 +733,7 @@ fn ask(script: &Path, relock: bool, src: Option<&str>, measure: Measure) -> Resu
     }
     let (script, src, (back, got)) = (script.to_path_buf(), src.map(String::from), mpsc::channel());
     let job = move |cx: &mut Context| {
-        let tl = build(cx, &script, relock, src.as_deref(), measure);
+        let tl = half(cx, &script, relock, src.as_deref(), measure).and_then(|(out, kept, files)| finish(&out, kept, files, measure));
         drop(back.send(tl.map_err(|e| uncaught(&e, src.is_none()).map_or(e, Into::into))));
     };
     let mut vm = VM.lock().unwrap();
@@ -1015,7 +747,7 @@ fn ask(script: &Path, relock: bool, src: Option<&str>, measure: Measure) -> Resu
                 vm.take();
                 match e {
                     mpsc::RecvTimeoutError::Timeout => bail!("script took too long: stopped after {} seconds", LIMIT.as_secs() * 3),
-                    mpsc::RecvTimeoutError::Disconnected => bail!("script evaluation crashed: edit the script and try again"),
+                    mpsc::RecvTimeoutError::Disconnected => return Err(crashed()),
                 }
             }
         }
@@ -1028,11 +760,6 @@ pub fn eval(script: &Path, relock: bool, measure: Measure) -> Result<Timeline> {
 
 pub fn peek(script: &Path, src: &str, measure: Measure) -> Result<Timeline> {
     ask(script, false, Some(src), measure)
-}
-
-fn build(cx: &mut Context, script: &Path, relock: bool, src: Option<&str>, measure: Measure) -> Result<Timeline> {
-    let (out, kept, files) = half(cx, script, relock, src, measure)?;
-    finish(&out, kept, files, measure)
 }
 
 type Half = (String, Vec<Vec<f32>>, Vec<(u32, PathBuf)>);
@@ -1210,7 +937,7 @@ mod tests {
         (c.size * c.scale.max(), c.size * c.scale.max() / 2.)
     }
 
-    fn scratch(name: &str) -> PathBuf {
+    pub fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("origami-lang-{name}"));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
@@ -2389,77 +2116,5 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         let all = fonts();
         assert!(all.contains(&"Menlo".to_string()) && all.iter().all(|n| face(Path::new("/nowhere"), n).is_some()));
         assert!(all.windows(2).all(|w| w[0] != w[1]));
-    }
-
-    // A save writes a hidden file beside the old one and moves it into place, keeping the old file's
-    // permissions and extended attributes; a read-only file is left as it was, a link or pipe in its place
-    // is replaced instead of written through, and a save that fails leaves no hidden file behind.
-    #[test]
-    fn saves_whole_files() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = scratch("save");
-        let (file, other) = (dir.join("edit.js"), dir.join("other"));
-        let xattr = |args: &[&str]| output(Command::new("/usr/bin/xattr").args(args).arg(&file)).unwrap();
-        fs::write(&file, "old").unwrap();
-        fs::set_permissions(&file, fs::Permissions::from_mode(0o640)).unwrap();
-        xattr(&["-w", "origami.test", "kept"]);
-        let inode = fs::metadata(&file).unwrap().ino();
-        save(&file, "new").unwrap();
-        let after = fs::metadata(&file).unwrap();
-        assert_eq!(fs::read_to_string(&file).unwrap(), "new");
-        assert_eq!((after.ino() != inode, after.permissions().mode() & 0o777), (true, 0o640));
-        assert_eq!(xattr(&["-p", "origami.test"]).stdout, b"kept\n");
-        fs::set_permissions(&file, fs::Permissions::from_mode(0o440)).unwrap();
-        assert!(save(&file, "newer").is_err() && fs::read_to_string(&file).unwrap() == "new");
-        fs::remove_file(&file).unwrap();
-        fs::write(&other, "keep").unwrap();
-        std::os::unix::fs::symlink(&other, &file).unwrap();
-        save(&file, "a").unwrap();
-        assert!(!file.is_symlink() && fs::read_to_string(&other).unwrap() == "keep");
-        fs::remove_file(&file).unwrap();
-        assert!(status(Command::new("mkfifo").arg(&file)).unwrap().success());
-        save(&file, "b").unwrap();
-        assert_eq!(fs::read_to_string(&file).unwrap(), "b");
-        fs::remove_file(&file).unwrap();
-        fs::create_dir(&file).unwrap();
-        assert!(save(&file, "c").is_err());
-        let names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
-        assert_eq!(names.len(), 2);
-    }
-
-    // A save writes a whole new file and swaps it in, so the old file is never cut short and nothing is
-    // left beside it, keeps the file's permissions, replaces a link instead of writing through it, and
-    // refuses a read-only file, a folder or a missing folder, leaving each as it was.
-    #[test]
-    fn saves_by_swapping_in_a_whole_file() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = scratch("swap");
-        let path = dir.join("edit.js");
-        fs::write(&path, "old\n").unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
-        let mut held = fs::File::open(&path).unwrap();
-        save(&path, "new\n").unwrap();
-        let mut was = String::new();
-        held.read_to_string(&mut was).unwrap();
-        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(
-            (was.as_str(), fs::read_to_string(&path).unwrap().as_str(), mode),
-            ("old\n", "new\n", 0o640)
-        );
-        fs::write(dir.join("keep.js"), "k\n").unwrap();
-        fs::remove_file(&path).unwrap();
-        std::os::unix::fs::symlink(dir.join("keep.js"), &path).unwrap();
-        save(&path, "mine\n").unwrap();
-        assert_eq!(fs::read_to_string(dir.join("keep.js")).unwrap(), "k\n");
-        assert!(!path.is_symlink() && fs::read_to_string(&path).unwrap() == "mine\n");
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
-        fs::create_dir(dir.join("folder.js")).unwrap();
-        for p in [path.clone(), dir.join("folder.js"), dir.join("gone/edit.js")] {
-            assert!(save(&p, "lost\n").is_err(), "{}", p.display());
-        }
-        assert_eq!(fs::read_to_string(&path).unwrap(), "mine\n");
-        let mut left: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
-        left.sort();
-        assert_eq!(left, ["edit.js", "folder.js", "keep.js"]);
     }
 }

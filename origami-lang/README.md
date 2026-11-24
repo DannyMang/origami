@@ -3,7 +3,7 @@
 The Origami edit language. A script is plain JavaScript; the last expression is the composition.
 
 ```
-cargo run -- path/to/edit.js    # prints the timeline IR as JSON
+cargo run --manifest-path ../origami-engine/Cargo.toml -- ir path/to/edit.js    # prints the timeline IR as JSON
 cargo test
 ```
 

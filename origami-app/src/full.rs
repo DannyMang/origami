@@ -1,7 +1,8 @@
 use crate::{
     Origami,
     keys::stamp,
-    view::{BLUE, BORDER, MUTED, PANEL},
+    knob::groove,
+    view::{BLUE, MUTED, PANEL},
 };
 use gpui::{Context, Div, MouseButton, MouseDownEvent, Pixels, Window, div, prelude::*, px, rgb, rgba};
 use std::time::{Duration, Instant};
@@ -56,31 +57,12 @@ impl Origami {
             .cursor_pointer()
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, e: &MouseDownEvent, window, cx| {
+                Self::touch(cx, |this, e: &MouseDownEvent, window, _| {
                     this.scrubbing = true;
                     this.glide(e.position.x, window);
-                    cx.stop_propagation();
-                    cx.notify();
                 }),
             )
-            .child(
-                div()
-                    .relative()
-                    .w_full()
-                    .h(px(4.))
-                    .rounded(px(2.))
-                    .bg(rgb(BORDER))
-                    .child(div().h_full().w(px(done * RAIL)).rounded(px(2.)).bg(rgb(BLUE)))
-                    .child(
-                        div()
-                            .absolute()
-                            .top(px(-4.))
-                            .left(px(done * RAIL - 6.))
-                            .size(px(12.))
-                            .rounded_full()
-                            .bg(rgb(BLUE)),
-                    ),
-            );
+            .child(groove(done * RAIL, rgb(BLUE)).w_full());
         let play = if self.player.is_some() { "||" } else { "\u{25b6}" };
         let bar = div()
             .w(px(WIDE))
@@ -115,14 +97,7 @@ mod tests {
     // after a few seconds without mouse movement and comes back when the mouse moves.
     #[gpui::test]
     fn scrub(cx: &mut gpui::TestAppContext) {
-        let path = std::env::temp_dir().join("origami-full-test.js");
-        std::fs::write(&path, "stack(color(\"#203040\").for(4))\n").unwrap();
-        let tl = origami_lang::eval(&path, false, footprint).unwrap();
-        let (view, cx) = cx.add_window_view(|_, cx| {
-            let mut app = crate::fresh(cx.focus_handle(), vec![]);
-            (app.script, app.lines, app.tl) = (path.clone(), vec!["stack(color(\"#203040\").for(4))".into()], Arc::new(tl));
-            app
-        });
+        let (view, cx) = crate::tests::window(cx, "full", "stack(color(\"#203040\").for(4))");
         let (w, h, side) = view.update_in(cx, |o, window, _| {
             window.focus(&o.focus);
             (
@@ -133,11 +108,7 @@ mod tests {
         });
         cx.run_until_parked();
         let at = |cx: &mut gpui::VisualTestContext| view.update(cx, |o, _| (o.full, o.scrubbing, o.t));
-        let click = |cx: &mut gpui::VisualTestContext, x: f32, y: f32| {
-            cx.simulate_mouse_move(point(px(x), px(y)), None, Modifiers::default());
-            cx.simulate_mouse_down(point(px(x), px(y)), MouseButton::Left, Modifiers::default());
-            cx.simulate_mouse_up(point(px(x), px(y)), MouseButton::Left, Modifiers::default());
-        };
+        let click = |cx: &mut gpui::VisualTestContext, x: f32, y: f32| cx.simulate_click(point(px(x), px(y)), Modifiers::default());
         let rail = |f: f32| point(px((w - WIDE) / 2. + 116. + f * RAIL), px(h - 48.));
         let far = point(px(20.), px(30.));
         click(cx, w - side - 26., 51.);

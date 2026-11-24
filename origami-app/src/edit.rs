@@ -210,6 +210,12 @@ impl Origami {
         76. + if self.finding.is_some() { 30. } else { 0. } + if self.clash { 30. } else { 0. } + self.ledge()
     }
 
+    pub fn line_y(&self, row: usize) -> Option<f32> {
+        let (scans, top) = (self.scans(), self.top as usize);
+        let shown = row >= top && scans.1.get(row) == Some(&false);
+        shown.then(|| self.head() + (top..row).filter(|i| !scans.1[*i]).count() as f32 * self.row())
+    }
+
     pub fn spot(&self, at: Point<Pixels>, window: &Window) -> (usize, usize) {
         let x = f32::from(at.x) - f32::from(window.viewport_size().width) + self.side - self.inset();
         let (hidden, n) = (self.hidden(), ((f32::from(at.y) - self.head()) / self.row()).max(0.) as usize);
@@ -476,12 +482,7 @@ mod tests {
         let (path, clip) = (dir.join("edit.js"), dir.join("v.mp4"));
         let make = |secs: u32| {
             let src = format!("color=red:s=64x36:r=30:d={secs}");
-            let made = origami_lang::status(
-                origami_lang::ffmpeg()
-                    .args(["-v", "error", "-y", "-f", "lavfi", "-i", &src])
-                    .arg(&clip),
-            );
-            assert!(made.unwrap().success());
+            crate::tests::film(&clip, &src, &[]);
         };
         make(2);
         fs::write(&path, "stack(video(\"v.mp4\"))\n").unwrap();

@@ -448,9 +448,7 @@ mod tests {
     // recording never deletes the link.
     #[test]
     fn skips_linked_takes() {
-        let dir = std::env::temp_dir().join("origami-voice-link-test");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = crate::tests::scratch("voice-link");
         std::os::unix::fs::symlink(dir.join("gone.wav"), dir.join("take-1.wav")).unwrap();
         assert_eq!(slot(&dir, &[]), 2);
     }

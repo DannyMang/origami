@@ -27,18 +27,13 @@ fn fractal(x: f64, y: f64, seed: i64, layers: i64, gain: f64, ratio: f64) -> f64
     sum
 }
 
-fn sample(px: &[u8], (w, h): (usize, usize), u: f64, v: f64) -> [u8; 4] {
+pub fn taps(px: &[u8], (w, h): (usize, usize), u: f64, v: f64) -> [f64; 4] {
     let ((ux, vy), mut sum) = ((u.floor(), v.floor()), [0.; 4]);
     let (fx, fy) = (u - ux, v - vy);
-    for (ox, oy, m) in [
-        (0, 0, (1. - fx) * (1. - fy)),
-        (1, 0, fx * (1. - fy)),
-        (0, 1, (1. - fx) * fy),
-        (1, 1, fx * fy),
-    ] {
+    let mut tap = |ox: i64, oy: i64, m: f64| {
         let (sx, sy) = (ux as i64 + ox, vy as i64 + oy);
         if sx < 0 || sy < 0 || sx >= w as i64 || sy >= h as i64 {
-            continue;
+            return;
         }
         let s = &px[(sy as usize * w + sx as usize) * 4..][..4];
         let m = m * s[3] as f64 / 255.;
@@ -46,7 +41,25 @@ fn sample(px: &[u8], (w, h): (usize, usize), u: f64, v: f64) -> [u8; 4] {
             sum[i] += s[i] as f64 * m;
         }
         sum[3] += m;
+    };
+    match fx == 0. && fy == 0. {
+        true => tap(0, 0, 1.),
+        false => {
+            for (ox, oy, m) in [
+                (0, 0, (1. - fx) * (1. - fy)),
+                (1, 0, fx * (1. - fy)),
+                (0, 1, (1. - fx) * fy),
+                (1, 1, fx * fy),
+            ] {
+                tap(ox, oy, m);
+            }
+        }
     }
+    sum
+}
+
+fn sample(px: &[u8], size: (usize, usize), u: f64, v: f64) -> [u8; 4] {
+    let sum = taps(px, size, u, v);
     match sum[3] > 0. {
         true => [sum[0] / sum[3], sum[1] / sum[3], sum[2] / sum[3], sum[3] * 255.].map(|v| v as u8),
         false => [0; 4],

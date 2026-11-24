@@ -139,7 +139,7 @@ impl Origami {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext};
+    use gpui::{Modifiers, TestAppContext, VisualTestContext};
     use std::{env, fs, sync::Arc};
 
     // The pencil button after the T button arms the shape tool. While it is armed, clicks in the picture
@@ -163,11 +163,7 @@ mod tests {
             app
         });
         cx.run_until_parked();
-        let click = |cx: &mut VisualTestContext, x: f32, y: f32| {
-            cx.simulate_mouse_move(point(px(x), px(y)), None, Modifiers::default());
-            cx.simulate_mouse_down(point(px(x), px(y)), MouseButton::Left, Modifiers::default());
-            cx.simulate_mouse_up(point(px(x), px(y)), MouseButton::Left, Modifiers::default());
-        };
+        let click = |cx: &mut VisualTestContext, x: f32, y: f32| cx.simulate_click(point(px(x), px(y)), Modifiers::default());
         let (mid, bar) = view.update_in(cx, |o, window, _| {
             let (w, h) = (f32::from(window.viewport_size().width), f32::from(window.viewport_size().height));
             ((w - o.side) / 2., h - 28. - o.dock - 17.)

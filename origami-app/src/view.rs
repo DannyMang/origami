@@ -169,6 +169,10 @@ pub fn tint(kind: Kind) -> u32 {
     }
 }
 
+pub fn card() -> Div {
+    div().bg(rgb(PANEL)).border_1().border_color(rgb(BORDER)).rounded(px(6.))
+}
+
 impl Origami {
     fn timecode(&self) -> String {
         let (f, s) = ((self.t * self.fps()).round() as u64, self.t as u64);
@@ -294,14 +298,7 @@ impl Origami {
             .whitespace_nowrap()
             .cursor_pointer()
             .hover(|s| s.bg(rgb(BAR)).text_color(rgb(TEXT)))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, window, cx| {
-                    f(this, window, cx);
-                    cx.stop_propagation();
-                    cx.notify();
-                }),
-            )
+            .on_mouse_down(MouseButton::Left, Self::touch(cx, move |this, _, window, cx| f(this, window, cx)))
             .child(label)
     }
 
@@ -320,16 +317,12 @@ impl Origami {
     }
 
     pub fn list(items: Vec<Div>) -> Div {
-        div()
+        card()
             .absolute()
             .bottom(px(26.))
             .p_1()
             .flex()
             .flex_col()
-            .bg(rgb(PANEL))
-            .border_1()
-            .border_color(rgb(BORDER))
-            .rounded(px(6.))
             .text_size(px(13.))
             .children(items)
     }
@@ -367,11 +360,7 @@ impl Origami {
                 .text_color(rgb(if (self.motion, self.web) == (motion, web) { TEXT } else { DIM }))
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| {
-                        (this.motion, this.web) = (motion, web);
-                        cx.stop_propagation();
-                        cx.notify();
-                    }),
+                    Self::touch(cx, move |this, _, _, _| (this.motion, this.web) = (motion, web)),
                 )
                 .child(label)
         };
@@ -661,14 +650,7 @@ impl Origami {
                 .text_color(rgb(DIM))
                 .cursor_pointer()
                 .children(region.map(|_| if shut { "\u{25b8}" } else { "\u{25be}" }))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| {
-                        this.fold(i, None);
-                        cx.stop_propagation();
-                        cx.notify();
-                    }),
-                );
+                .on_mouse_down(MouseButton::Left, Self::touch(cx, move |this, _, _, _| this.fold(i, None)));
             let number = div()
                 .w(px(3.5 * self.glyph()))
                 .flex_none()
@@ -832,7 +814,7 @@ impl Origami {
                         .child(label)
                         .on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(move |this, _, _, cx| {
+                            Self::touch(cx, move |this, _, _, cx| {
                                 (this.clash, this.dirty) = (false, mine);
                                 match mine {
                                     true => this.store(),
@@ -841,8 +823,6 @@ impl Origami {
                                         this.load(cx)
                                     }
                                 }
-                                cx.stop_propagation();
-                                cx.notify();
                             }),
                         )
                 };
@@ -872,14 +852,7 @@ impl Origami {
                         .cursor_pointer()
                         .hover(|s| s.bg(rgb(BAR)).text_color(rgb(TEXT)))
                         .child(label)
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _, _, cx| {
-                                this.hunt(Some(on));
-                                cx.stop_propagation();
-                                cx.notify();
-                            }),
-                        )
+                        .on_mouse_down(MouseButton::Left, Self::touch(cx, move |this, _, _, _| this.hunt(Some(on))))
                 };
                 let mode = |label: &'static str, i: usize| {
                     div()
@@ -890,14 +863,7 @@ impl Origami {
                         .when(self.modes[i], |d| d.bg(rgba(BLUE << 8 | 0x40)))
                         .cursor_pointer()
                         .child(label)
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _, _, cx| {
-                                this.flip(i);
-                                cx.stop_propagation();
-                                cx.notify();
-                            }),
-                        )
+                        .on_mouse_down(MouseButton::Left, Self::touch(cx, move |this, _, _, _| this.flip(i)))
                 };
                 let bad = self.seeker.is_none() && !q.is_empty();
                 div()
@@ -1179,17 +1145,13 @@ impl Render for Origami {
             .to_string_lossy()
             .to_string();
         let help = div().absolute().inset_0().p_4().flex().items_center().justify_center().child(
-            div()
+            card()
                 .id("help")
                 .debug_selector(|| "help".into())
                 .min_w_0()
                 .max_h_full()
                 .overflow_y_scroll()
                 .p_4()
-                .bg(rgb(PANEL))
-                .border_1()
-                .border_color(rgb(BORDER))
-                .rounded(px(6.))
                 .children(HELP.lines().map(|l| div().child(l.to_string()))),
         );
         let h = f32::from(window.viewport_size().height);
@@ -1415,12 +1377,7 @@ mod tests {
     fn waves_keep_their_shape(cx: &mut gpui::TestAppContext) {
         let dir = std::env::temp_dir().join("origami-waves-test");
         fs::create_dir_all(&dir).unwrap();
-        let made = origami_lang::status(
-            origami_lang::ffmpeg()
-                .args(["-v", "error", "-y", "-f", "lavfi", "-i", "anullsrc", "-t", "4"])
-                .arg(dir.join("s.wav")),
-        );
-        assert!(made.unwrap().success());
+        crate::tests::film(&dir.join("s.wav"), "anullsrc", &["-t", "4"]);
         let (path, src) = (dir.join("edit.js"), "stack(sound(\"s.wav\"))");
         fs::write(&path, src).unwrap();
         let tl = origami_lang::eval(&path, false, origami_engine::footprint).unwrap();

@@ -23,6 +23,10 @@ unsafe extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
 }
 
+pub fn stop(pid: u32) {
+    unsafe { kill(pid as i32, 9) };
+}
+
 pub struct Watch(u32);
 
 pub fn watch(pid: u32) -> Watch {
@@ -32,9 +36,7 @@ pub fn watch(pid: u32) -> Watch {
             loop {
                 thread::sleep(STILL / 8);
                 let quiet = QUIET.lock().unwrap_or_else(PoisonError::into_inner);
-                for (pid, _) in quiet.iter().filter(|q| q.1.elapsed() > STILL) {
-                    unsafe { kill(*pid as i32, 9) };
-                }
+                quiet.iter().filter(|q| q.1.elapsed() > STILL).for_each(|q| stop(q.0));
             }
         });
     });

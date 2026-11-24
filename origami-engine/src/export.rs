@@ -1,7 +1,8 @@
+use crate::place::{place, plain};
 use crate::preview::{Preview, lead, learn, warm};
 use crate::{grade, lut::Lut, shape, text};
 use anyhow::{Result, bail};
-use origami_lang::{Clip, Kind, Timeline, Val, ffmpeg, literal, start, status};
+use origami_lang::{Kind, Timeline, Val, ffmpeg, literal, start, stop};
 use std::{
     env,
     fs::{self, DirBuilder},
@@ -68,14 +69,10 @@ static ROOMS: AtomicUsize = AtomicUsize::new(0);
 static LIVE: Mutex<Vec<(u32, String, PathBuf)>> = Mutex::new(vec![]);
 const STALL: Duration = Duration::from_secs(if cfg!(test) { 5 } else { 30 });
 
-fn kill(pid: u32) {
-    let _ = status(Command::new("/bin/kill").args(["-9", &pid.to_string()]));
-}
-
 pub fn halt() {
     let live = LIVE.lock().map(|l| l.clone()).unwrap_or_default();
     for (pid, part, dir) in live {
-        kill(pid);
+        stop(pid);
         let _ = (fs::remove_file(part), fs::remove_dir_all(dir));
     }
 }
@@ -121,73 +118,6 @@ fn tempo(mut s: f64) -> String {
     out.join(",")
 }
 
-fn spot(c: &Clip, (w, h): (f64, f64), (tw, th): (f64, f64)) -> (f64, f64, f64, f64) {
-    let (at, m) = (
-        |p: &Option<Val>, w, tw, m| p.as_ref().map_or(m * w - tw / 2., |x| x.at(0) * w),
-        mid(c),
-    );
-    let (x, y) = (at(&c.pos.0, w, tw, m.0), at(&c.pos.1, h, th, m.1));
-    (tw.round(), th.round(), x.round(), y.round())
-}
-
-fn mid(c: &Clip) -> (f64, f64) {
-    match (c.kind, c.ends) {
-        (Kind::Line, [x1, y1, x2, y2]) => ((x1 + x2) / 2., (y1 + y2) / 2.),
-        (Kind::Path, _) => {
-            let [x1, y1, x2, y2] = shape::bounds(c);
-            ((x1 + x2) / 2., (y1 + y2) / 2.)
-        }
-        _ => (0.5, 0.5),
-    }
-}
-
-pub fn grown(c: &Clip, i: usize) -> f64 {
-    c.scale.at(i) / if c.kind == Kind::Group { 1. } else { c.scale.max() }
-}
-
-pub fn seat(c: &Clip, (w, h): (f64, f64), (tw, th): (f64, f64), i: usize) -> (f64, f64) {
-    let (q, m) = (grown(c, i), mid(c));
-    let at = |p: &Option<Val>, w: f64, tw: f64, m: f64| p.as_ref().map_or(m * w, |x| x.at(i) * w + tw * q / 2.);
-    (at(&c.pos.0, w, tw, m.0), at(&c.pos.1, h, th, m.1))
-}
-
-pub fn place(c: &Clip, (w, h): (f64, f64), k: f64) -> (f64, f64, f64, f64) {
-    let (bw, bh) = (w * c.scale.max(), h * c.scale.max());
-    let r = (bw / c.w as f64).min(bh / c.h as f64);
-    match c.kind {
-        Kind::Text => {
-            let (_, tw, th) = text::glyphs(c, k, false);
-            spot(c, (w, h), (tw as f64, th as f64))
-        }
-        Kind::Rect | Kind::Line | Kind::Path => {
-            let (tw, th) = shape::extent(c, (w, h), k);
-            spot(c, (w, h), (tw as f64, th as f64))
-        }
-        _ if c.w > 0 => spot(c, (w, h), (c.w as f64 * r, c.h as f64 * r)),
-        _ => (w, h, 0., 0.),
-    }
-}
-
-pub fn footprint(c: &Clip, size: (f64, f64)) -> (f64, f64) {
-    let (w, h, ..) = place(c, size, 1.);
-    (w, h)
-}
-
-pub fn plain(c: &Clip) -> bool {
-    let fixed = |(n, v): (&str, &Val)| n == "opacity" || matches!(v, Val::Fixed(_));
-    c.parts.is_empty()
-        && c.blend.is_empty()
-        && c.step == 0.
-        && c.into == 0
-        && c.kind != Kind::Group
-        && c.matte.is_none()
-        && c.fx.is_empty()
-        && c.points.iter().all(|p| matches!(p, (Val::Fixed(_), Val::Fixed(_))))
-        && c.rotate == Val::Fixed(0.)
-        && c.shown == Val::Fixed(1.)
-        && c.vals().all(fixed)
-}
-
 fn piped(tl: &Timeline, o: &Opts) -> bool {
     span(tl, o) != (0., tl.duration) || !tl.clips.iter().all(|c| plain(c) && c.opacity == Val::Fixed(1.))
 }
@@ -207,15 +137,6 @@ pub(crate) fn hold(tl: &Timeline, (w, h): (usize, usize), k: f64) -> usize {
     let peak = peak.fold(0, i64::max);
     let most = ends.iter().map(|e| e.1).fold(0, i64::max);
     ((peak + most) as usize).min((peak as usize).max(1 << 26))
-}
-
-pub fn live(c: &Clip, t: f64) -> bool {
-    c.start <= t + 1e-6 && t + 1e-6 < c.end
-}
-
-pub fn alpha(c: &Clip, t: f64) -> f64 {
-    let side = |d: f64, f: f64| if f > 0. { d / f } else { 1. };
-    side(t - c.start, c.fade.0).min(side(c.end - t, c.fade.1)).clamp(0., 1.)
 }
 
 fn own(a: &[&str]) -> Vec<String> {
@@ -364,11 +285,16 @@ fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path, (k, (w, h)): (f64, (
     (ins, f.join(";"))
 }
 
-pub fn command(tl: &Timeline, out: &str, o: &Opts) -> Vec<String> {
+fn command(tl: &Timeline, out: &str, o: &Opts) -> Vec<String> {
     let dir = room();
     let line = args(tl, out, o, &dir);
     let _ = fs::remove_dir(dir);
     line
+}
+
+pub fn shell(tl: &Timeline, out: &str, o: &Opts) -> String {
+    let quote = |a: String| format!(" '{}'", a.replace('\'', "'\\''"));
+    format!("ffmpeg{}", command(tl, out, o).into_iter().map(quote).collect::<String>())
 }
 
 fn args(tl: &Timeline, out: &str, o: &Opts, dir: &Path) -> Vec<String> {
@@ -509,7 +435,7 @@ pub fn render(tl: &Timeline, out: &str, o: &Opts, mut progress: impl FnMut(f64))
             let tie = tether(pid, part, dir);
             if iter::repeat_with(|| pulse.recv_timeout(STALL)).find_map(Result::err) == Some(RecvTimeoutError::Timeout) {
                 stuck.store(true, Relaxed);
-                kill(pid);
+                stop(pid);
             }
             if let Some(mut t) = tie {
                 let _ = (t.kill(), t.wait());
@@ -565,8 +491,9 @@ mod tests {
     use super::*;
     use crate::{
         footprint,
-        tests::{TIDY, film, scratch},
+        tests::{TIDY, film, scratch, script},
     };
+    use origami_lang::status;
     use std::time::Instant;
 
     // Slow and very fast motion with sound, a fade longer than its clip and layers too small to see export
@@ -583,10 +510,7 @@ mod tests {
                 &["-f", "lavfi", "-i", "sine=d=10", "-shortest"],
             );
         }
-        let tl = |src: &str| {
-            fs::write(dir.join("edit.js"), src).unwrap();
-            origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap()
-        };
+        let tl = |src: &str| script(&dir, src);
         let out = |name: &str| dir.join(name).to_string_lossy().to_string();
         for (i, src) in [
             "video('a.mp4').trim(0, 2).speed(0.25)",
@@ -652,8 +576,7 @@ mod tests {
         let dir = scratch("opts");
         film(&dir.join("s.wav"), "sine=d=3", &[]);
         let src = "settings({ fps: 30, size: [64, 36] })\nstack(cat(color('#ff0000').for(1), color('#00ff00').for(1)), sound('s.wav').trim(0, 2))";
-        fs::write(dir.join("edit.js"), src).unwrap();
-        let tl = origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap();
+        let tl = script(&dir, src);
         let at = |size, height| sized(&Timeline { size, ..tl.clone() }, &Opts { height, ..Opts::default() }).1;
         assert_eq!([0, 720, 1080, 2160].map(|h| at((16384, 2), h)), [(16384, 2); 4]);
         assert_eq!(
@@ -716,8 +639,7 @@ mod tests {
         film(&dir.join("w.mp4"), "color=white:s=64x36:r=30:d=2", &[]);
         let src =
             "settings({ fps: 30, size: [64, 36] })\ncat(color('#ff0000').for(0.1), color('#00ff00').for(0.2), video('w.mp4').trim(0, 1))";
-        fs::write(dir.join("edit.js"), src).unwrap();
-        let tl = origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap();
+        let tl = script(&dir, src);
         assert!(tl.clips[2].start > 0.3);
         let out = dir.join("meet.mp4").to_string_lossy().to_string();
         render(&tl, &out, &Opts::default(), |_| {}).unwrap();
@@ -738,8 +660,7 @@ mod tests {
             film(&dir.join(file), &format!("color=white:s=64x36:r={rate}:d=6"), &[]);
         }
         let src = "settings({ fps: 30 })\ncat(video('w30.mp4').trim(4.01), video('w30.mp4').trim(0, 1).speed(0.5), video('w15.mp4').trim(0, 1), video('w30.mp4').trim(5.51))";
-        fs::write(dir.join("edit.js"), src).unwrap();
-        let tl = origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap();
+        let tl = script(&dir, src);
         let n = (tl.duration * 30.).round() as usize;
         let mut pv = Preview::default();
         let shown: Vec<u8> = (0..n)
@@ -812,12 +733,7 @@ mod tests {
         film(&dir.join("a.mp4"), "color=white:s=64x36:r=30:d=1", &[]);
         fs::write(dir.join("subs.srt"), "1\n00:00:00,000 --> 00:00:01,000\nhi\n").unwrap();
         std::os::unix::fs::symlink(dir.join("a.mp4"), dir.join("link.mp4")).unwrap();
-        fs::write(
-            dir.join("edit.js"),
-            "text('a').for(1)\nvideo('a.mp4').trim(0, 1)\ncaptions('subs.srt')",
-        )
-        .unwrap();
-        let tl = origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap();
+        let tl = script(&dir, "text('a').for(1)\nvideo('a.mp4').trim(0, 1)\ncaptions('subs.srt')");
         let before = fs::read(dir.join("a.mp4")).unwrap();
         for (out, line) in [("A.MP4", 2), ("sub/../a.mp4", 2), ("link.mp4", 2), ("subs.srt", 3)] {
             let out = dir.join(out).to_string_lossy().to_string();
@@ -862,8 +778,7 @@ mod tests {
         let _tidy = TIDY.read();
         let dir = scratch("stall");
         film(&dir.join("a.mp4"), "color=white:s=64x36:r=30:d=1", &[]);
-        fs::write(dir.join("edit.js"), "video('a.mp4').trim(0, 1)").unwrap();
-        let mut tl = origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap();
+        let mut tl = script(&dir, "video('a.mp4').trim(0, 1)");
         assert!(status(Command::new("mkfifo").arg(dir.join("never.mp4"))).unwrap().success());
         tl.clips[0].src = dir.join("never.mp4").to_string_lossy().to_string();
         let out = dir.join("out.mp4").to_string_lossy().to_string();
@@ -899,8 +814,7 @@ mod tests {
         let _tidy = TIDY.write();
         let dir = scratch("halt");
         let src = "settings({ size: [3840, 2160] })\ntext('hi').for(600).opacity(keys([0, 0], [600, 1]))";
-        fs::write(dir.join("edit.js"), src).unwrap();
-        let tl = origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap();
+        let tl = script(&dir, src);
         let out = dir.join("out.mp4").to_string_lossy().to_string();
         let mine = format!("origami-{}-", process::id());
         let left = || {
@@ -932,8 +846,7 @@ mod tests {
         let dir = scratch("late");
         film(&dir.join("s.wav"), "sine=d=2", &[]);
         let src = "settings({ size: [64, 36] })\nstack(color('#203040').for(3), sound('s.wav').trim(0, 1).at(2))";
-        fs::write(dir.join("edit.js"), src).unwrap();
-        let tl = origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap();
+        let tl = script(&dir, src);
         let out = dir.join("late.mp4").to_string_lossy().to_string();
         render(&tl, &out, &Opts::default(), |_| {}).unwrap();
         let heard = |args: Vec<String>| {
@@ -956,10 +869,7 @@ mod tests {
         let _tidy = TIDY.write();
         let dir = scratch("dry");
         film(&dir.join("a.mp4"), "color=white:s=64x36:r=30:d=1", &[]);
-        let tl = |src: &str| {
-            fs::write(dir.join("edit.js"), src).unwrap();
-            origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap()
-        };
+        let tl = |src: &str| script(&dir, src);
         let mine = format!("origami-{}-", process::id());
         let rooms = || {
             let all = fs::read_dir(env::temp_dir()).unwrap().flatten();
