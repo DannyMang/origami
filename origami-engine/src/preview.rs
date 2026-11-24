@@ -292,33 +292,7 @@ fn blit(
                     Some(&u) => (u, flat),
                     None => uv(x as f64 + 0.5 - cx, dy),
                 };
-                let ((ux, vy), mut sum) = ((u.floor(), v.floor()), [0.; 4]);
-                let (fx, fy) = (u - ux, v - vy);
-                let mut tap = |ox: i64, oy: i64, w: f64| {
-                    let (sx, sy) = (ux as i64 + ox, vy as i64 + oy);
-                    if sx < 0 || sy < 0 || sx >= sw as i64 || sy >= sh as i64 {
-                        return;
-                    }
-                    let s = &src[(sy as usize * sw + sx as usize) * 4..][..4];
-                    let w = w * s[3] as f64 / 255.;
-                    for i in 0..3 {
-                        sum[i] += s[i] as f64 * w;
-                    }
-                    sum[3] += w;
-                };
-                match fx == 0. && fy == 0. {
-                    true => tap(0, 0, 1.),
-                    false => {
-                        for (ox, oy, w) in [
-                            (0, 0, (1. - fx) * (1. - fy)),
-                            (1, 0, fx * (1. - fy)),
-                            (0, 1, (1. - fx) * fy),
-                            (1, 1, fx * fy),
-                        ] {
-                            tap(ox, oy, w);
-                        }
-                    }
-                }
+                let sum = fx::taps(src, (sw, sh), u, v);
                 if sum[3] == 0. {
                     continue;
                 }
