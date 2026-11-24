@@ -1,7 +1,7 @@
 use crate::{
-    export::{alpha, grown, live, place, plain, seat},
     fx, grade,
     lut::spread,
+    place::{alpha, grown, live, place, plain, seat},
     shape,
     text::{self, Glyph},
 };

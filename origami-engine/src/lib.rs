@@ -4,13 +4,15 @@ mod fx;
 mod grade;
 mod lut;
 mod mic;
+mod place;
 mod preview;
 mod shape;
 mod text;
 
 pub use audio::Player;
-pub use export::{Codec, Opts, footprint, guard, halt, place, render, seat, shell, sized};
+pub use export::{Codec, Opts, guard, halt, render, shell, sized};
 pub use mic::{Mic, inputs};
+pub use place::{footprint, place, seat};
 pub use preview::{Preview, peaks, thumb, warm};
 pub use text::tone;
 
