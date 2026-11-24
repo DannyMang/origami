@@ -40,7 +40,7 @@ use std::{
     thread,
     time::{Duration, Instant, UNIX_EPOCH},
 };
-pub use tool::{ffmpeg, ffprobe, literal, missing, output, start, status, watch};
+pub use tool::{ffmpeg, ffprobe, literal, missing, output, start, status, stop, watch};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

@@ -1,7 +1,7 @@
 use crate::preview::{Preview, lead, learn, warm};
 use crate::{grade, lut::Lut, shape, text};
 use anyhow::{Result, bail};
-use origami_lang::{Clip, Kind, Timeline, Val, ffmpeg, literal, start, status};
+use origami_lang::{Clip, Kind, Timeline, Val, ffmpeg, literal, start, stop};
 use std::{
     env,
     fs::{self, DirBuilder},
@@ -68,14 +68,10 @@ static ROOMS: AtomicUsize = AtomicUsize::new(0);
 static LIVE: Mutex<Vec<(u32, String, PathBuf)>> = Mutex::new(vec![]);
 const STALL: Duration = Duration::from_secs(if cfg!(test) { 5 } else { 30 });
 
-fn kill(pid: u32) {
-    let _ = status(Command::new("/bin/kill").args(["-9", &pid.to_string()]));
-}
-
 pub fn halt() {
     let live = LIVE.lock().map(|l| l.clone()).unwrap_or_default();
     for (pid, part, dir) in live {
-        kill(pid);
+        stop(pid);
         let _ = (fs::remove_file(part), fs::remove_dir_all(dir));
     }
 }
@@ -509,7 +505,7 @@ pub fn render(tl: &Timeline, out: &str, o: &Opts, mut progress: impl FnMut(f64))
             let tie = tether(pid, part, dir);
             if iter::repeat_with(|| pulse.recv_timeout(STALL)).find_map(Result::err) == Some(RecvTimeoutError::Timeout) {
                 stuck.store(true, Relaxed);
-                kill(pid);
+                stop(pid);
             }
             if let Some(mut t) = tie {
                 let _ = (t.kill(), t.wait());
@@ -567,6 +563,7 @@ mod tests {
         footprint,
         tests::{TIDY, film, scratch},
     };
+    use origami_lang::status;
     use std::time::Instant;
 
     // Slow and very fast motion with sound, a fade longer than its clip and layers too small to see export
