@@ -219,6 +219,14 @@ impl Origami {
         (row, ((x / self.glyph()).round().max(0.) as usize).min(len))
     }
 
+    pub fn over(&self, at: Point<Pixels>, window: &Window) -> Option<(usize, usize)> {
+        let x = f32::from(at.x) - f32::from(window.viewport_size().width) + self.side - self.inset();
+        let (hidden, n) = (self.hidden(), (f32::from(at.y) - self.head()) / self.row());
+        let mut seen = (self.top as usize..self.lines.len()).filter(|r| !hidden[*r]);
+        let (row, col) = (seen.nth(n as usize).filter(|_| n >= 0.)?, (x / self.glyph()).round());
+        (0. <= col && col <= self.lines[row].chars().count() as f32).then_some((row, col as usize))
+    }
+
     pub fn place(&mut self, at: Point<Pixels>, window: &Window) {
         self.cursor = Some(self.spot(at, window));
     }

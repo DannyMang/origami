@@ -36,6 +36,15 @@ fn folders(dir: &Path) -> Vec<String> {
     all
 }
 
+impl Begin {
+    fn plan(&self) -> String {
+        match self.name.trim() {
+            "" => "Type a name for the project".into(),
+            name => format!("Creates {}", home(&self.dir.join(name).join("edit.js"))),
+        }
+    }
+}
+
 impl Origami {
     pub fn create(&mut self) {
         let last = origami_lang::load(&last()).map(PathBuf::from).ok();
@@ -156,9 +165,8 @@ impl Origami {
             .rounded(px(6.))
             .children(up)
             .children(inside);
-        let made = home(&b.dir.join(b.name.trim()).join("edit.js"));
         let said = match b.note.is_empty() {
-            true => hint(&format!("Creates {made}")),
+            true => hint(&b.plan()),
             false => hint(&b.note).text_color(rgb(RED)),
         };
         let body = div()
@@ -183,7 +191,8 @@ mod tests {
     use std::env;
 
     // cmd+n on the launch screen opens the new project dialog instead of a system panel, in Movies/Origami
-    // the first time: typing names the project, picking a folder in the list moves into it,
+    // the first time: typing names the project and the dialog says where it will be created, but only
+    // once it has a name, picking a folder in the list moves into it,
     // Enter makes the folder with the starter script and opens it, the next opening starts in the folder
     // last used, a name that already holds a script or a link where the script would go is refused without
     // writing through the link, and Esc closes the dialog.
@@ -204,6 +213,12 @@ mod tests {
         cx.simulate_keystrokes("cmd-n");
         cx.run_until_parked();
         assert_eq!(seen(cx).map(|s| s.0), Some(crash::home().join("Movies/Origami")));
+        let plan = |cx: &mut gpui::VisualTestContext| view.update(cx, |o, _| o.begin.as_ref().unwrap().plan());
+        assert_eq!(plan(cx), "Type a name for the project");
+        cx.simulate_input("a");
+        let made = home(&crash::home().join("Movies/Origami/a/edit.js"));
+        assert_eq!(plan(cx), format!("Creates {made}"));
+        cx.simulate_keystrokes("backspace");
         view.update(cx, |o, _| o.enter(dir.clone()));
         assert_eq!(seen(cx), Some((dir.clone(), vec!["films".to_string()])));
         view.update(cx, |o, _| o.enter(dir.join("films")));
