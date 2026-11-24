@@ -1,6 +1,6 @@
 use crate::{Mode, Origami, clip::set, knob::close};
 use gpui::{ClipboardItem, Context, KeyDownEvent, Window};
-use origami_engine::{Opts, command};
+use origami_engine::{Opts, shell};
 use origami_lang::Clip;
 use std::{env, fs, mem, process::Command};
 
@@ -325,16 +325,11 @@ impl Origami {
                 let name = arg.split(' ').find(|a| !a.is_empty() && !a.starts_with("--")).unwrap_or("out.mp4");
                 let out = dir.join(name).to_string_lossy().to_string();
                 if arg.contains("--dry-run") {
-                    let quote = |a: String| format!("'{}'", a.replace('\'', "'\\''"));
-                    let line = command(&self.tl, &out, &Opts::default())
-                        .into_iter()
-                        .map(quote)
-                        .collect::<Vec<_>>()
-                        .join(" ");
+                    let line = shell(&self.tl, &out, &Opts::default());
                     let sh = dir.join("export.sh");
                     return self.vet(sh.clone(), window, cx, move |this, both, _| {
                         let sh = both.unwrap_or(sh);
-                        let wrote = origami_lang::save(&sh, format!("ffmpeg {line}\n")).is_ok();
+                        let wrote = origami_lang::save(&sh, format!("{line}\n")).is_ok();
                         let name = sh.file_name().unwrap_or_default().to_string_lossy();
                         this.note = format!("{} {name}", if wrote { "wrote" } else { "could not write" });
                     });

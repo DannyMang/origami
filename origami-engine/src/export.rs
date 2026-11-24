@@ -360,11 +360,16 @@ fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path, (k, (w, h)): (f64, (
     (ins, f.join(";"))
 }
 
-pub fn command(tl: &Timeline, out: &str, o: &Opts) -> Vec<String> {
+fn command(tl: &Timeline, out: &str, o: &Opts) -> Vec<String> {
     let dir = room();
     let line = args(tl, out, o, &dir);
     let _ = fs::remove_dir(dir);
     line
+}
+
+pub fn shell(tl: &Timeline, out: &str, o: &Opts) -> String {
+    let quote = |a: String| format!(" '{}'", a.replace('\'', "'\\''"));
+    format!("ffmpeg{}", command(tl, out, o).into_iter().map(quote).collect::<String>())
 }
 
 fn args(tl: &Timeline, out: &str, o: &Opts, dir: &Path) -> Vec<String> {

@@ -9,7 +9,7 @@ mod shape;
 mod text;
 
 pub use audio::Player;
-pub use export::{Codec, Opts, command, footprint, guard, halt, place, render, seat, sized};
+pub use export::{Codec, Opts, footprint, guard, halt, place, render, seat, shell, sized};
 pub use mic::{Mic, inputs};
 pub use preview::{Preview, peaks, thumb, warm};
 pub use text::tone;
