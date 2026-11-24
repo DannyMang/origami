@@ -1668,9 +1668,9 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
 
     // Values that make no sense (a negative length, zero speed, a frame rate of 0, a loop without end,
     // a day-long timeline) and common slips (a number among clips, an unclosed string or bracket, a
-    // misspelt name or method, a curve or wheel without its name, an error thrown by a function of
-    // time) should be refused with a message that names the line, and a name or loop that could be on
-    // several lines names no line.
+    // misspelt name or method, a curve or wheel without its name, a font that is not installed, an
+    // error thrown by a function of time) should be refused with a message that names the line, and a
+    // name or loop that could be on several lines names no line.
     #[test]
     fn slips_name_the_line() {
         let deep = format!("{}text('a'){}", "\nstack(".repeat(101), ")".repeat(101));
@@ -1716,6 +1716,16 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
                 "text('a')\n  .wheel({ hue: 20 })",
                 2,
                 "wheel takes \"shadows\", \"midtones\" or \"highlights\" first",
+            ),
+            (
+                "text('a')\ntext('x', { font: 'NoSuchFontName' })",
+                2,
+                "font(\"NoSuchFontName\") is not a font installed on this Mac, or a font file next to the script",
+            ),
+            (
+                "text('x', { font: 'fonts/none.ttf' })",
+                1,
+                "font(\"fonts/none.ttf\") points to a file that does not exist",
             ),
             ("const a = text('a')\n\n\n\nvidoe('x')", 5, "ReferenceError: vidoe is not defined"),
             ("vidoe('x')\ntext('a')", 1, "ReferenceError: vidoe is not defined"),
@@ -1985,7 +1995,7 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
                 2,
                 "__lut(\"[object Object]\") points to a file that does not exist",
             ),
-            ("__font('x', 'font', -1)", 2, "font(\"x\") points to a file that does not exist"),
+            ("__font('x', 'font', -1)", 2, "font(\"x\") is not a font installed on this Mac"),
             ("__read('x'.repeat(5e5))", 2, "__read(\"xxxxxxxx"),
             ("const v = video\nv('x')", 3, "video(\"x\") points to a file that does not exist"),
             (
