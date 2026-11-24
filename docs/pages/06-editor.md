@@ -116,6 +116,8 @@ Click a gutter arrow to hide a block or a run of definitions. cmd+opt+[ folds at
 
 Drag the edge between panes to resize. cmd+= and cmd+- change the code size. cmd+0 resets.
 
+When the left pane is too narrow for the whole timeline bar, the bar leaves out what does not fit, in this order: the timecode (the status bar still shows it), then undo, redo, delete and the microphone, then the speed, T, ✎ and +. The tabs, the transport buttons, the record button and ⋯ always stay, and everything comes back when the pane is wide enough.
+
 ## History
 
 Every save keeps a version of the script on your Mac, so you can see what changed and bring an earlier version back.
