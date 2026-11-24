@@ -34,8 +34,9 @@
       opts('hslSecondary', correction, ['exposure', 'temperature', 'tint', 'contrast', 'saturation'])
     },
   }
-  for (const k of ['hueVsSat', 'hueVsHue', 'hueVsLuma', 'lumaVsSat', 'satVsSat']) vets[k] = p => dotted(k, p)
-  for (const k of ['shadowTint', 'highlightTint']) vets[k] = o => opts(k, o, ['hue', 'amount'])
+  const hues = ['hueVsSat', 'hueVsHue', 'hueVsLuma', 'lumaVsSat', 'satVsSat'], tints = ['shadowTint', 'highlightTint'], dials = ['temperature', 'tint', 'saturation', 'exposure', 'contrast', 'highlights', 'shadows', 'whites', 'blacks', 'fadedFilm', 'vibrance', 'tintBalance']
+  for (const k of hues) vets[k] = p => dotted(k, p)
+  for (const k of tints) vets[k] = o => opts(k, o, ['hue', 'amount'])
   const paint = c => {
     must(/^#?([\da-f]{3,4}|[\da-f]{6}|[\da-f]{8})$/i.test(c), `${JSON.stringify(c)} is not a colour: write hex, like "#ffffff" or "#ffffff80", and click it for the colour wheel`)
     return c
@@ -168,14 +169,13 @@
     duotone: (d, a, b) => grade(d, { duotone: [paint(a), paint(b)] }),
     vignette: (d, o) => grade(d, { vignette: { amount: o.amount ?? 0, midpoint: o.midpoint ?? 50, roundness: o.roundness ?? 0, feather: o.feather ?? 50 } }),
   }
-  for (const k of ['temperature', 'tint', 'saturation', 'exposure', 'contrast', 'highlights', 'shadows', 'whites', 'blacks', 'fadedFilm', 'vibrance', 'tintBalance'])
-    tone[k] = (d, x) => grade(d, { [k]: x })
-  for (const k of ['hueVsSat', 'hueVsHue', 'hueVsLuma', 'lumaVsSat', 'satVsSat']) tone[k] = (d, p) => grade(d, { [k]: sorted(p) })
-  for (const k of ['shadowTint', 'highlightTint']) tone[k] = (d, o) => grade(d, { [k]: [o.hue ?? 0, o.amount ?? 0] })
+  for (const k of dials) tone[k] = (d, x) => grade(d, { [k]: x })
+  for (const k of hues) tone[k] = (d, p) => grade(d, { [k]: sorted(p) })
+  for (const k of tints) tone[k] = (d, o) => grade(d, { [k]: [o.hue ?? 0, o.amount ?? 0] })
   Object.assign(ops, tone)
   const deep = ['speed', 'volume', 'mute', 'fade', 'scale', 'pos', 'opacity', 'rotate', 'shown', 'each', 'blend', 'fps', 'matte', 'lens', 'blur', 'levels', 'noise', 'fractal', 'roughen', 'displace', ...Object.keys(tone)]
   const loud = ['volume', 'mute']
-  const nums = new Set(['speed', 'volume', 'loop', 'fps', 'sharpen', 'temperature', 'tint', 'saturation', 'exposure', 'contrast', 'highlights', 'shadows', 'whites', 'blacks', 'fadedFilm', 'vibrance', 'tintBalance'])
+  const nums = new Set(['speed', 'volume', 'loop', 'fps', 'sharpen', ...dials])
   const called = Object.keys(ops).join(' ')
   const work = (d, k, n, a) => {
     if (nums.has(k) && !Number.isFinite(a[0])) throw new Error(lined(`${k} takes a number`))
