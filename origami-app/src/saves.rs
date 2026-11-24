@@ -3,7 +3,9 @@ use crate::{
     shelf::{DAY, Entry, Shelf, diff, now},
     view::{BAR, BG, BLUE, BORDER, COMMENT, DIM, GREEN, GUTTER, INK, MUTED, PANEL, RED, TEXT, tokens},
 };
-use gpui::{Context, Div, HighlightStyle, MouseButton, ScrollWheelEvent, StyledText, deferred, div, prelude::*, px, rgb, rgba};
+use gpui::{
+    Context, Div, HighlightStyle, MouseButton, PromptLevel, ScrollWheelEvent, StyledText, Window, deferred, div, prelude::*, px, rgb, rgba,
+};
 use std::{ops::Range, sync::Arc, time::Duration};
 
 const SHOWN: usize = 12;
@@ -344,6 +346,31 @@ impl Origami {
                 }
                 cx.notify();
             })
+        })
+        .detach();
+    }
+
+    pub fn purge(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(shelf) = self.shelf.clone() else { return };
+        let kept = shelf.list().len();
+        if kept == 0 {
+            return self.wipe(cx);
+        }
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            "Remove all saved versions?",
+            Some(&format!("This script has {kept}. This cannot be undone.")),
+            &["Remove", "Cancel"],
+            cx,
+        );
+        cx.spawn(async move |this, cx| {
+            if answer.await == Ok(0) {
+                let _ = this.update(cx, |this, cx| {
+                    if this.holds(&shelf) {
+                        this.wipe(cx);
+                    }
+                });
+            }
         })
         .detach();
     }
@@ -951,15 +978,16 @@ mod tests {
         assert_eq!(shown, Some((2, None, true)));
     }
 
-    // The clear button asks first, cancel keeps every version, and remove or :history clear deletes
-    // them all from the script's history.
+    // The clear button and :history clear both ask first, cancel keeps every version, and remove
+    // deletes them all from the script's history.
     #[gpui::test]
     fn clears_by_command_and_click(cx: &mut TestAppContext) {
         let (view, cx, _) = open(cx, "clear", &[&["a"], &["b"], &["c"]]);
         let w = cx.update(|window, _| f32::from(window.viewport_size().width));
         let kept = |cx: &mut VisualTestContext, at: Option<f32>| {
             if let Some(x) = at {
-                cx.simulate_click(point(px(x), px(179.)), Modifiers::default());
+                let y = 50. + view.update(cx, |o, _| o.ledge());
+                cx.simulate_click(point(px(x), px(y)), Modifiers::default());
             }
             cx.run_until_parked();
             view.update(cx, |o, _| {
@@ -975,8 +1003,18 @@ mod tests {
             o.stow(cx);
         });
         assert_eq!(kept(cx, None).0, 1);
+        let ask = (
+            "Remove all saved versions?".to_string(),
+            "This script has 1. This cannot be undone.".to_string(),
+        );
+        for (answer, left) in [("Cancel", 1), ("Remove", 0)] {
+            cx.simulate_keystrokes(": h i s t o r y space c l e a r enter");
+            assert_eq!((cx.pending_prompt(), kept(cx, None).0), (Some(ask.clone()), 1));
+            cx.simulate_prompt_answer(answer);
+            assert_eq!(kept(cx, None).0, left);
+        }
         cx.simulate_keystrokes(": h i s t o r y space c l e a r enter");
-        assert_eq!(kept(cx, None).0, 0);
+        assert!(!cx.has_pending_prompt());
     }
 
     // :history, cmd+Y, File > History, j k enter esc and ]c [c reach the same states as clicking the
