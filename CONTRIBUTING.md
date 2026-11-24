@@ -40,6 +40,7 @@ The later crates depend on the earlier ones by relative path.
 | `audio.rs` | `Player`: ffmpeg audio mix played through cpal |
 | `export.rs` | ffmpeg filter graph for export and for preview audio |
 | `place.rs` | Where and when a clip shows: size, position, fades |
+| `timing.rs` | Which source frame a timeline frame shows, and where a clip can be split without changing any |
 | `grade.rs`, `lut.rs` | Colour pipeline baked to a 3D LUT, `.cube` reading and writing, vignette mask |
 | `text.rs` | Text rasterising |
 | `main.rs` | `origami render` and `origami ir` commands |

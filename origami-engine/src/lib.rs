@@ -8,6 +8,7 @@ mod place;
 mod preview;
 mod shape;
 mod text;
+mod timing;
 
 pub use audio::Player;
 pub use export::{Codec, Opts, guard, halt, render, shell, sized};
