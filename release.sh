@@ -74,4 +74,5 @@ git tag -a $tag -m "Origami $version"
 git push origin $tag
 gh release create $tag dist/Origami.dmg --verify-tag --title "Origami $version" --notes-file dist/notes.md
 git push origin main
+(cd docs && bun run deploy)
 EOF

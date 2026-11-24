@@ -1,8 +1,8 @@
 use std::{env, process::Command};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-const FEED: &str = "https://raw.githubusercontent.com/DannyMang/origami/main/latest.json";
-const HOME: &str = "https://github.com/DannyMang/origami/";
+const FEED: &str = "https://origami.video/latest.json";
+const HOME: &str = "https://origami.video/";
 
 pub type Update = (String, String, bool);
 
@@ -79,14 +79,14 @@ mod tests {
         assert!(!newer("junk", "0.1.0"));
     }
 
-    // The feed names the newest version as plain numbers, a page of this project on GitHub to get it from
+    // The feed names the newest version as plain numbers, an address on origami.video to get it from
     // and, if it likes, the oldest version still supported; a feed with a lookalike or climbing address, a
     // version with words in it or no JSON at all reads as not checked rather than as up to date, and a
     // minimum that is not plain numbers or is above the newest version is ignored.
     #[test]
     fn reads() {
         let feed = |s: &str| read(s.as_bytes());
-        let get = "https://github.com/DannyMang/origami/releases/latest";
+        let get = "https://origami.video/Origami.dmg";
         let up = feed(&format!(r#"{{ "version": "v99.0.0", "url": "{get}" }}"#));
         assert_eq!(up, Some(Some(("99.0.0".into(), get.into(), false))));
         let same = feed(&format!(r#"{{ "version": "{VERSION}", "minimum": "98.0.0", "url": "{get}" }}"#));
@@ -98,11 +98,11 @@ mod tests {
         assert!(must("98.0.0") && must("v99.0") && !must(VERSION) && !must("100.0.0") && !must("98.0.0 now"));
         for far in [
             "https://example.com/get",
-            "https://github.com/DannyMang/origami.evil.com/",
-            "https://github.com@evil.com/DannyMang/origami/",
-            "https://github.com/DannyMang/origami/../../other/repo",
-            "https://github.com/DannyMang/origami/%2e%2e/%2e%2e/other/repo",
-            "https://github.com/DannyMang/origami/releases?to=https://evil.com",
+            "https://origami.video.evil.com/",
+            "https://origami.video@evil.com/",
+            "https://origami.video/../other",
+            "https://origami.video/%2e%2e/other",
+            "https://origami.video/get?to=https://evil.com",
         ] {
             assert_eq!(feed(&format!(r#"{{ "version": "99.0.0", "url": "{far}" }}"#)), None);
         }

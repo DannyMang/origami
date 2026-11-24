@@ -14,11 +14,13 @@ Open `dist/index.html`. Needs ffmpeg.
 
 ## Deploy
 
-The site is static and hosted on Cloudflare at https://origami-docs.veri-web.workers.dev. Build it on a Mac, because the examples are rendered with the CLI and ffmpeg, then upload `dist/`:
+The site is static and hosted on Cloudflare at https://origami.video. Build it on a Mac, because the examples are rendered with the CLI and ffmpeg, then upload `dist/`:
 
 ```
 bun run deploy
 ```
+
+The build also copies `../latest.json` and, when it exists, `../dist/Origami.dmg` into `dist/`: the site is where people download Origami and where the app checks for a newer version. The deploy stops if `dist/Origami.dmg` is missing, so run `../bundle.sh` or `../release.sh` first.
 
 ## Add a page
 

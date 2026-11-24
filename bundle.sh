@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BUNDLE_ID=com.origami.app
+BUNDLE_ID=video.origami.app
 
 cd "$(dirname "$0")"
 if [ -f .env ]; then
@@ -22,7 +22,7 @@ rm -rf dist
 mkdir -p "$bin" "$app/Contents/Resources"
 cp "${CARGO_TARGET_DIR:-origami-app/target}/release/origami-app" "$bin/"
 cp "${CARGO_TARGET_DIR:-origami-engine/target}/release/origami" "$bin/"
-! strings -a "$bin/origami-app" "$bin/origami" | grep -qF "$HOME/" || { echo "binaries contain $HOME" >&2; exit 1; }
+[ "$(strings -a "$bin/origami-app" "$bin/origami" | grep -cF "$HOME/")" = 0 ] || { echo "binaries contain $HOME" >&2; exit 1; }
 if [ -n "${FFMPEG_DIR:-}" ]; then
   cp "$FFMPEG_DIR/ffmpeg" "$FFMPEG_DIR/ffprobe" "$bin/"
 fi

@@ -665,11 +665,11 @@ mod tests {
 
     // Check for Updates says when it could not check instead of claiming the newest version; when Origami
     // opens, an ordinary update or a failed check asks nothing and a failed check keeps the update already
-    // known, while a version below the feed's minimum is told so, Download opening the release page.
+    // known, while a version below the feed's minimum is told so, Download opening the feed's address.
     #[gpui::test]
     fn offers_updates(cx: &mut TestAppContext) {
         let (view, cx, _) = project(cx, "offer");
-        let get = "https://github.com/DannyMang/origami/releases/latest".to_string();
+        let get = "https://origami.video/Origami.dmg".to_string();
         let up: Update = ("99.0.0".into(), get.clone(), false);
         let offer = |cx: &mut VisualTestContext, found: Option<Option<Update>>, asked: bool| {
             view.update_in(cx, |o, window, cx| o.offer(found, asked, window, cx))
