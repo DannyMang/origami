@@ -11,6 +11,9 @@ const outro = text("the end").for(1)
 cat(intro, middle, outro)
 ```
 
+- A clip with no length of its own, such as text, a colour or an image without `for`, lasts 5 seconds.
+- A `sound` does not take a turn. It starts with the `cat` and plays under the other clips, unless `at` moves it.
+
 ## stack
 
 Plays clips at the same time. Later clips draw on top.
@@ -20,6 +23,8 @@ const footage = video("clips/funny.mp4").trim(0, 4)
 const music = sound("music/track.mp3").trim(0, 4)
 stack(footage, text("title"), music)
 ```
+
+A clip with no length of its own, such as text, lasts until the longest clip in the stack ends. When no clip in the script has a length, the video is 5 seconds long.
 
 ## merge
 
@@ -48,6 +53,7 @@ stack(
 - `volume` and `mute` still go to each clip inside. `at` and `shift` move the whole group.
 - `for` sets how long the group lasts: clips inside that would run longer are cut at its end, sound included. `loop` repeats the whole group.
 - `trim` is for one clip, and `speed` goes before `merge`, as in `stack(a, b).speed(2).merge()`, which speeds up each clip inside. On a merged group either one stops the script with an error on its line.
+- Groups and mattes can sit inside each other up to 16 deep. One more is an error on its line.
 
 ## matte
 
@@ -75,6 +81,7 @@ clip.matte(title, "alphaInverted")   // the clip everywhere except the title's l
 ```
 
 - Any clip can be a matte: text, a shape, an image, a video, or a `stack` of them. It can move and animate like any clip.
+- A matte that is a [merged group](#merge), or that has a matte of its own, cuts with its whole finished picture: its scale, place, effects and own matte included.
 - The matte starts when its clip starts, and its keys count from there. `at` and `shift` on the matte move it later or earlier from there.
 - A matte with no length of its own, such as text or a shape, lasts as long as the clip. One with its own length ends then. While the matte is not there, before it starts or after it ends, the clip is hidden, or shows in full with an inverted mode.
 - A matte is never heard: a video used as a matte gives only its picture.

@@ -207,22 +207,22 @@ fn raw(args: &[&str], len: usize) -> Option<Vec<u8>> {
     (out.stdout.len() == len).then_some(out.stdout)
 }
 
-fn still(path: &str, t: f64, w: usize, h: usize) -> Option<Vec<u8>> {
-    let args = [
-        &["-ss", &t.to_string()],
-        literal(path),
-        &["-i", path, "-vf", &format!("scale={w}:{h}")],
-    ];
-    raw(&args.concat(), w * h * 4)
+fn still(path: &str, w: usize, h: usize) -> Option<Vec<u8>> {
+    raw(
+        &[literal(path), &["-i", path, "-vf", &format!("scale={w}:{h}")]].concat(),
+        w * h * 4,
+    )
 }
 
 pub fn thumb(path: &str, t: f64, w: usize, h: usize) -> Option<Vec<u8>> {
     let from = |path: &str| {
-        let ((lead, down, ..), fast) = (probe(path), ["-skip_frame", "nokey", "-ss", &t.to_string()]);
-        raw(
-            &[lead, &fast, literal(path), &["-i", path, "-vf", &format!("{down}scale={w}:{h}")]].concat(),
-            w * h * 4,
-        )
+        let ((lead, down, ..), at) = (probe(path), t.to_string());
+        let vf = format!("{down}scale={w}:{h}");
+        let grab = |seek: &[&str]| raw(&[lead, seek, literal(path), &["-i", path, "-vf", &vf]].concat(), w * h * 4);
+        match t > 0. {
+            true => grab(&["-skip_frame", "nokey", "-ss", &at]).or_else(|| grab(&["-ss", &at])),
+            false => grab(&[]),
+        }
     };
     let lrf = Path::new(path).with_extension("LRF");
     let side = Some(lrf.to_string_lossy()).filter(|l| l != path && lrf.is_file());
@@ -917,14 +917,15 @@ impl Preview {
                     return (px.len() >= tw * th * 4).then_some((px, (tw, th), (x as i64, y as i64)));
                 }
                 let make = || match c.kind {
-                    Kind::Image => still(&c.src, 0., tw, th).map(Arc::new),
+                    Kind::Image => still(&c.src, tw, th).map(Arc::new),
                     _ => Some(Arc::new(shape::image(c, (size.0 as f64, size.1 as f64), k, i).0)),
                 };
                 (kept(&mut self.stills, &mut self.was.0, base.clone(), make)?, base)
             }
         };
-        let px = match &c.grade {
-            Some(g) => kept(&mut self.stills, &mut self.was.0, format!("{base}|{g:?}"), || {
+        let graded = c.grade.as_ref().map(|g| (g, format!("{base}|{g:?}{:?}", grade::files(g))));
+        let px = match &graded {
+            Some((g, key)) => kept(&mut self.stills, &mut self.was.0, key.clone(), || {
                 Some(grade::paint(g, px, (tw, th), reuse(&mut self.spare, tw * th * 4)))
             })?,
             None => px,
@@ -937,8 +938,8 @@ impl Preview {
                 })?;
                 if fixed {
                     self.stills.remove(&base);
-                    if let Some(g) = &c.grade {
-                        self.stills.remove(&format!("{base}|{g:?}"));
+                    if let Some((_, key)) = &graded {
+                        self.stills.remove(key);
                     }
                 }
                 px
@@ -1377,6 +1378,28 @@ mod tests {
             ],
             [(true, false), (false, true), (true, false), (false, true)]
         );
+    }
+
+    // A film with a single keyframe, at its start, here one that brightens each second, shows a thumbnail
+    // at every time, each with the picture of its own moment.
+    #[test]
+    fn thumbnails_reach_past_the_last_keyframe() {
+        let file = scratch("sparse").join("a.mp4");
+        let fade = "color=black:s=64x36:r=30:d=4,geq=lum='64*floor(T)':cb=128:cr=128";
+        film(&file, fade, &["-g", "9999", "-pix_fmt", "yuv420p"]);
+        let grey = |t: f64| thumb(&file.to_string_lossy(), t, 16, 9).map(|px| px[(4 * 16 + 8) * 4]);
+        let seen = [0.5, 1.5, 2.5, 3.5].map(grey);
+        assert!(seen[0].is_some() && seen.windows(2).all(|w| w[0] < w[1]), "{seen:?}");
+    }
+
+    // A JPEG still, which ffmpeg gives no picture for when told to seek before reading it, draws in
+    // the preview and as a timeline thumbnail.
+    #[test]
+    fn jpegs_draw() {
+        let file = scratch("jpeg").join("bars.jpg");
+        film(&file, "testsrc=s=640x360", &["-frames:v", "1"]);
+        let path = file.to_string_lossy();
+        assert!(still(&path, 16, 9).is_some() && thumb(&path, 0., 16, 9).is_some());
     }
 
     // In a montage of many short clips the preview should warm up a decoder for the next clip only,

@@ -91,7 +91,7 @@ The Motion tab sits beside Timeline in the timeline bar. Every clip is a row wit
 
 | Clip | Rows |
 |---|---|
-| Video, image, colour | pos x, pos y, scale, rotate, opacity |
+| Video, image, colour, path | pos x, pos y, scale, rotate, opacity |
 | Text, caption | the same, plus shown, size, color, font, background |
 | Rect | the same as video, plus width, height, radius, color |
 | Line | the same as video, plus width, color |
@@ -101,7 +101,7 @@ Each row has a dot for connections, the name, the value and a key diamond.
 - Drag a number sideways to change it. With keys, that sets the key at the playhead, or adds one.
 - Click the diamond to add or remove a key at the playhead. Filled means animated. Removing the last key leaves a plain number. size, width, height and radius take no keys.
 - Keys show as diamonds on the row. Click one to jump to it and open a box with its time, value and ease. Drag it sideways to move it. It snaps to frames, keeps how its time is written, and never passes its neighbours. Delete removes it.
-- color and background open the colour control. font lists the font files next to the script or in `fonts/`.
+- color and background open the colour control. font opens the [font list](editor.html#fonts): the font files next to the script or in `fonts/`, and every font installed on this Mac.
 - A value that is a function, a variable, or written twice shows `code` and cannot be dragged.
 - Scroll over the names to scroll the rows. Scroll over the keys, or use the slider at the bottom, to zoom.
 

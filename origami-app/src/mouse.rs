@@ -98,6 +98,7 @@ impl Origami {
         (self.script, self.mtime, self.t, self.dirty, self.clash) = (path, None, 0., false, false);
         (self.past, self.future, self.cursor, self.top, self.left) = (Default::default(), Default::default(), None, 0., 0.);
         (self.folded, self.fresh, self.saves) = (vec![], true, None);
+        self.marks.clear();
         (self.tl, self.rev, self.shown, self.boot) = (Arc::default(), self.rev + 1, None, Some((Instant::now(), false)));
         if let Some(old) = self.image.take() {
             cx.drop_image(old, None);
@@ -653,6 +654,55 @@ mod tests {
         cx.simulate_keystrokes("backspace x y");
         assert_eq!(view.update(cx, |o, _| (o.lines[0].clone(), o.chosen())), ("sxyck(".into(), None));
         assert_eq!(drag(cx, 2. * glyph), Some(((0, 3), (0, 5))));
+    }
+
+    // A mark set on one script's timeline is gone once another script is opened, so the ruler never
+    // shows a mark that belongs to a different film.
+    #[gpui::test]
+    fn marks_stay_with_their_script(cx: &mut gpui::TestAppContext) {
+        let dir = env::temp_dir().join("origami-marks-test");
+        fs::create_dir_all(&dir).unwrap();
+        let (one, two) = (dir.join("one.js"), dir.join("two.js"));
+        for path in [&one, &two] {
+            fs::write(path, "color('#203040').for(4)").unwrap();
+        }
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            app.open(one.clone(), cx);
+            window.focus(&app.focus);
+            app
+        });
+        cx.run_until_parked();
+        cx.simulate_keystrokes("escape m a");
+        assert_eq!(view.update(cx, |o, _| o.marks.len()), 1);
+        view.update(cx, |o, cx| o.open(two.clone(), cx));
+        assert_eq!(view.update(cx, |o, _| o.marks.len()), 0);
+    }
+
+    // Pointing at a word in the code is what brings up its tip; moving on to the empty space after the
+    // line, below the last line or up to the pane's header lets go of it, so no tip stays behind.
+    #[gpui::test]
+    fn hover_ends_off_the_text(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = window(cx, "hover", "stack(\n  color(\"#203040\").for(4),\n)");
+        cx.run_until_parked();
+        let (x, y, glyph, row) = view.update_in(cx, |o, window, _| {
+            let w = f32::from(window.viewport_size().width);
+            (w - o.side + o.inset(), o.head(), o.glyph(), o.row())
+        });
+        let mut over = |col: f32, line: f32| {
+            let at = gpui::point(px(x + col * glyph), px(y + (line + 0.5) * row));
+            cx.simulate_mouse_move(at, None, Default::default());
+            view.update(cx, |o, _| o.hover)
+        };
+        let seen = [
+            over(2.2, 0.),
+            over(30., 0.),
+            over(4.2, 1.),
+            over(4.2, 6.),
+            over(2.2, 0.),
+            over(2.2, -1.),
+        ];
+        assert_eq!(seen, [Some((0, 2)), None, Some((1, 4)), None, Some((0, 2)), None]);
     }
 
     // Clicking in the code while the search bar is open should send typing to the code, and Find should send it back to the bar.

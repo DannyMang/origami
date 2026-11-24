@@ -367,6 +367,10 @@ impl Origami {
             self.dirty = false;
             return cx.quit();
         }
+        if self.parting {
+            return;
+        }
+        self.parting = true;
         let answer = window.prompt(
             PromptLevel::Warning,
             "An export is running. Quit and stop it?",
@@ -375,12 +379,14 @@ impl Origami {
             cx,
         );
         cx.spawn(async move |this, cx| {
-            if answer.await == Ok(0) {
-                let _ = this.update(cx, |this, cx| {
+            let pick = answer.await;
+            let _ = this.update(cx, |this, cx| {
+                this.parting = false;
+                if pick == Ok(0) {
                     this.dirty = false;
                     cx.quit();
-                });
-            }
+                }
+            });
         })
         .detach();
     }
@@ -522,9 +528,11 @@ mod tests {
         cx.simulate_keystrokes("cmd-q");
         assert_eq!(asked(cx), running);
         cx.simulate_prompt_answer("Cancel");
+        cx.run_until_parked();
         view.update_in(cx, |o, window, cx| o.run("q", window, cx));
         assert_eq!(asked(cx), running);
         cx.simulate_prompt_answer("Cancel");
+        cx.run_until_parked();
         view.update(cx, |o, _| {
             o.lines.push("// mine".into());
             o.dirty = true;
@@ -538,6 +546,24 @@ mod tests {
         cx.run_until_parked();
         assert!(fs::read_to_string(&path).unwrap().ends_with("// mine\n"));
         assert!(view.update(cx, |o, _| o.export.is_some() && !o.dirty));
+    }
+
+    // Asking to quit a second time while the export question is still open should not ask it again, and
+    // once it is answered with Cancel a later cmd+q asks afresh.
+    #[gpui::test]
+    fn quit_asks_once(cx: &mut TestAppContext) {
+        let (view, cx, _) = project(cx, "quit-once");
+        let job = Arc::new(std::sync::Mutex::new(("exporting 10%".to_string(), false)));
+        view.update(cx, |o, _| o.export = Some(job));
+        cx.simulate_keystrokes("cmd-q cmd-q");
+        view.update_in(cx, |o, window, cx| o.run("q", window, cx));
+        assert!(cx.has_pending_prompt());
+        cx.simulate_prompt_answer("Cancel");
+        cx.run_until_parked();
+        assert!(!cx.has_pending_prompt());
+        cx.simulate_keystrokes("cmd-q");
+        assert!(cx.has_pending_prompt());
+        cx.simulate_prompt_answer("Cancel");
     }
 
     // Being told to quit without a prompt, as from the Dock or at logout, should keep unsaved code in

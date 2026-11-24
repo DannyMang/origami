@@ -1,5 +1,5 @@
 use crate::{
-    lut::{Lut, Rgb, spread, stamp},
+    lut::{Lut, Rgb, Stamp, spread, stamp},
     text,
 };
 use lru::LruCache;
@@ -164,14 +164,18 @@ fn pipe(g: &Grade) -> impl Fn(Rgb) -> Rgb + '_ {
     }
 }
 
+pub fn files(g: &Grade) -> [Option<Stamp>; 2] {
+    [g.input_lut.as_deref(), g.look.as_ref().map(|l| l.0.as_str())].map(|f| f.and_then(stamp))
+}
+
 pub fn lut(g: &Grade) -> Option<Arc<Lut>> {
-    let files = [g.input_lut.as_deref(), g.look.as_ref().map(|l| l.0.as_str())].map(|f| f.and_then(stamp));
     let key = format!(
-        "{:?}{files:?}",
+        "{:?}{:?}",
         Grade {
             vignette: None,
             ..g.clone()
-        }
+        },
+        files(g)
     );
     let bake = || {
         let (pipe, round) = (pipe(g), |c: Rgb| c.map(|v| v + 0.5 / 255.));

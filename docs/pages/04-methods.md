@@ -2,7 +2,7 @@
 
 ## trim
 
-Keeps the source between two times. It works on one clip: on a `stack` or `cat` it is an error, so trim the clips inside.
+Keeps the source between two times. With one time, it keeps from there to the end of the file. It works on one clip: on a `stack` or `cat` it is an error, so trim the clips inside.
 
 ```origami
 video("clips/funny.mp4").trim("0:02", "0:05")
@@ -41,7 +41,7 @@ cat(
 
 ## speed
 
-Plays faster or slower. On a `stack` or `cat`, each clip inside plays faster or slower on its own. A [merged group](arranging.html#merge) takes it before `merge`: `stack(a, b).speed(2).merge()`.
+Plays faster or slower: 2 is twice as fast, 0.5 half speed. It must be above 0. On a `stack` or `cat`, each clip inside plays faster or slower on its own. A [merged group](arranging.html#merge) takes it before `merge`: `stack(a, b).speed(2).merge()`.
 
 ```origami
 video("clips/funny.mp4").trim(0, 6).speed(2)
@@ -84,7 +84,7 @@ video("clips/intro.mp4").trim(0, 3).mute()
 
 ## fade
 
-Fades in and out, in seconds.
+Fades in and out, in seconds. One number fades both ends by that much.
 
 ```origami
 video("clips/funny.mp4").trim(0, 4).fade(1, 2)
@@ -135,6 +135,8 @@ text("tilted", { size: 96 }).for(3).rotate(-10)
 
 Repeats the clip. On a `stack` or `cat`, the whole group repeats.
 
+Range: a whole number from 1 to 1000.
+
 ```origami
 video("clips/funny.mp4").trim(0, 1).loop(3)
 ```
@@ -150,7 +152,6 @@ The next seven methods change a clip's picture: `lens`, `blur`, `levels`, `noise
 - On a `stack` or `cat` that is not merged, each clip inside gets the effect on its own.
 - Values marked "takes keys" also take keys or a function of time. The others take a plain number.
 - A number outside an effect's range is brought to the nearest value inside it, and the status bar says so. Keys and functions of time for `lens` are held inside its range the same way.
-- Not yet: effects do nothing on text or captions that use `shown` or `each`.
 
 ## lens
 
@@ -166,7 +167,7 @@ video("clips/funny.mp4").trim(0, 3).lens(keys([0, 0], [3, 90]))
 
 Softens the picture. The number is the radius in pixels: how far each pixel spreads. The clip's own edges blur too and turn see-through, so what is behind it shows at the border.
 
-Range: 0 and up, 0 changes nothing. 2 to 30 is typical. Takes keys.
+Range: 0 and up, 0 changes nothing. 2 to 30 is typical. A number over 16384 is lowered to 16384, and the status bar says so. Takes keys.
 
 ```origami
 video("clips/funny.mp4").trim(0, 3).blur(keys([0, 0], [3, 20]))

@@ -7,7 +7,10 @@ use std::{
     fs::{self, DirBuilder},
     io::{self, BufRead, BufReader, ErrorKind, Read, Write},
     iter,
-    os::unix::fs::{DirBuilderExt, MetadataExt},
+    os::unix::{
+        fs::{DirBuilderExt, MetadataExt},
+        process::CommandExt,
+    },
     path::{Path, PathBuf},
     process::{self, Child, Command, Stdio},
     sync::{
@@ -62,7 +65,7 @@ fn span(tl: &Timeline, o: &Opts) -> (f64, f64) {
 }
 
 static ROOMS: AtomicUsize = AtomicUsize::new(0);
-static LIVE: Mutex<Vec<u32>> = Mutex::new(vec![]);
+static LIVE: Mutex<Vec<(u32, String, PathBuf)>> = Mutex::new(vec![]);
 const STALL: Duration = Duration::from_secs(if cfg!(test) { 5 } else { 30 });
 
 fn kill(pid: u32) {
@@ -71,7 +74,10 @@ fn kill(pid: u32) {
 
 pub fn halt() {
     let live = LIVE.lock().map(|l| l.clone()).unwrap_or_default();
-    live.into_iter().for_each(kill);
+    for (pid, part, dir) in live {
+        kill(pid);
+        let _ = (fs::remove_file(part), fs::remove_dir_all(dir));
+    }
 }
 
 fn tether(pid: u32, part: &str, dir: &Path) -> Option<Child> {
@@ -84,6 +90,7 @@ fn tether(pid: u32, part: &str, dir: &Path) -> Option<Child> {
                 part,
             ])
             .arg(dir)
+            .process_group(0)
             .stdin(Stdio::piped())
             .stderr(Stdio::null()),
     )
@@ -330,7 +337,10 @@ fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path, (k, (w, h)): (f64, (
             if c.fade.1 > 0. {
                 s += &format!(",afade=t=out:st={}:d={}", (len - c.fade.1).max(0.), c.fade.1);
             }
-            f.push(format!("{s},adelay={}:all=1[a{i}]", ((c.start - from).max(0.) * 1000.).round()));
+            f.push(format!(
+                "{s},adelay={}:all=1,asetpts=N/SR/TB[a{i}]",
+                ((c.start - from).max(0.) * 1000.).round()
+            ));
             mix += &format!("[a{i}]");
         }
     }
@@ -349,7 +359,10 @@ fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path, (k, (w, h)): (f64, (
 }
 
 pub fn command(tl: &Timeline, out: &str, o: &Opts) -> Vec<String> {
-    args(tl, out, o, &room())
+    let dir = room();
+    let line = args(tl, out, o, &dir);
+    let _ = fs::remove_dir(dir);
+    line
 }
 
 fn args(tl: &Timeline, out: &str, o: &Opts, dir: &Path) -> Vec<String> {
@@ -477,7 +490,7 @@ pub fn render(tl: &Timeline, out: &str, o: &Opts, mut progress: impl FnMut(f64))
     .inspect_err(|_| drop(fs::remove_dir_all(&dir)))?;
     let (pipe, pid, stuck) = (child.stdin.take(), child.id(), &AtomicBool::new(false));
     let (mut said, dir) = (child.stderr.take().unwrap(), dir.as_path());
-    LIVE.lock().unwrap().push(pid);
+    LIVE.lock().unwrap().push((pid, part.into(), dir.into()));
     let err = thread::scope(|s| {
         let err = s.spawn(move || {
             let mut err = vec![];
@@ -515,7 +528,7 @@ pub fn render(tl: &Timeline, out: &str, o: &Opts, mut progress: impl FnMut(f64))
         }
         err.join().unwrap_or_default()
     });
-    LIVE.lock().unwrap().retain(|p| *p != pid);
+    LIVE.lock().unwrap().retain(|l| l.0 != pid);
     let err = String::from_utf8_lossy(&err);
     let done = child.wait()?.success();
     let _ = fs::remove_dir_all(dir);
@@ -824,6 +837,90 @@ mod tests {
         });
         let _ = ff.kill();
         assert!(gone);
+    }
+
+    // Halting, which the app does as it quits, should leave neither the hidden file a running export was
+    // writing nor its temporary folder by the time it returns, since the app may be gone a moment later.
+    #[test]
+    fn halting_leaves_nothing() {
+        let _tidy = TIDY.write();
+        let dir = scratch("halt");
+        let src = "settings({ size: [3840, 2160] })\ntext('hi').for(600).opacity(keys([0, 0], [600, 1]))";
+        fs::write(dir.join("edit.js"), src).unwrap();
+        let tl = origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap();
+        let out = dir.join("out.mp4").to_string_lossy().to_string();
+        let mine = format!("origami-{}-", process::id());
+        let left = || {
+            let named = |at: &Path, start: &str| {
+                let all = fs::read_dir(at).unwrap().flatten();
+                all.filter(|e| e.file_name().to_string_lossy().starts_with(start)).count()
+            };
+            (named(&dir, "."), named(&env::temp_dir(), &mine))
+        };
+        thread::scope(|s| {
+            let job = s.spawn(|| render(&tl, &out, &Opts::default(), |_| {}));
+            let since = Instant::now();
+            while left() != (1, 1) && since.elapsed() < Duration::from_secs(30) {
+                thread::sleep(Duration::from_millis(50));
+            }
+            let before = left();
+            halt();
+            let after = left();
+            assert!(job.join().unwrap().is_err());
+            assert_eq!((before, after), ((1, 1), (0, 0)));
+        });
+    }
+
+    // A sound that starts late should come with the silence before it: the export's sound starts at 0
+    // and lasts the whole timeline, and playback hears the sound at its time instead of straight away.
+    #[test]
+    fn late_sounds_keep_their_silence() {
+        let _tidy = TIDY.read();
+        let dir = scratch("late");
+        film(&dir.join("s.wav"), "sine=d=2", &[]);
+        let src = "settings({ size: [64, 36] })\nstack(color('#203040').for(3), sound('s.wav').trim(0, 1).at(2))";
+        fs::write(dir.join("edit.js"), src).unwrap();
+        let tl = origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap();
+        let out = dir.join("late.mp4").to_string_lossy().to_string();
+        render(&tl, &out, &Opts::default(), |_| {}).unwrap();
+        let heard = |args: Vec<String>| {
+            let pcm = origami_lang::output(ffmpeg().args(["-v", "error"]).args(args)).unwrap().stdout;
+            let peak = |from: usize, to: usize| {
+                let part = pcm.get(from * 3840..to * 3840).unwrap_or_default().chunks_exact(4);
+                part.map(|s| f32::from_le_bytes(s.try_into().unwrap()).abs()).fold(0., f32::max)
+            };
+            ((pcm.len() + 19200) / 38400, peak(0, 190) < 0.01, peak(210, 290) > 0.05)
+        };
+        let made = heard(own(&["-i", &out, "-f", "f32le", "-ar", "48000", "-ac", "2", "-"]));
+        let played = heard(audio_args(&tl, 0., 48000, 1.));
+        assert_eq!((made, played), ((30, true, true), (30, true, true)));
+    }
+
+    // The command a dry run prints should name layer pictures that are there to be read when it is run
+    // later, and a timeline that needs none, such as a plain film, should leave no temporary folder behind.
+    #[test]
+    fn dry_runs_keep_only_what_they_name() {
+        let _tidy = TIDY.write();
+        let dir = scratch("dry");
+        film(&dir.join("a.mp4"), "color=white:s=64x36:r=30:d=1", &[]);
+        let tl = |src: &str| {
+            fs::write(dir.join("edit.js"), src).unwrap();
+            origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap()
+        };
+        let mine = format!("origami-{}-", process::id());
+        let rooms = || {
+            let all = fs::read_dir(env::temp_dir()).unwrap().flatten();
+            all.filter(|e| e.file_name().to_string_lossy().starts_with(&mine)).count()
+        };
+        for src in ["video('a.mp4')", "text('hi').for(1).opacity(0.5)"] {
+            command(&tl(src), "out.mp4", &Opts::default());
+        }
+        let bare = rooms();
+        let line = command(&tl("text('hi').for(1)"), "out.mp4", &Opts::default());
+        let layer = Path::new(line.iter().find(|a| a.ends_with("text-0.bgra")).unwrap());
+        let kept = (rooms(), layer.exists());
+        fs::remove_dir_all(layer.parent().unwrap()).unwrap();
+        assert_eq!((bare, kept), (0, (1, true)));
     }
 
     // Each export's temporary folder is a new one that only its owner can open, never a folder or link

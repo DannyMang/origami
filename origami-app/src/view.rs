@@ -340,7 +340,7 @@ impl Origami {
             .children((self.menu == label).then(|| deferred(Self::list(items).right_0())))
     }
 
-    fn tools(&self, tl: &Timeline, cx: &mut Context<Self>) -> Div {
+    fn tools(&self, tl: &Timeline, wide: f32, cx: &mut Context<Self>) -> Div {
         let pace = match self.rate {
             0.5 => "0.5x",
             2. => "2x",
@@ -360,7 +360,7 @@ impl Origami {
             self.tool("export", cx, |t, _, _| t.ask()),
             self.quality(cx),
         ];
-        let side = || div().flex_1().flex().items_center().text_size(px(20.));
+        let side = || div().flex_1().flex().items_center();
         let page = |label: &'static str, motion: bool, web: bool| {
             div()
                 .cursor_pointer()
@@ -381,23 +381,41 @@ impl Origami {
             .child(page("Timeline", false, false))
             .child(page("Motion", true, false))
             .child(page("Graph", false, true));
-        tab(pages)
-            .relative()
-            .child(
-                side()
-                    .pl_4()
-                    .child(self.tool("\u{21a9}", cx, |t, _, _| t.undo()))
-                    .child(self.tool("\u{21aa}", cx, |t, _, _| t.redo()))
-                    .child(self.tool("\u{2715}", cx, |t, _, _| t.delete()))
-                    .child(self.mic(cx)),
-            )
+        let edits = (wide >= 700.).then(|| {
+            div()
+                .pl_4()
+                .flex()
+                .items_center()
+                .text_size(px(20.))
+                .child(self.tool("\u{21a9}", cx, |t, _, _| t.undo()))
+                .child(self.tool("\u{21aa}", cx, |t, _, _| t.redo()))
+                .child(self.tool("\u{2715}", cx, |t, _, _| t.delete()))
+                .child(self.mic(cx))
+        });
+        let makers = (wide >= 540.).then(|| {
+            div()
+                .flex()
+                .items_center()
+                .child(self.tool(pace, cx, |t, _, _| t.pace()).text_size(px(13.)))
+                .child(self.typer(cx))
+                .child(self.tracer(cx))
+                .child(self.menu("+", add, cx))
+        });
+        let clock = (wide >= 900.).then(|| {
+            self.tool(format!("{} / {}", self.timecode(), stamp(tl.duration)), cx, |t, _, cx| {
+                let s = ((t.t * t.fps()).round() / t.fps() * 1000. + 1e-6).floor() / 1000.;
+                cx.write_to_clipboard(ClipboardItem::new_string(s.to_string()));
+                t.note = format!("copied {s}");
+            })
+            .text_size(px(13.))
+        });
+        tab(side().debug_selector(|| "left".into()).child(pages).children(edits))
+            .overflow_hidden()
+            .debug_selector(|| "tools".into())
             .child(
                 div()
-                    .absolute()
-                    .left_0()
-                    .right_0()
+                    .debug_selector(|| "transport".into())
                     .flex()
-                    .justify_center()
                     .text_size(px(16.))
                     .child(self.tool("|\u{25c0}", cx, |t, _, _| t.step(-1.)))
                     .child(self.tool(if self.player.is_some() { "||" } else { "\u{25b6}" }, cx, |t, _, _| t.toggle()))
@@ -406,20 +424,12 @@ impl Origami {
             )
             .child(
                 side()
+                    .debug_selector(|| "right".into())
                     .justify_end()
-                    .child(self.tool(pace, cx, |t, _, _| t.pace()).text_size(px(13.)))
-                    .child(self.typer(cx))
-                    .child(self.tracer(cx))
-                    .child(self.menu("+", add, cx))
+                    .text_size(px(20.))
+                    .children(makers)
                     .child(self.menu("\u{22ef}", more, cx))
-                    .child(
-                        self.tool(format!("{} / {}", self.timecode(), stamp(tl.duration)), cx, |t, _, cx| {
-                            let s = ((t.t * t.fps()).round() / t.fps() * 1000. + 1e-6).floor() / 1000.;
-                            cx.write_to_clipboard(ClipboardItem::new_string(s.to_string()));
-                            t.note = format!("copied {s}");
-                        })
-                        .text_size(px(13.)),
-                    ),
+                    .children(clock),
             )
     }
 
@@ -587,7 +597,7 @@ impl Origami {
             .bg(rgb(PANEL))
             .border_t_1()
             .border_color(rgb(BORDER))
-            .child(self.tools(tl, cx))
+            .child(self.tools(tl, wide, cx))
             .child(
                 div()
                     .relative()
@@ -754,7 +764,7 @@ impl Origami {
                         .bg(rgb(BLUE))
                 }))
                 .on_mouse_move(cx.listener(move |this, e: &MouseMoveEvent, window, cx| {
-                    let at = Some(this.spot(e.position, window)).filter(|_| this.mouse);
+                    let at = this.over(e.position, window).filter(|_| this.mouse);
                     if this.hover != at {
                         (this.hover, this.since, this.tipped) = (at, Instant::now(), false);
                         cx.notify();
@@ -960,6 +970,10 @@ impl Origami {
             .child(self.grip(true, cx))
     }
 
+    fn aside(&self) -> Option<String> {
+        Some(self.note.clone()).filter(|n| self.take.is_none() && !self.err.is_empty() && !n.is_empty())
+    }
+
     fn status(&self, focus: Option<&Clip>, cx: &mut Context<Self>) -> Div {
         let (tag, hint) = self.lens();
         let mode = match &self.mode {
@@ -1011,6 +1025,7 @@ impl Origami {
                             .child(mode),
                     )
                     .children((!self.mouse).then(|| div().text_color(rgb(DIM)).child("i or click here for mouse")))
+                    .children(self.aside())
                     .child(div().text_color(rgb(color)).child(info)),
             )
             .child(
@@ -1163,8 +1178,13 @@ impl Render for Origami {
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
-        let help = div().absolute().inset_0().flex().items_center().justify_center().child(
+        let help = div().absolute().inset_0().p_4().flex().items_center().justify_center().child(
             div()
+                .id("help")
+                .debug_selector(|| "help".into())
+                .min_w_0()
+                .max_h_full()
+                .overflow_y_scroll()
                 .p_4()
                 .bg(rgb(PANEL))
                 .border_1()
@@ -1260,8 +1280,8 @@ impl Render for Origami {
                     this.stir = Instant::now();
                     cx.notify();
                 }
-                let out = f32::from(e.position.x) < f32::from(window.viewport_size().width) - this.side;
-                if out && this.hover.take().is_some() {
+                if this.hover.is_some() && this.over(e.position, window).is_none() {
+                    this.hover = None;
                     cx.notify();
                 }
                 if this.eyeing {
@@ -1424,6 +1444,87 @@ mod tests {
         assert!((1..6).all(|i| draw(&|o| o.t = i as f64 / 30.) == first));
         let zoomed: Vec<usize> = (1..100).map(|i| draw(&|o| o.zoom = 1. + i as f64 / 20.)).collect();
         assert_eq!((zoomed[0], zoomed[98]), (first + 1, 64));
+    }
+
+    // At every window size and pane width the app allows, the timeline bar's three groups sit side by
+    // side inside the bar without overlapping, and at the default size the transport is centred in it.
+    #[gpui::test]
+    fn toolbar_fits(cx: &mut gpui::TestAppContext) {
+        let path = std::env::temp_dir().join("origami-toolbar-test.js");
+        fs::write(&path, "color('#000').for(700)").unwrap();
+        let tl = origami_lang::eval(&path, false, origami_engine::footprint).unwrap();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            (app.script, app.tl) = (path.clone(), std::sync::Arc::new(tl));
+            app
+        });
+        let mut laid = |w: f32, side: f32| {
+            cx.simulate_resize(gpui::size(gpui::px(w), gpui::px(600.)));
+            view.update(cx, |o, cx| {
+                o.side = side;
+                cx.notify();
+            });
+            cx.run_until_parked();
+            let edges = ["tools", "left", "transport", "right"].map(|name| {
+                let b = cx.debug_bounds(name).unwrap();
+                (f32::from(b.left()), f32::from(b.right()))
+            });
+            (edges, w - view.update(cx, |o, _| o.side))
+        };
+        for (w, side) in (680..2000)
+            .step_by(20)
+            .flat_map(|w| (260..1600).step_by(20).map(move |side| (w as f32, side as f32)))
+        {
+            let ([bar, left, mid, right], pane) = laid(w, side);
+            let inside = bar == (0., pane) && bar.0 <= left.0 && right.1 <= bar.1;
+            assert!(
+                inside && left.1 <= mid.0 && mid.1 <= right.0,
+                "{w} {side} {bar:?} {left:?} {mid:?} {right:?}"
+            );
+        }
+        let ([_, _, mid, _], pane) = laid(1512., 520.);
+        assert!(((mid.0 + mid.1) / 2. - pane / 2.).abs() < 1., "{mid:?} {pane}");
+    }
+
+    // The :help panel stays inside the window with a margin around it, at the default size and at the
+    // smallest one, so none of its lines are cut off at the sides.
+    #[gpui::test]
+    fn help_fits(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut app = crate::fresh(cx.focus_handle(), vec![]);
+            app.script = "edit.js".into();
+            window.focus(&app.focus);
+            app
+        });
+        cx.simulate_keystrokes("escape : h e l p enter");
+        assert!(view.update(cx, |o, _| o.help));
+        for (w, h) in [(1512., 900.), (680., 330.)] {
+            cx.simulate_resize(gpui::size(gpui::px(w), gpui::px(h)));
+            cx.run_until_parked();
+            let b = cx.debug_bounds("help").unwrap();
+            let edges = [b.left(), b.top(), b.right(), b.bottom()].map(f32::from);
+            assert!(
+                edges[0] >= 16. && edges[1] >= 16. && edges[2] <= w - 16. && edges[3] <= h - 16.,
+                "{edges:?}"
+            );
+        }
+    }
+
+    // When an export ends while the script has an error, the status bar says how the export went
+    // beside the error instead of showing the error alone.
+    #[gpui::test]
+    fn export_result_shows_beside_an_error(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = cx.add_window_view(|_, cx| crate::fresh(cx.focus_handle(), vec![]));
+        let said = view.update_in(cx, |o, window, cx| {
+            let job = ("exported out.mp4".to_string(), true);
+            (o.err, o.export) = ("line 1: wrong".into(), Some(std::sync::Arc::new(std::sync::Mutex::new(job))));
+            o.tick(window, cx);
+            let both = (o.export.is_none(), o.aside());
+            o.err.clear();
+            (both, o.aside(), o.note.clone())
+        });
+        let done = "exported out.mp4".to_string();
+        assert_eq!(said, ((true, Some(done.clone())), None, done));
     }
 
     // Thumbnails shown lately are kept, but ones not shown since the timeline last held 500 are let go,

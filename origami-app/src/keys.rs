@@ -312,7 +312,7 @@ impl Origami {
             "e" => self.switch(dir.join(arg), window, cx),
             "set" => self.looping = arg == "loop",
             "help" => self.help = !self.help,
-            "history" if arg == "clear" => self.wipe(cx),
+            "history" if arg == "clear" => self.purge(window, cx),
             "history" => self.saves = self.versions(Some(0)),
             "ir" => {
                 let room = dir.join(".origami");

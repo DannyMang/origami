@@ -219,6 +219,14 @@ impl Origami {
         (row, ((x / self.glyph()).round().max(0.) as usize).min(len))
     }
 
+    pub fn over(&self, at: Point<Pixels>, window: &Window) -> Option<(usize, usize)> {
+        let x = f32::from(at.x) - f32::from(window.viewport_size().width) + self.side - self.inset();
+        let (hidden, n) = (self.hidden(), (f32::from(at.y) - self.head()) / self.row());
+        let mut seen = (self.top as usize..self.lines.len()).filter(|r| !hidden[*r]);
+        let (row, col) = (seen.nth(n as usize).filter(|_| n >= 0.)?, (x / self.glyph()).round());
+        (0. <= col && col <= self.lines[row].chars().count() as f32).then_some((row, col as usize))
+    }
+
     pub fn place(&mut self, at: Point<Pixels>, window: &Window) {
         self.cursor = Some(self.spot(at, window));
     }
@@ -506,7 +514,7 @@ mod tests {
         assert_eq!(view.update(cx, |o, _| o.lines.clone()), ["stack("]);
     }
 
-    // A script that never ends reports that it took too long and one with a mistake marks the wrong line,
+    // A script that never ends reports on its line that it took too long and one with a mistake marks the wrong line,
     // undoing back to an empty script saves it empty, deleting the script file outside the app keeps the
     // code on screen and offers to save it again, :e with a name that does not exist opens nothing, and a
     // save replaces a link put where the script was instead of writing through it and keeps the file's
@@ -526,7 +534,7 @@ mod tests {
         settle(&view, cx);
         fs::write(&path, "while (true) {}").unwrap();
         settle(&view, cx);
-        assert!(view.update(cx, |o, _| o.err.starts_with("script took too long")));
+        assert!(view.update(cx, |o, _| o.err.starts_with("line 1: script took too long")));
         let a = "const a = text(\"a\").for(1)\n";
         for (src, want) in [
             (
