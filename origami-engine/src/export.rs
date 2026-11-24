@@ -356,7 +356,10 @@ fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path, (k, (w, h)): (f64, (
 }
 
 pub fn command(tl: &Timeline, out: &str, o: &Opts) -> Vec<String> {
-    args(tl, out, o, &room())
+    let dir = room();
+    let line = args(tl, out, o, &dir);
+    let _ = fs::remove_dir(dir);
+    line
 }
 
 fn args(tl: &Timeline, out: &str, o: &Opts, dir: &Path) -> Vec<String> {
@@ -863,6 +866,33 @@ mod tests {
             assert!(job.join().unwrap().is_err());
             assert_eq!((before, after), ((1, 1), (0, 0)));
         });
+    }
+
+    // The command a dry run prints should name layer pictures that are there to be read when it is run
+    // later, and a timeline that needs none, such as a plain film, should leave no temporary folder behind.
+    #[test]
+    fn dry_runs_keep_only_what_they_name() {
+        let _tidy = TIDY.write();
+        let dir = scratch("dry");
+        film(&dir.join("a.mp4"), "color=white:s=64x36:r=30:d=1", &[]);
+        let tl = |src: &str| {
+            fs::write(dir.join("edit.js"), src).unwrap();
+            origami_lang::eval(&dir.join("edit.js"), false, footprint).unwrap()
+        };
+        let mine = format!("origami-{}-", process::id());
+        let rooms = || {
+            let all = fs::read_dir(env::temp_dir()).unwrap().flatten();
+            all.filter(|e| e.file_name().to_string_lossy().starts_with(&mine)).count()
+        };
+        for src in ["video('a.mp4')", "text('hi').for(1).opacity(0.5)"] {
+            command(&tl(src), "out.mp4", &Opts::default());
+        }
+        let bare = rooms();
+        let line = command(&tl("text('hi').for(1)"), "out.mp4", &Opts::default());
+        let layer = Path::new(line.iter().find(|a| a.ends_with("text-0.bgra")).unwrap());
+        let kept = (rooms(), layer.exists());
+        fs::remove_dir_all(layer.parent().unwrap()).unwrap();
+        assert_eq!((bare, kept), (0, (1, true)));
     }
 
     // Each export's temporary folder is a new one that only its owner can open, never a folder or link
