@@ -295,15 +295,16 @@ impl Origami {
             Some(tl) => self.took(tl, cx),
             None => self.reading = true,
         }
-        let wait = self.reading;
+        let job = script.clone();
+        let eval = self.reading.then(|| {
+            cx.background_executor().spawn(async move {
+                let got = early.and_then(|e| e.2.recv().ok());
+                got.unwrap_or_else(|| origami_lang::eval(&job, true, footprint))
+            })
+        });
         cx.spawn(async move |this, cx| {
-            if wait {
-                let job = script.clone();
-                let eval = async move {
-                    let got = early.and_then(|e| e.2.recv().ok());
-                    got.unwrap_or_else(|| origami_lang::eval(&job, true, footprint))
-                };
-                let tl = cx.background_executor().spawn(eval).await;
+            if let Some(eval) = eval {
+                let tl = eval.await;
                 this.update(cx, |this, cx| {
                     if this.script == script {
                         this.took(tl, cx);
