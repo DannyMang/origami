@@ -1,6 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "origami-docs",
+  "main": "worker.ts",
   "compatibility_date": "2026-11-18",
   "routes": [{ "pattern": "origami.video", "custom_domain": true }],
   "observability": {
@@ -8,5 +9,6 @@
   },
   "assets": {
     "directory": "dist"
-  }
+  },
+  "r2_buckets": [{ "binding": "DOWNLOADS", "bucket_name": "origami-downloads" }]
 }

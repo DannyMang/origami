@@ -70,7 +70,6 @@ marked.use({
 mkdirSync(videos, { recursive: true })
 cpSync(join(root, "fonts"), join(dist, "fonts"), { recursive: true })
 cpSync(join(root, "../latest.json"), join(dist, "latest.json"))
-if (existsSync(join(root, "../dist/Origami.dmg"))) cpSync(join(root, "../dist/Origami.dmg"), join(dist, "Origami.dmg"))
 const site = readdirSync(pages).sort().map((f, i) => {
   page = { file: i ? f.replace(/^\d+-|\.md$/g, "") + ".html" : "index.html", title: "", name: "", links: [], body: "" }
   page.body = marked.parse(readFileSync(join(pages, f), "utf8")) as string
