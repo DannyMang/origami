@@ -2,7 +2,7 @@
 
 What changed in each version of Origami. The launch screen shows the version you are running under the name; when a newer one is out, that line turns blue and underlined, and clicking it opens the download page.
 
-## 0.1.0 (not yet released)
+## 0.1.0 (Nov 25, 2026)
 
 ### Nov 24
 
