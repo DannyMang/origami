@@ -3,6 +3,7 @@ mod export;
 mod fx;
 mod grade;
 mod lut;
+mod memo;
 mod mic;
 mod pixels;
 mod place;

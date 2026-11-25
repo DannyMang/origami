@@ -7,6 +7,7 @@ What changed in each version of Origami. The launch screen shows the version you
 ### Nov 24
 
 - The app now includes ffmpeg, so there is nothing to install before opening it: `brew install ffmpeg` is only needed to build Origami from source. It is FFmpeg 8.1.2 built without outside libraries, which reads the same footage, pictures and sound as before with one exception: AV1 video shows in the preview only on Macs with an M3 or later chip and cannot be exported, and AVIF pictures show as black. Convert those to H.264, HEVC, ProRes, PNG or JPEG first. Exports are H.264, HEVC and ProRes as before.
+- Reopening a project shows its first picture sooner, by about 50 ms for a 1080p project on an M3, and no longer spends the next second or two running ffmpeg once for every clip. What ffmpeg says about each media file is kept in `~/Library/Caches/Origami/media.json` and used again while the file's size, dates and the installed ffmpeg are unchanged. Before, every launch asked again. The file is never in the project folder, lists the paths of media you have used, stays under about 4 MB and is safe to delete.
 
 ### Nov 23
 
