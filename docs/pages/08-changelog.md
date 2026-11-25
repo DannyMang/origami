@@ -4,6 +4,10 @@ What changed in each version of Origami. The launch screen shows the version you
 
 ## 0.1.0 (not yet released)
 
+### Nov 24
+
+- Reopening a project shows its first picture sooner, by about 50 ms for a 1080p project on an M3, and no longer spends the next second or two running ffmpeg once for every clip. What ffmpeg says about each media file is kept in `~/Library/Caches/Origami/media.json` and used again while the file's size, dates and the installed ffmpeg are unchanged. Before, every launch asked again. The file is never in the project folder, lists the paths of media you have used, stays under about 4 MB and is safe to delete.
+
 ### Nov 23
 
 - `origami frame` and `origami render` print the script's note, such as "line 3: lens 200 is lowered to 170, the most it takes", before they draw. Before, only `origami ir` and the app showed it. When a script has several such values the note is about the first one; before, it was about the last.

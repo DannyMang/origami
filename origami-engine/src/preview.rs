@@ -1,6 +1,7 @@
 use crate::{
     fx, grade,
     lut::spread,
+    memo::{key, memo},
     pixels::{blit, nudge, spin, straight},
     place::{alpha, grown, live, place, plain, seat},
     shape,
@@ -74,8 +75,12 @@ fn turn(key: String) -> Arc<Mutex<()>> {
 
 fn ask(path: &str, show: &str) -> String {
     let args = ["-v", "error", "-select_streams", "v:0", "-show_entries", show, "-of", "csv=p=0"];
-    let out = output(ffprobe().args(lean(path)).args(args).args(literal(path)).arg(path)).map(|o| o.stdout);
-    String::from_utf8_lossy(&out.unwrap_or_default()).into()
+    let mut cmd = ffprobe();
+    cmd.args(lean(path)).args(args).args(literal(path)).arg(path);
+    memo(key(&cmd, path), || {
+        let (text, ok) = output(&mut cmd).map_or_else(|_| (vec![], false), |o| (o.stdout, o.status.success()));
+        (String::from_utf8_lossy(&text).into(), ok && !text.is_empty())
+    })
 }
 
 fn probe(path: &str) -> Info {
@@ -88,7 +93,7 @@ fn probe(path: &str) -> Info {
         let (tb, first, dur) = (col().strip_prefix("1/"), col(), col());
         let (format, zero) = text.lines().last().unwrap_or_default().rsplit_once(',').unwrap_or_default();
         let (n, d) = rate.split_once('/').unwrap_or_default();
-        let num = |s: &str| s.parse::<f64>().unwrap_or(0.);
+        let num = |s: &str| s.parse::<f64>().ok().filter(|n| n.is_finite()).unwrap_or(0.);
         let (n, d, tb, zero) = (num(n), num(d), tb.map_or(0., num), num(zero));
         let (ts, vfr) = (matches!(format, "mpegts" | "mpeg"), real != rate && tb > 0.);
         let packets: Vec<Option<(f64, bool)>> = match ts || vfr {
@@ -96,7 +101,8 @@ fn probe(path: &str) -> Info {
                 .lines()
                 .map(|l| {
                     let (pts, flags) = l.split_once(',')?;
-                    Some((pts.parse::<f64>().ok()? - (zero * tb).round(), flags.starts_with('K')))
+                    let pts = pts.parse::<f64>().ok().filter(|p| p.is_finite())?;
+                    Some((pts - (zero * tb).round(), flags.starts_with('K')))
                 })
                 .collect(),
             false => vec![],
@@ -127,7 +133,7 @@ fn probe(path: &str) -> Info {
             ("hevc", _) => (&["-hwaccel", "videotoolbox", "-threads", "1"], ""),
             _ => (&["-hwaccel", "videotoolbox"], ""),
         };
-        let start = first.parse().map_or(0., |f: f64| f - zero);
+        let start = first.parse().ok().filter(|f: &f64| f.is_finite()).map_or(0., |f| f - zero);
         let stamps = if ts { vec![] } else { stamps };
         let info = (lead, down, n, d, num(dur), tb, late, start, stamps.into(), ts);
         (info, if text.is_empty() { AGAIN } else { u32::MAX })
@@ -152,12 +158,16 @@ fn probe(path: &str) -> Info {
 fn lands(src: &str, at: f64, start: f64) -> f64 {
     let make = || {
         let args = ["-hide_banner", "-ss", &at.to_string(), "-i", src, "-map", "0:v:0", "-frames:v", "1"];
-        let out = output(ffmpeg().args(args).args(["-vf", "showinfo", "-f", "null", "-"]));
-        let text = String::from_utf8_lossy(&out.map(|o| o.stderr).unwrap_or_default()).to_string();
-        let pts = text
-            .split("pts_time:")
-            .nth(1)
-            .and_then(|s| s.split_whitespace().next()?.parse().ok());
+        let mut cmd = ffmpeg();
+        cmd.args(args).args(["-vf", "showinfo", "-f", "null", "-"]);
+        let finite = |pts: &str| pts.parse::<f64>().ok().filter(|p| p.is_finite());
+        let pts = memo(key(&cmd, src), || {
+            let (text, ok) = output(&mut cmd).map_or_else(|_| (vec![], false), |o| (o.stderr, o.status.success()));
+            let text = String::from_utf8_lossy(&text);
+            let pts = text.split("pts_time:").nth(1).and_then(|s| s.split_whitespace().next());
+            (pts.unwrap_or_default().into(), ok && pts.is_some_and(|p| finite(p).is_some()))
+        });
+        let pts = finite(&pts);
         (at.max(start) + pts.unwrap_or(0.), if pts.is_none() { AGAIN } else { u32::MAX })
     };
     let key = (src.to_string(), at.to_bits());
