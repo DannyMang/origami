@@ -35,7 +35,7 @@ use gpui::{
 };
 use image::{Frame, RgbaImage};
 use mouse::Grab;
-use origami_engine::{Player, Preview, footprint, halt, peaks, thumb, warm};
+use origami_engine::{Player, Preview, footprint, halt, near, peaks, thumb, warm};
 use origami_lang::{Clip, Kind, Timeline};
 use std::{
     cell::RefCell,
@@ -673,7 +673,12 @@ fn main() {
     if !script.as_os_str().is_empty() {
         let ((tell, heard), job) = (mpsc::channel(), script.clone());
         *EARLY.lock().unwrap() = Some((script.clone(), fs::metadata(&script).and_then(|m| m.modified()).ok(), heard));
-        thread::spawn(move || drop(tell.send(origami_lang::eval(&job, true, footprint))));
+        thread::spawn(move || {
+            let tl = origami_lang::eval(&job, true, footprint);
+            let first = tl.as_ref().ok().cloned();
+            drop(tell.send(tl));
+            first.inspect(|tl| near(tl, 0.));
+        });
     }
     thread::spawn(Player::warm);
     let app = Application::new();
