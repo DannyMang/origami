@@ -473,7 +473,7 @@ impl Preview {
             .collect();
         new.sort();
         new.dedup();
-        if new.len() > 1 {
+        if !new.is_empty() {
             spread(&mut new, 1, |_, part| {
                 for (src, tw, th, px) in part {
                     *px = still(src, *tw, *th).map(Arc::new);
