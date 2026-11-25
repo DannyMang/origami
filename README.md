@@ -91,7 +91,7 @@ What it sends, in short:
 
 - Apple silicon and macOS 15 or later only.
 - A project is a script file (`.js`). There is no import from other editors.
-- The included ffmpeg has no software AV1 decoder. AV1 video shows in the preview only on Macs with an M3 or later chip and cannot be exported, and AVIF pictures show as black: convert them to H.264, HEVC, ProRes, PNG or JPEG first. JPEG XL pictures are not read either.
+- AVIF pictures show as black: convert them to PNG or JPEG first. JPEG XL pictures are not read either.
 
 ## Report a bug
 
