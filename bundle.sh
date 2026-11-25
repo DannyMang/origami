@@ -32,7 +32,7 @@ cp "${CARGO_TARGET_DIR:-origami-engine/target}/release/origami" "$bin/"
 cp ffmpeg/ffmpeg ffmpeg/ffprobe "$bin/"
 [ "$(strings -a "$bin"/* | grep -cF "$HOME/")" = 0 ] || { echo "binaries contain $HOME" >&2; exit 1; }
 [ -z "$(otool -L "$bin/ffmpeg" "$bin/ffprobe" | grep '^	' | grep -vE '^	(/usr/lib|/System/Library)/')" ] || { echo "ffmpeg links outside macOS" >&2; exit 1; }
-cp LICENSE THIRD-PARTY.md THIRD-PARTY-LICENSES.txt "$app/Contents/Resources/"
+cp LICENSE THIRD-PARTY.md THIRD-PARTY-LICENSES.txt Origami.icns "$app/Contents/Resources/"
 
 cat > "$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -47,6 +47,8 @@ cat > "$app/Contents/Info.plist" <<EOF
   <string>$BUNDLE_ID</string>
   <key>CFBundleExecutable</key>
   <string>origami-app</string>
+  <key>CFBundleIconFile</key>
+  <string>Origami</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleInfoDictionaryVersion</key>
