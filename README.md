@@ -13,19 +13,18 @@ cat(
 )
 ```
 
-Origami runs on Macs with Apple silicon (M1 or later) and macOS 15 or later. It uses ffmpeg, which you install yourself.
+Origami runs on Macs with Apple silicon (M1 or later) and macOS 15 or later. The app includes the ffmpeg it uses to read and export video.
 
 ## Install
 
 ### Download
 
-1. Install ffmpeg with [Homebrew](https://brew.sh): `brew install ffmpeg`.
-2. Download [Origami.dmg](https://origami.video/Origami.dmg) from [origami.video](https://origami.video), open it and drag Origami to Applications.
-3. Open Origami from Applications. It is signed with an Apple Developer ID and notarized, so macOS asks once whether to open an app downloaded from the internet: click **Open**.
+1. Download [Origami.dmg](https://origami.video/Origami.dmg) from [origami.video](https://origami.video), open it and drag Origami to Applications.
+2. Open Origami from Applications. It is signed with an Apple Developer ID and notarized, so macOS asks once whether to open an app downloaded from the internet: click **Open**.
 
 ### Build from source
 
-You need the Xcode Command Line Tools (`xcode-select --install`), Rust from [rustup.rs](https://rustup.rs) and ffmpeg (`brew install ffmpeg`).
+You need the Xcode Command Line Tools (`xcode-select --install`), Rust from [rustup.rs](https://rustup.rs) and ffmpeg (`brew install ffmpeg`): only the downloaded app includes ffmpeg, so a build from source and the tests use the one on your PATH.
 
 ```
 git clone https://github.com/DannyMang/origami.git
@@ -91,7 +90,7 @@ What it sends, in short:
 
 - Apple silicon and macOS 15 or later only.
 - A project is a script file (`.js`). There is no import from other editors.
-- ffmpeg is not included: install it with `brew install ffmpeg`.
+- The included ffmpeg has no software AV1 decoder. AV1 video shows in the preview only on Macs with an M3 or later chip and cannot be exported, and AVIF pictures show as black: convert them to H.264, HEVC, ProRes, PNG or JPEG first. JPEG XL pictures are not read either.
 
 ## Report a bug
 

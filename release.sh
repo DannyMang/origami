@@ -15,8 +15,8 @@ fail() {
   exit 1
 }
 [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "usage: ./release.sh <version, such as 0.2.0> [--dry-run]"
-[ -z "${FFMPEG_DIR:-}" ] && ! grep -qsE '^[[:space:]]*(export[[:space:]]+)?FFMPEG_DIR=' .env || fail "FFMPEG_DIR is set: this release does not bundle ffmpeg"
 tag=v$version
+source=dist/ffmpeg-$(sed -n 's/^VERSION=//p' ffmpeg.sh).tar.xz
 crates=(origami-lang origami-engine origami-app)
 log=docs/pages/08-changelog.md
 date=$(date '+%b %-d, %Y')
@@ -66,13 +66,14 @@ cat <<EOF
 
 dmg: $PWD/dist/Origami.dmg
 sha-256: $sum
+ffmpeg source: $PWD/$source
 
 Check dist/notes.md and git diff, then run:
 
 git commit -am "Release $version"
 git tag -a $tag -m "Origami $version"
 git push origin $tag
-gh release create $tag dist/Origami.dmg --verify-tag --title "Origami $version" --notes-file dist/notes.md
+gh release create $tag dist/Origami.dmg $source --verify-tag --title "Origami $version" --notes-file dist/notes.md
 git push origin main
 (cd docs && bun run deploy)
 EOF

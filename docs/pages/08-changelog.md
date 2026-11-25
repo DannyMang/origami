@@ -4,6 +4,10 @@ What changed in each version of Origami. The launch screen shows the version you
 
 ## 0.1.0 (not yet released)
 
+### Nov 24
+
+- The app now includes ffmpeg, so there is nothing to install before opening it: `brew install ffmpeg` is only needed to build Origami from source. It is FFmpeg 8.1.2 built without outside libraries, which reads the same footage, pictures and sound as before with one exception: AV1 video shows in the preview only on Macs with an M3 or later chip and cannot be exported, and AVIF pictures show as black. Convert those to H.264, HEVC, ProRes, PNG or JPEG first. Exports are H.264, HEVC and ProRes as before.
+
 ### Nov 23
 
 - `origami frame` and `origami render` print the script's note, such as "line 3: lens 200 is lowered to 170, the most it takes", before they draw. Before, only `origami ir` and the app showed it. When a script has several such values the note is about the first one; before, it was about the last.

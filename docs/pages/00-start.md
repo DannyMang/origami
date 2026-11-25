@@ -4,9 +4,10 @@ Origami runs on Macs with Apple silicon (M1 or later) and macOS 15 or later.
 
 ## Install
 
-1. Install ffmpeg with [Homebrew](https://brew.sh): `brew install ffmpeg`. Origami uses it to read and export video and does not include it.
-2. Download [Origami.dmg](Origami.dmg), open it and drag Origami to Applications.
-3. Open Origami from Applications. macOS asks once whether to open an app downloaded from the internet: click **Open**.
+1. Download [Origami.dmg](Origami.dmg), open it and drag Origami to Applications.
+2. Open Origami from Applications. macOS asks once whether to open an app downloaded from the internet: click **Open**.
+
+The app includes ffmpeg, which it uses to read and export video, so there is nothing else to install.
 
 ## Your first video
 
