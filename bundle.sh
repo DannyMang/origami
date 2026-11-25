@@ -15,6 +15,10 @@ version=$(sed -n 's/^version = "\(.*\)"$/\1/p' origami-app/Cargo.toml | head -1)
 app=dist/Origami.app
 bin=$app/Contents/MacOS
 
+./ffmpeg.sh
+line=$(cut -d' ' -f2- ffmpeg/configure.txt)
+source=$(cut -d: -f1 ffmpeg/configure.txt)
+grep -qF "$line" THIRD-PARTY.md && grep -qF "$source.tar.xz" THIRD-PARTY.md || { echo "THIRD-PARTY.md does not name $source and its configure line" >&2; exit 1; }
 cargo build --release --manifest-path origami-app/Cargo.toml
 cargo build --release --manifest-path origami-engine/Cargo.toml
 
@@ -22,10 +26,9 @@ rm -rf dist
 mkdir -p "$bin" "$app/Contents/Resources"
 cp "${CARGO_TARGET_DIR:-origami-app/target}/release/origami-app" "$bin/"
 cp "${CARGO_TARGET_DIR:-origami-engine/target}/release/origami" "$bin/"
-[ "$(strings -a "$bin/origami-app" "$bin/origami" | grep -cF "$HOME/")" = 0 ] || { echo "binaries contain $HOME" >&2; exit 1; }
-if [ -n "${FFMPEG_DIR:-}" ]; then
-  cp "$FFMPEG_DIR/ffmpeg" "$FFMPEG_DIR/ffprobe" "$bin/"
-fi
+cp ffmpeg/ffmpeg ffmpeg/ffprobe "$bin/"
+[ "$(strings -a "$bin"/* | grep -cF "$HOME/")" = 0 ] || { echo "binaries contain $HOME" >&2; exit 1; }
+[ -z "$(otool -L "$bin/ffmpeg" "$bin/ffprobe" | grep '^	' | grep -vE '^	(/usr/lib|/System/Library)/')" ] || { echo "ffmpeg links outside macOS" >&2; exit 1; }
 cp LICENSE THIRD-PARTY.md THIRD-PARTY-LICENSES.txt "$app/Contents/Resources/"
 
 cat > "$app/Contents/Info.plist" <<EOF
@@ -78,7 +81,7 @@ plutil -lint "$app/Contents/Info.plist"
 sign=(codesign --force --options runtime --sign "${SIGN_ID:--}")
 [ -z "${SIGN_ID:-}" ] || sign+=(--timestamp)
 for tool in origami ffmpeg ffprobe; do
-  [ ! -e "$bin/$tool" ] || "${sign[@]}" --identifier "$BUNDLE_ID.$tool" "$bin/$tool"
+  "${sign[@]}" --identifier "$BUNDLE_ID.$tool" "$bin/$tool"
 done
 "${sign[@]}" --entitlements origami.entitlements "$app"
 codesign --verify --deep --strict "$app"
@@ -88,6 +91,7 @@ ditto "$app" dist/dmg/Origami.app
 ln -s /Applications dist/dmg/Applications
 hdiutil create -volname Origami -srcfolder dist/dmg -format UDZO dist/Origami.dmg
 rm -rf dist/dmg
+cp "ffmpeg/$source.tar.xz" dist/
 
 if [ -n "${SIGN_ID:-}" ]; then
   codesign --force --timestamp --sign "$SIGN_ID" dist/Origami.dmg

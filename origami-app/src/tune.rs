@@ -160,8 +160,7 @@ mod tests {
     // sidecar off.
     #[gpui::test]
     fn proxies(cx: &mut gpui::TestAppContext) {
-        let dir = std::env::temp_dir().join("origami-proxy-test");
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::tests::scratch("proxy");
         for (file, ink) in [("v.mp4", "red"), ("v.LRF", "blue")] {
             let src = format!("color={ink}:s=320x180:r=30000/1001:d=4");
             crate::tests::film(&dir.join(file), &src, &["-f", "mp4"]);

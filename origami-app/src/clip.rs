@@ -277,8 +277,7 @@ mod tests {
 )";
 
     fn open<'a>(cx: &'a mut TestAppContext, name: &str) -> (Entity<Origami>, &'a mut VisualTestContext) {
-        let dir = std::env::temp_dir().join(format!("origami-clip-{name}"));
-        fs::create_dir_all(&dir).unwrap();
+        let dir = crate::tests::scratch(&format!("clip-{name}"));
         for (file, src) in [("a.wav", "sine=d=10"), ("v.mp4", "color=black:s=64x64:r=30:d=10")] {
             crate::tests::film(&dir.join(file), src, &[]);
         }

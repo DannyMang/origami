@@ -6,4 +6,5 @@ target
 /docs/node_modules
 /research
 /dist
+/ffmpeg
 .env
