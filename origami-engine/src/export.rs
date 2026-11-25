@@ -910,8 +910,8 @@ mod tests {
         assert_eq!((dir != taken, mode, kept), (true, 0o700, (true, 0)));
     }
 
-    // A video whose every frame is unreadable floods ffmpeg's error output, and its export should end at
-    // once with ffmpeg's own error instead of waiting forever on a full pipe.
+    // A video whose every frame became unreadable after the script was read floods ffmpeg's error output,
+    // and its export should end at once with ffmpeg's own error instead of waiting forever on a full pipe.
     #[test]
     fn unreadable_video_fails_at_once() {
         let _tidy = TIDY.read();
@@ -925,8 +925,8 @@ mod tests {
         let at = data.windows(4).position(|w| w == b"mdat").unwrap() + 4;
         data[at..].fill(0xff);
         fs::write(dir.join("bad.mp4"), data).unwrap();
-        fs::write(dir.join("edit.js"), "settings({ size: [64, 36], fps: 60 })\nvideo('bad.mp4')").unwrap();
-        let tl = origami_lang::eval(&dir.join("edit.js"), true, footprint).unwrap();
+        let mut tl = script(&dir, "settings({ size: [64, 36], fps: 60 })\nvideo('good.mp4')");
+        tl.clips[0].src = dir.join("bad.mp4").to_string_lossy().to_string();
         let out = dir.join("out.mp4").to_string_lossy().to_string();
         let ((done, ended), job) = (mpsc::channel(), (tl, out.clone()));
         thread::spawn(move || done.send(render(&job.0, &job.1, &Opts::default(), |_| {}).unwrap_err().to_string()));

@@ -161,11 +161,12 @@ fn scan(path: &Path, prev: Option<&Media>, relock: bool, rel: &str) -> Result<Me
             audio: false,
         });
     }
+    let named = literal(&path.to_string_lossy());
     let out = output(
         ffprobe()
             .args(["-v", "error", "-of", "json", "-show_entries"])
-            .arg("format=duration:stream=codec_type,width,height:stream_side_data=rotation")
-            .args(literal(&path.to_string_lossy()))
+            .arg("format=duration:stream=codec_type,codec_name,width,height:stream_side_data=rotation")
+            .args(named)
             .arg(path),
     )?;
     let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
@@ -174,16 +175,46 @@ fn scan(path: &Path, prev: Option<&Media>, relock: bool, rel: &str) -> Result<Me
     let dim = |k| streams.iter().find_map(|s| s[k].as_u64()).unwrap_or(0) as u32;
     let sides = streams.iter().flat_map(|s| s["side_data_list"].as_array().into_iter().flatten());
     let turn = sides.filter_map(|d| d["rotation"].as_f64()).any(|r| r.abs() % 180. == 90.);
+    let dur = v["format"]["duration"].as_str().and_then(|d| d.parse().ok()).unwrap_or(0.);
+    let kind = if has("video") { "video" } else { "audio" };
+    if let Some(s) = streams.iter().find(|s| s["codec_type"] == kind) {
+        let (map, frames) = (format!("0:{}:0", &kind[..1]), format!("-frames:{}", &kind[..1]));
+        let tail = ["-map", &map, &frames, "1", "-f", "null", "-"];
+        let seen = output(ffmpeg().args(["-v", "error"]).args(named).arg("-i").arg(path).args(tail))?;
+        if !seen.status.success() {
+            let what = match (kind, dur <= 0.04) {
+                ("video", true) => "picture",
+                ("video", false) => "video",
+                _ => "sound",
+            };
+            let name = match what {
+                "picture" => path.extension().and_then(|e| e.to_str()),
+                _ => s["codec_name"].as_str(),
+            };
+            bail!("{}", unread(name, what, &String::from_utf8_lossy(&seen.stderr)));
+        }
+    }
     Ok(Media {
         size,
         mtime,
         sha,
-        dur: v["format"]["duration"].as_str().and_then(|d| d.parse().ok()).unwrap_or(0.),
+        dur,
         w: dim(if turn { "height" } else { "width" }),
         h: dim(if turn { "width" } else { "height" }),
         video: has("video"),
         audio: has("audio"),
     })
+}
+
+fn unread(name: Option<&str>, what: &str, said: &str) -> String {
+    let (kind, name) = (name, name.map_or("unrecognised".into(), str::to_uppercase));
+    match (kind, what) {
+        (Some("av1"), "video") => "this is AV1 video, which this Mac cannot decode: convert it to H.264 or HEVC first".into(),
+        _ if !said.contains("no decoder found") => format!("this {name} {what} cannot be read: the file may be damaged"),
+        (_, "picture") => format!("{name} pictures are not supported: export it as PNG first"),
+        (_, "video") => format!("this is {name} video, which Origami cannot read: convert it to H.264, HEVC or ProRes first"),
+        _ => format!("this is {name} sound, which Origami cannot read: convert it to WAV, MP3 or AAC first"),
+    }
 }
 
 fn media(path: &Path, old: &Lock, new: &mut Lock, relock: bool, rel: &str) -> Result<String> {
@@ -2028,6 +2059,73 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         ] {
             assert_eq!(fails(&dir, src), says);
         }
+    }
+
+    // A picture, film or sound file that ffprobe lists but ffmpeg cannot decode is refused on its line with
+    // its format and what to do about it, a file origami.lock already vouches for is not decoded again,
+    // and one that changed since is.
+    #[test]
+    fn unreadable_media_names_its_format() {
+        let dir = media("unread");
+        let swap = |file: &str, from: &[u8], to: &[u8]| {
+            let mut data = fs::read(dir.join(file)).unwrap();
+            while let Some(i) = data.windows(from.len()).position(|w| w == from) {
+                data[i..i + to.len()].copy_from_slice(to);
+            }
+            fs::write(dir.join(file), data).unwrap();
+        };
+        fs::write(
+            dir.join("a.svg"),
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"8\" height=\"8\"/>",
+        )
+        .unwrap();
+        let copy = ["-v", "error", "-i", "v.mp4", "-c", "copy", "v.mkv"];
+        assert!(status(ffmpeg().args(copy).current_dir(&dir)).unwrap().success());
+        swap("v.mkv", b"V_MPEG4", b"V_ZZZZZ");
+        swap("a.wav", b"fmt \x10\0\0\0\x01\0", b"fmt \x10\0\0\0\x99\x99");
+        for (src, says) in [
+            (
+                "image('a.svg')",
+                "line 1: image(\"a.svg\"): SVG pictures are not supported: export it as PNG first",
+            ),
+            (
+                "text('a')\nvideo('v.mkv')",
+                "line 2: video(\"v.mkv\"): this is unrecognised video, which Origami cannot read: convert it to H.264, HEVC or ProRes first",
+            ),
+            (
+                "sound('a.wav')",
+                "line 1: sound(\"a.wav\"): this is unrecognised sound, which Origami cannot read: convert it to WAV, MP3 or AAC first",
+            ),
+        ] {
+            assert_eq!(fails(&dir, src), says);
+        }
+        assert_eq!(
+            [
+                unread(
+                    Some("av1"),
+                    "video",
+                    "Your platform doesn't support hardware accelerated AV1 decoding."
+                ),
+                unread(Some("h264"), "video", "Invalid NAL unit size"),
+            ],
+            [
+                "this is AV1 video, which this Mac cannot decode: convert it to H.264 or HEVC first",
+                "this H264 video cannot be read: the file may be damaged",
+            ]
+        );
+        let (png, src) = (dir.join("i.png"), "image('i.png').for(1)");
+        run(&dir, src).unwrap();
+        let (len, at) = (fs::metadata(&png).unwrap().len(), fs::metadata(&png).unwrap().modified().unwrap());
+        let dated = |at| fs::File::options().write(true).open(&png).unwrap().set_modified(at).unwrap();
+        fs::write(&png, vec![b'x'; len as usize]).unwrap();
+        dated(at);
+        run(&dir, src).unwrap();
+        dated(at + Duration::from_secs(10));
+        let e = eval(&dir.join("edit.js"), true, size).unwrap_err().to_string();
+        assert_eq!(
+            e,
+            "line 1: image(\"i.png\"): this PNG picture cannot be read: the file may be damaged"
+        );
     }
 
     // A colour that does not parse and a layer too large to draw should each stop the script with an
