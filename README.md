@@ -19,7 +19,7 @@ Origami runs on Macs with Apple silicon (M1 or later) and macOS 15 or later. The
 
 ### Download
 
-1. Download [Origami.dmg](https://origami.video/Origami.dmg) from [origami.video](https://origami.video), open it and drag Origami to Applications.
+1. Download [Origami.dmg](https://origami.video/Origami.dmg) from [origami.video](https://origami.video), open it and drag Origami to Applications. It is for Apple silicon only (M1 or later), macOS 15 or later.
 2. Open Origami from Applications. It is signed with an Apple Developer ID and notarized, so macOS asks once whether to open an app downloaded from the internet: click **Open**.
 
 ### Build from source
@@ -63,7 +63,7 @@ The app also contains the `origami` command-line tool, which renders a script wi
 
 ## Docs
 
-The guide and language reference are in [`docs/pages`](docs/pages): [Intro](docs/pages/00-intro.md), [Basics](docs/pages/01-basics.md), [Video](docs/pages/02-video.md), [Arranging](docs/pages/03-arranging.md), [Methods](docs/pages/04-methods.md), [Color](docs/pages/05-color.md), [Editor](docs/pages/06-editor.md), [Motion](docs/pages/07-motion.md) and the [Changelog](docs/pages/08-changelog.md).
+The guide and language reference are in [`docs/pages`](docs/pages): [Intro](docs/pages/00-intro.md), [Basics](docs/pages/01-basics.md), [Video](docs/pages/02-video.md), [Arranging](docs/pages/03-arranging.md), [Methods](docs/pages/04-methods.md), [Color](docs/pages/05-color.md), [Editor](docs/pages/06-editor.md), [Motion](docs/pages/07-motion.md), [Supported formats](docs/pages/07-supported-formats.md) and the [Changelog](docs/pages/08-changelog.md).
 
 Read them online, with every example rendered, at https://origami.video.
 
@@ -91,7 +91,7 @@ What it sends, in short:
 
 - Apple silicon and macOS 15 or later only.
 - A project is a script file (`.js`). There is no import from other editors.
-- The included ffmpeg has no software AV1 decoder. AV1 video shows in the preview only on Macs with an M3 or later chip and cannot be exported, and AVIF pictures show as black: convert them to H.264, HEVC, ProRes, PNG or JPEG first. JPEG XL pictures are not read either.
+- The included ffmpeg has no software AV1 decoder, so AV1 video is refused with a message on its script line: convert it to H.264 or HEVC first. SVG pictures are not read: export them as PNG. [Supported formats](docs/pages/07-supported-formats.md) lists what works.
 
 ## Report a bug
 

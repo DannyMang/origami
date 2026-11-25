@@ -10,7 +10,7 @@ video("clips/intro.mp4")
 
 Playlist files (`.m3u8`, `.m3u` and ffmpeg concat lists) are not supported, in `video`, `sound` or `image`: use a video or sound file.
 
-Origami reads what its included ffmpeg reads: H.264, HEVC (also 10-bit and HDR phone footage), ProRes, DNxHD, VP8, VP9, MPEG-2 and Motion JPEG video in MP4, MOV, MKV, WebM, MTS, MPG, MXF and AVI files, GIFs, and AAC, MP3, Opus, Vorbis, FLAC, ALAC, WAV and AIFF sound. AV1 video is the exception: it shows in the preview only on Macs with an M3 or later chip, is black on M1 and M2 Macs, and cannot be exported, with the error "Your platform doesn't support hardware accelerated AV1 decoding". AVIF pictures show as black and JPEG XL pictures are not read. Convert these to H.264, HEVC or ProRes video, or PNG or JPEG pictures, first.
+Origami reads H.264, HEVC (also 10-bit and HDR phone footage), ProRes, DNxHR, VP8, VP9, MPEG-2 and Motion JPEG video, GIFs, and AAC, MP3, Opus, Vorbis, FLAC, ALAC, WAV and AIFF sound. AV1 video is the exception: the app's ffmpeg cannot decode it, and the script says so on the clip's line. Convert it to H.264 or HEVC first. [Supported formats](supported-formats.html) has the whole list.
 
 ## sound
 
@@ -29,6 +29,8 @@ Loads a still image.
 settings({ size: [640, 360] })
 image("logo.png").for(3)
 ```
+
+PNG, JPEG, HEIC (iPhone photos), AVIF, JPEG XL, WebP, TIFF and more work: see [Supported formats](supported-formats.html). SVG does not: export it as PNG first.
 
 ## text
 

@@ -33,6 +33,7 @@ The later crates depend on the earlier ones by relative path.
 | `grade.rs` | Colour grade types carried on a clip |
 | `error.rs` | Errors a script author can fix, each with the script line |
 | `tool.rs` | Finds `ffmpeg` and `ffprobe`: next to the program, then `PATH`, then the usual Homebrew and MacPorts folders |
+| `picture.rs` | Reads HEIC, AVIF, JPEG XL, WebP and rotated JPEG pictures with macOS ImageIO, in a copy of the program started for each picture so a bad file cannot crash the app |
 
 ### origami-engine/src
 
