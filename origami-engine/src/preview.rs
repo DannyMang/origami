@@ -1046,7 +1046,8 @@ mod tests {
     fn thumbnails_reach_past_the_last_keyframe() {
         let file = scratch("sparse").join("a.mp4");
         let fade = "color=black:s=64x36:r=30:d=4,geq=lum='64*floor(T)':cb=128:cr=128";
-        film(&file, fade, &["-g", "9999", "-pix_fmt", "yuv420p"]);
+        let sparse = ["-c:v", "mpeg4", "-g", "9999", "-sc_threshold", "1000000000", "-pix_fmt", "yuv420p"];
+        film(&file, fade, &sparse);
         let grey = |t: f64| thumb(&file.to_string_lossy(), t, 16, 9).map(|px| px[(4 * 16 + 8) * 4]);
         let seen = [0.5, 1.5, 2.5, 3.5].map(grey);
         assert!(seen[0].is_some() && seen.windows(2).all(|w| w[0] < w[1]), "{seen:?}");
@@ -1138,39 +1139,36 @@ mod tests {
     }
 
     // In footage with B-frames, a picture shown just before a keyframe can be decoded only after the
-    // pictures before it: a jump straight to it should still show it, as playing up to it does.
+    // pictures before it: a jump straight to it should still show it, as playing up to it does, in H.264
+    // and in MPEG-2 whose keyframes are stored ahead of earlier pictures.
     #[test]
     fn jumps_before_keyframes_show_the_frame() {
-        let file = scratch("bframes").join("a.mp4");
+        let dir = scratch("bframes");
         let src = "color=black:s=64x36:r=30:d=2,format=yuv444p,geq=lum='16+8*(N-25*floor(N/25))':cb=128:cr=128";
-        let x264 = [
-            "-c:v",
-            "libx264",
-            "-g",
-            "24",
-            "-x264-params",
-            "bframes=3:open-gop=1:scenecut=0",
-            "-pix_fmt",
-            "yuv420p",
-        ];
-        film(&file, src, &x264);
-        let tl = timeline(
-            30,
-            (64, 36),
-            2.,
-            vec![Clip {
-                src: file.to_string_lossy().into(),
-                w: 64,
-                h: 36,
-                end: 2.,
-                ..clip("video", "")
-            }],
-        );
-        let mut played = Preview::default();
-        let wrong: Vec<usize> = (0..60)
-            .filter(|k| played.frame(&tl, *k as f64 / 30., (64, 36)) != Preview::default().frame(&tl, *k as f64 / 30., (64, 36)))
-            .collect();
-        assert!(wrong.is_empty(), "{wrong:?}");
+        for (name, codec) in [
+            ("a.mp4", &["-c:v", "h264_videotoolbox", "-allow_sw", "1"][..]),
+            ("b.mp4", &["-c:v", "mpeg2video", "-sc_threshold", "1000000000"]),
+        ] {
+            let file = dir.join(name);
+            film(&file, src, &[codec, &["-bf", "3", "-g", "24", "-pix_fmt", "yuv420p"]].concat());
+            let tl = timeline(
+                30,
+                (64, 36),
+                2.,
+                vec![Clip {
+                    src: file.to_string_lossy().into(),
+                    w: 64,
+                    h: 36,
+                    end: 2.,
+                    ..clip("video", "")
+                }],
+            );
+            let mut played = Preview::default();
+            let wrong: Vec<usize> = (0..60)
+                .filter(|k| played.frame(&tl, *k as f64 / 30., (64, 36)) != Preview::default().frame(&tl, *k as f64 / 30., (64, 36)))
+                .collect();
+            assert!(wrong.is_empty(), "{name} {wrong:?}");
+        }
     }
 
     // Stepping backwards should read the frames before the kept ones in the background while those are
@@ -1476,7 +1474,10 @@ mod tests {
         let lum = "if(between(Y,60,119),16+8*(N-25*floor(N/25)),255*random(1))";
         let src = format!("color=black:s=320x180:r=30:d=4,format=yuv444p,geq=lum='{lum}':cb=128:cr=128");
         for (file, codec) in [
-            ("a.ts", &["-c:v", "libx264", "-g", "24", "-c:a", "aac"][..]),
+            (
+                "a.ts",
+                &["-c:v", "h264_videotoolbox", "-allow_sw", "1", "-bf", "3", "-g", "24", "-c:a", "aac"][..],
+            ),
             ("a.mpg", &["-c:v", "mpeg1video", "-q:v", "3", "-g", "12", "-bf", "2", "-c:a", "ac3"]),
         ] {
             film(
