@@ -40,7 +40,9 @@ use origami_lang::{Clip, Kind, Timeline};
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
-    env, fs, mem,
+    env,
+    ffi::c_void,
+    fs, mem,
     path::{Path, PathBuf},
     process::Command,
     rc::Rc,
@@ -660,9 +662,16 @@ fn fresh(focus: FocusHandle, recent: Vec<PathBuf>) -> Origami {
     }
 }
 
+unsafe extern "C" {
+    fn MTLCreateSystemDefaultDevice() -> *mut c_void;
+}
+
 fn main() {
     crash::guard();
     origami_lang::serve(footprint);
+    thread::spawn(|| unsafe {
+        MTLCreateSystemDefaultDevice();
+    });
     let Ok(script) = env::args_os().nth(1).map(fs::canonicalize).transpose() else {
         return eprintln!("usage: origami-app [script.js]");
     };
