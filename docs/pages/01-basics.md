@@ -78,3 +78,5 @@ origami ir edit.js
 - `render` and `frame` refuse to write over a file the script reads.
 
 The first run writes `origami.lock` beside the script. It lists each media file with its size, length and a fingerprint, so later runs do not read the files again. When a file has changed since, `render` and `frame` stop with `changed since origami.lock (use --relock)`. Add `--relock` to read it again and update the lock. The app and `ir` always do.
+
+The preview also remembers what ffmpeg said about each file's frame rate and timings, in `~/Library/Caches/Origami/media.json` on your Mac, never in the project folder, so a project somebody sends you cannot bring its own answers. An answer is used again only while the file's size and dates and the installed ffmpeg are unchanged. The file is safe to delete; Origami asks ffmpeg again and writes a new one.

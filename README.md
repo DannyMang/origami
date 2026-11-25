@@ -77,6 +77,7 @@ Your scripts, footage and exports stay on your Mac. Origami keeps:
 - `origami.lock` next to each script, which records the media the script uses.
 - Saved versions of each script, unsaved code kept after a crash, your export choices, the Open Recent list, the folder you last made a project in and your answer about reports, in `~/Library/Application Support/Origami`.
 - A crash log in `~/Library/Logs/Origami`.
+- What ffmpeg said about your footage (frame rates, timings and where each clip's first frame lands), in `~/Library/Caches/Origami/media.json`, so the next launch does not ask again. It lists the paths of the media files you have used. It is safe to delete, and macOS may clear it.
 
 What it sends, in short:
 
@@ -101,7 +102,7 @@ Report security problems privately, as [SECURITY.md](SECURITY.md) describes, not
 
 ## Uninstall
 
-Quit Origami and drag it from Applications to the Trash. To remove what it keeps, also delete `~/Library/Application Support/Origami` (saved versions, recovered code, export choices, Open Recent and your answer about reports) and `~/Library/Logs/Origami`. Your scripts, the `origami.lock` beside each one, your footage and your exports stay where they are.
+Quit Origami and drag it from Applications to the Trash. To remove what it keeps, also delete `~/Library/Application Support/Origami` (saved versions, recovered code, export choices, Open Recent and your answer about reports) , `~/Library/Logs/Origami` and `~/Library/Caches/Origami`. Your scripts, the `origami.lock` beside each one, your footage and your exports stay where they are.
 
 ## Licence
 
