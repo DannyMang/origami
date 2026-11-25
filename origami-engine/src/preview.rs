@@ -251,12 +251,13 @@ fn raw(args: &[&str], len: usize) -> Option<Vec<u8>> {
     (out.stdout.len() == len).then_some(out.stdout)
 }
 
-fn still(path: &str, w: usize, h: usize) -> Option<Vec<u8>> {
+fn still(path: &str, w: usize, h: usize, native: bool) -> Option<Vec<u8>> {
     let scale = format!("scale={w}:{h}");
-    picture(path, w, h).or_else(|| raw(&[literal(path), &["-i", path, "-vf", &scale]].concat(), w * h * 4))
+    let read = native.then(|| picture(path, w, h)).flatten();
+    read.or_else(|| raw(&[literal(path), &["-i", path, "-vf", &scale]].concat(), w * h * 4))
 }
 
-pub fn thumb(path: &str, t: f64, w: usize, h: usize) -> Option<Vec<u8>> {
+pub fn thumb(path: &str, t: f64, w: usize, h: usize, native: bool) -> Option<Vec<u8>> {
     let from = |path: &str| {
         let ((lead, down, ..), at) = (probe(path), t.to_string());
         let vf = format!("{down}scale={w}:{h}");
@@ -268,7 +269,8 @@ pub fn thumb(path: &str, t: f64, w: usize, h: usize) -> Option<Vec<u8>> {
     };
     let lrf = Path::new(path).with_extension("LRF");
     let side = Some(lrf.to_string_lossy()).filter(|l| l != path && lrf.is_file());
-    picture(path, w, h).or_else(|| side.and_then(|l| from(&l))).or_else(|| from(path))
+    let read = native.then(|| picture(path, w, h)).flatten();
+    read.or_else(|| side.and_then(|l| from(&l))).or_else(|| from(path))
 }
 
 const DAY: &str = if cfg!(test) { "60" } else { "86400" };
@@ -469,25 +471,26 @@ impl Preview {
         let k = pw as f64 / tl.size.0 as f64;
         let key = |src: &str, tw: usize, th: usize| format!("{src}|{tw}x{th}");
         let shown = |c: &&Clip| c.kind == Kind::Image && c.into == 0 && c.video && live(c, t) && c.scale.max() > 0.;
-        let mut new: Vec<(&str, usize, usize, Option<Px>)> = tl
+        let mut new: Vec<(&str, usize, usize, bool, Option<Px>)> = tl
             .clips
             .iter()
             .filter(shown)
             .map(|c| {
                 let (tw, th, ..) = place(c, (pw as f64, ph as f64), k);
-                (c.src.as_str(), tw as usize, th as usize, None)
+                (c.src.as_str(), tw as usize, th as usize, c.native, None)
             })
-            .filter(|(src, tw, th, _)| !self.stills.keys().any(|k| k.starts_with(&key(src, *tw, *th))))
+            .filter(|(src, tw, th, ..)| !self.stills.keys().any(|k| k.starts_with(&key(src, *tw, *th))))
             .collect();
         new.sort();
         new.dedup();
         if !new.is_empty() {
             spread(&mut new, 1, |_, part| {
-                for (src, tw, th, px) in part {
-                    *px = still(src, *tw, *th).map(Arc::new);
+                for (src, tw, th, native, px) in part {
+                    *px = still(src, *tw, *th, *native).map(Arc::new);
                 }
             });
-            self.stills.extend(new.into_iter().map(|(src, tw, th, px)| (key(src, tw, th), px)));
+            self.stills
+                .extend(new.into_iter().map(|(src, tw, th, _, px)| (key(src, tw, th), px)));
         }
     }
 
@@ -736,7 +739,7 @@ impl Preview {
                     return (px.len() >= tw * th * 4).then_some((px, (tw, th), (x as i64, y as i64)));
                 }
                 let make = || match c.kind {
-                    Kind::Image => still(&c.src, tw, th).map(Arc::new),
+                    Kind::Image => still(&c.src, tw, th, c.native).map(Arc::new),
                     _ => Some(Arc::new(shape::image(c, (size.0 as f64, size.1 as f64), k, i).0)),
                 };
                 (kept(&mut self.stills, &mut self.was.0, base.clone(), make)?, base)
@@ -1034,7 +1037,7 @@ mod tests {
         film(&dir.join("short.LRF"), "color=blue:s=64x36:r=30:d=1", &["-g", "15", "-f", "mp4"]);
         fs::write(dir.join("text.LRF"), "not a video").unwrap();
         let blue = |name: &str, t: f64| {
-            let px = thumb(&dir.join(name).to_string_lossy(), t, 16, 9).unwrap();
+            let px = thumb(&dir.join(name).to_string_lossy(), t, 16, 9, false).unwrap();
             (px[(4 * 16 + 8) * 4] > 128, px[(4 * 16 + 8) * 4 + 2] > 128)
         };
         assert_eq!(
@@ -1056,7 +1059,7 @@ mod tests {
         let fade = "color=black:s=64x36:r=30:d=4,geq=lum='64*floor(T)':cb=128:cr=128";
         let sparse = ["-c:v", "mpeg4", "-g", "9999", "-sc_threshold", "1000000000", "-pix_fmt", "yuv420p"];
         film(&file, fade, &sparse);
-        let grey = |t: f64| thumb(&file.to_string_lossy(), t, 16, 9).map(|px| px[(4 * 16 + 8) * 4]);
+        let grey = |t: f64| thumb(&file.to_string_lossy(), t, 16, 9, false).map(|px| px[(4 * 16 + 8) * 4]);
         let seen = [0.5, 1.5, 2.5, 3.5].map(grey);
         assert!(seen[0].is_some() && seen.windows(2).all(|w| w[0] < w[1]), "{seen:?}");
     }
@@ -1068,7 +1071,7 @@ mod tests {
         let file = scratch("jpeg").join("bars.jpg");
         film(&file, "testsrc=s=640x360", &["-frames:v", "1"]);
         let path = file.to_string_lossy();
-        assert!(still(&path, 16, 9).is_some() && thumb(&path, 0., 16, 9).is_some());
+        assert!(still(&path, 16, 9, false).is_some() && thumb(&path, 0., 16, 9, false).is_some());
     }
 
     // In a montage of many short clips the preview should warm up a decoder for the next clip only,

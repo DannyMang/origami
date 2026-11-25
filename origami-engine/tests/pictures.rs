@@ -40,6 +40,11 @@ fn grey(dir: &Path, file: &str, (w, h): (usize, usize)) -> Vec<u8> {
     px
 }
 
+fn turned(jpeg: &[u8]) -> Vec<u8> {
+    let exif = b"\xff\xe1\x00\x22Exif\0\0MM\0\x2a\0\0\0\x08\0\x01\x01\x12\0\x03\0\0\0\x01\0\x06\0\0\0\0\0\0";
+    [&jpeg[..2], exif, &jpeg[2..]].concat()
+}
+
 // A HEIC picture, the tiled kind phones write, and a JPEG turned on its side by its EXIF tag are each read
 // at their upright size, drawn the right way up in the preview and exported with the same picture, and a
 // dry run names a layer file that is there to be read, while an upright JPEG is read as before.
@@ -67,9 +72,7 @@ fn pictures_macos_reads_show_and_export() {
     lavfi("testsrc2=s=4032x3024", "big.png");
     sips("half.png", "half.heic");
     sips("big.png", "big.heic");
-    let jpeg = fs::read(dir.join("half.jpg")).unwrap();
-    let exif = b"\xff\xe1\x00\x22Exif\0\0MM\0\x2a\0\0\0\x08\0\x01\x01\x12\0\x03\0\0\0\x01\0\x06\0\0\0\0\0\0";
-    fs::write(dir.join("turned.jpg"), [&jpeg[..2], exif, &jpeg[2..]].concat()).unwrap();
+    fs::write(dir.join("turned.jpg"), turned(&fs::read(dir.join("half.jpg")).unwrap())).unwrap();
     let script = |src: &str| fs::write(dir.join("edit.js"), src).unwrap();
     let size = |file: &str| {
         script(&format!("image('{file}').for(1)"));
@@ -101,4 +104,49 @@ fn pictures_macos_reads_show_and_export() {
     assert!(px.iter().max().unwrap() - px.iter().min().unwrap() > 100);
     script("image('half.jpg').for(1)");
     assert!(!origami(&dir, &["render", "edit.js", "out.mp4", "--dry-run"]).contains(".bgra"));
+}
+
+// Once origami.lock knows an upright JPEG, drawing and exporting it start only the command and its script
+// helper, never the picture reader, and when the file gains a turn tag the next read of the script marks it
+// for the reader, which is then started to draw it.
+#[test]
+fn upright_jpegs_start_no_reader() {
+    let dir = env::temp_dir().join("origami-engine-upright");
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let src = "color=black:s=64x36,drawbox=w=32:h=36:color=white:t=fill";
+    made(
+        &dir,
+        &mut ffmpeg(),
+        &["-v", "error", "-f", "lavfi", "-i", src, "-frames:v", "1", "a.jpg"],
+    );
+    fs::write(dir.join("edit.js"), "settings({ size: [64, 64] })\nimage('a.jpg').for(1)").unwrap();
+    let marked = || {
+        let tl: serde_json::Value = serde_json::from_str(&origami(&dir, &["ir", "edit.js"])).unwrap();
+        (tl["clips"][0]["native"].as_bool(), tl["clips"][0]["w"].as_u64())
+    };
+    let starts = |args: &[&str]| {
+        let log = dir.join("dyld.txt");
+        let _ = fs::remove_file(&log);
+        let run = Command::new(env!("CARGO_BIN_EXE_origami"))
+            .args(args)
+            .current_dir(&dir)
+            .env("DYLD_PRINT_LIBRARIES", "1")
+            .env("DYLD_PRINT_TO_FILE", &log)
+            .output();
+        assert!(run.unwrap().status.success(), "{args:?}");
+        let loads = fs::read_to_string(&log).unwrap();
+        loads.lines().filter(|l| l.ends_with(env!("CARGO_BIN_EXE_origami"))).count()
+    };
+    assert_eq!(marked(), (None, Some(64)));
+    assert_eq!(
+        [&["frame", "edit.js", "0.5", "shown.png"][..], &["render", "edit.js", "out.mp4"]].map(starts),
+        [2, 2]
+    );
+    fs::write(dir.join("a.jpg"), turned(&fs::read(dir.join("a.jpg")).unwrap())).unwrap();
+    assert_eq!(marked(), (Some(true), Some(36)));
+    assert_eq!(
+        [&["frame", "edit.js", "0.5", "shown.png"][..], &["render", "edit.js", "out.mp4"]].map(starts),
+        [3, 3]
+    );
 }

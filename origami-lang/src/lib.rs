@@ -49,6 +49,7 @@ struct Media {
     h: u32,
     video: bool,
     audio: bool,
+    native: bool,
 }
 
 type Lock = BTreeMap<String, Media>;
@@ -159,6 +160,7 @@ fn scan(path: &Path, prev: Option<&Media>, relock: bool, rel: &str) -> Result<Me
             h,
             video: true,
             audio: false,
+            native: true,
         });
     }
     let named = literal(&path.to_string_lossy());
@@ -203,6 +205,7 @@ fn scan(path: &Path, prev: Option<&Media>, relock: bool, rel: &str) -> Result<Me
         h: dim(if turn { "width" } else { "height" }),
         video: has("video"),
         audio: has("audio"),
+        native: false,
     })
 }
 
@@ -238,6 +241,7 @@ fn media(path: &Path, old: &Lock, new: &mut Lock, relock: bool, rel: &str) -> Re
                         h: 0,
                         video: true,
                         audio: true,
+                        native: false,
                     })
                 }
                 false => probed.get(rel).filter(|m| same(m)).cloned(),
@@ -246,7 +250,10 @@ fn media(path: &Path, old: &Lock, new: &mut Lock, relock: bool, rel: &str) -> Re
         }
     };
     new.insert(rel.into(), m.clone());
-    Ok(serde_json::json!({ "path": path, "dur": m.dur, "w": m.w, "h": m.h, "video": m.video, "audio": m.audio }).to_string())
+    Ok(
+        serde_json::json!({ "path": path, "dur": m.dur, "w": m.w, "h": m.h, "video": m.video, "audio": m.audio, "native": m.native })
+            .to_string(),
+    )
 }
 
 type Find = fn(&Path, &str) -> Option<PathBuf>;
@@ -2020,8 +2027,7 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
         fs::write(dir.join("live.m3u8"), "#EXTM3U\n#EXT-X-TARGETDURATION:100000\n#EXTINF:1,\na.ts\n").unwrap();
         fs::write(dir.join("nest.mp4"), "ffconcat version 1.0\nfile live.m3u8\n").unwrap();
         let (size, mtime) = stat(&dir.join("nest.mp4")).unwrap();
-        let entry =
-            serde_json::json!({ "size": size, "mtime": mtime, "sha": "", "dur": 5, "w": 64, "h": 36, "video": true, "audio": false });
+        let entry = serde_json::json!({ "size": size, "mtime": mtime, "sha": "", "dur": 5, "w": 64, "h": 36, "video": true, "audio": false, "native": false });
         fs::write(dir.join("origami.lock"), serde_json::json!({ "nest.mp4": entry }).to_string()).unwrap();
         for (src, says) in [
             ("video('live')", "line 1: video(\"live\")"),

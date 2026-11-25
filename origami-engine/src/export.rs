@@ -169,7 +169,7 @@ fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path, (k, (w, h)): (f64, (
         let solid = c.kind == Kind::Color && text::rgba(&c.src)[3] == 255 && c.fade == (0., 0.);
         let (video, mut cut) = (video && tw >= 1. && th >= 1., String::new());
         let layer = match c.kind {
-            Kind::Image if video => picture(&c.src, tw as usize, th as usize).map(|px| ("image", px)),
+            Kind::Image if video && c.native => picture(&c.src, tw as usize, th as usize).map(|px| ("image", px)),
             Kind::Text | Kind::Rect | Kind::Line | Kind::Path | Kind::Color if video && !solid => {
                 Some(("text", shape::image(c, size, k, 0).0))
             }
@@ -962,7 +962,7 @@ mod tests {
         ];
         let made = origami_lang::output(ffmpeg().args(args)).unwrap().stdout;
         let shown = Preview::default().frame(&tl, 0.5, (16, 16));
-        let thumb = crate::thumb(&src, 0., 16, 16).unwrap();
+        let thumb = crate::thumb(&src, 0., 16, 16, false).unwrap();
         let white = [made[8 * 16 + 8], shown[(8 * 16 + 8) * 4], thumb[(8 * 16 + 8) * 4]].map(|v| v > 200);
         assert_eq!((tl.clips[0].w, white), (16, [true; 3]));
     }
