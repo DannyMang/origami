@@ -729,6 +729,36 @@ mod tests {
         assert!((late / whole - 1.).abs() < 0.1, "{whole} {late}");
     }
 
+    // AV1 films, 8 and 10-bit, in Matroska and 4:4:4, export whole and in part, each frame as bright
+    // as the preview shows it.
+    #[test]
+    fn av1_exports_match_the_preview() {
+        let _tidy = TIDY.read();
+        let dir = scratch("av1-out");
+        let out = dir.join("out.mp4").to_string_lossy().to_string();
+        for name in ["8.mp4", "10.mp4", "8.mkv", "444.mp4"] {
+            fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/av1").join(name), dir.join(name)).unwrap();
+            let (tl, mut pv) = (
+                script(&dir, &format!("settings({{ size: [64, 80] }})\nvideo('{name}')")),
+                Preview::default(),
+            );
+            let n = (tl.duration * 30.).round() as usize;
+            let shown: Vec<u8> = (0..n).map(|k| pv.frame(&tl, k as f64 / 30., (64, 80))[(40 * 64 + 8) * 4]).collect();
+            for (range, part) in [(None, &shown[..]), (Some((0.5, 1.)), &shown[15..30])] {
+                let opts = Opts { range, ..Opts::default() };
+                render(&tl, &out, &opts, |_| {}).unwrap();
+                let args = ["-v", "error", "-i", &out, "-f", "rawvideo", "-pix_fmt", "gray", "-"];
+                let px = origami_lang::output(ffmpeg().args(args)).unwrap().stdout;
+                let made: Vec<u8> = px.chunks(64 * 80).map(|f| f[40 * 64 + 8]).collect();
+                assert_eq!(made.len(), part.len(), "{name}");
+                assert!(
+                    part.iter().zip(&made).all(|(a, b)| a.abs_diff(*b) < 24),
+                    "{name}: {part:?} {made:?}"
+                );
+            }
+        }
+    }
+
     // An export onto a file the script reads, spelled another way (different case, a detour through ..,
     // a symlink), is refused and leaves the file whole, and a link or a named pipe planted at the
     // destination is replaced, not written through.

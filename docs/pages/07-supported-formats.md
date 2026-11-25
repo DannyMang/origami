@@ -1,6 +1,6 @@
 # Supported formats
 
-Origami reads video and sound with the ffmpeg inside the app, and HEIC, AVIF, JPEG XL and WebP pictures with macOS itself. Everything listed here was tried on an M3 Mac with macOS 15.6.
+Origami reads video and sound with the ffmpeg inside the app, which includes the dav1d AV1 decoder, and HEIC, AVIF, JPEG XL and WebP pictures with macOS itself. Everything listed here was tried on an M3 Mac with macOS 15.6.
 
 ## Video
 
@@ -8,6 +8,7 @@ These work in `video`, in the preview and in exports:
 
 - H.264
 - HEVC: 8-bit, 10-bit and HLG HDR phone footage. HDR is shown as it is stored, not adjusted for a normal screen.
+- AV1: 8-bit, 10-bit and 4:4:4
 - ProRes 422 and 4444
 - DNxHR, GoPro CineForm and DV
 - VP8 and VP9, also 10-bit
@@ -18,7 +19,7 @@ in MP4, MOV, MKV, WebM, MTS, TS, MPG, AVI, FLV and WMV files.
 
 Transparency stored in HEVC or VP9 video is dropped: the clip shows solid.
 
-AV1 video is not read by the app's ffmpeg, which has no software AV1 decoder. The script stops with `this is AV1 video, which this Mac cannot decode: convert it to H.264 or HEVC first` on the clip's line. A copy of Origami built from source uses the ffmpeg on your PATH, and reads AV1 when that ffmpeg can decode it without hardware.
+AV1 video is decoded by the Mac's own AV1 hardware where it takes the film, which is 8-bit and 10-bit 4:2:0 on an M3 or later chip, and by dav1d everywhere else: on M1 and M2 Macs and for 4:4:4 films. The M1 and M2 path has not been run on those Macs.
 
 ## Pictures
 
@@ -45,7 +46,7 @@ The first time a script uses a file, Origami decodes one frame of it. A file tha
 
 ```
 line 3: image("logo.svg"): SVG pictures are not supported: export it as PNG first
-line 2: video("clip.mkv"): this is AV1 video, which this Mac cannot decode: convert it to H.264 or HEVC first
+line 2: video("clip.mkv"): this is unrecognised video, which Origami cannot read: convert it to H.264, HEVC or ProRes first
 line 5: video("take.mp4"): this H264 video cannot be read: the file may be damaged
 ```
 

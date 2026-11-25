@@ -10,7 +10,7 @@ video("clips/intro.mp4")
 
 Playlist files (`.m3u8`, `.m3u` and ffmpeg concat lists) are not supported, in `video`, `sound` or `image`: use a video or sound file.
 
-Origami reads H.264, HEVC (also 10-bit and HDR phone footage), ProRes, DNxHR, VP8, VP9, MPEG-2 and Motion JPEG video, GIFs, and AAC, MP3, Opus, Vorbis, FLAC, ALAC, WAV and AIFF sound. AV1 video is the exception: the app's ffmpeg cannot decode it, and the script says so on the clip's line. Convert it to H.264 or HEVC first. [Supported formats](supported-formats.html) has the whole list.
+Origami reads H.264, HEVC (also 10-bit and HDR phone footage), AV1, ProRes, DNxHR, VP8, VP9, MPEG-2 and Motion JPEG video, GIFs, and AAC, MP3, Opus, Vorbis, FLAC, ALAC, WAV and AIFF sound. AV1 video plays and exports on every supported Mac: the Mac's own AV1 hardware decodes it on an M3 or later chip, and the included dav1d decoder does on M1 and M2 Macs and for the films that hardware does not take, such as 4:4:4 ones, with the same pictures either way. [Supported formats](supported-formats.html) has the whole list.
 
 ## sound
 

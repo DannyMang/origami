@@ -1,5 +1,6 @@
-Licence texts and copyright notices of the open-source crates in Origami and of the ffmpeg it carries.
-THIRD-PARTY.md lists each crate with its licence and source, and says how ffmpeg was built.
+Licence texts and copyright notices of the open-source crates in Origami and of the ffmpeg it carries,
+with the dav1d built into that ffmpeg. THIRD-PARTY.md lists each crate with its licence and source, and
+says how ffmpeg and dav1d were built.
 
 ==============================================================================
 addr2line 0.25.1, aligned 0.4.3, arrayvec 0.7.8, as-slice 0.2.1, async-channel 1.9.0, async-channel 2.5.0, async-compression 0.4.52, async-executor 1.14.1, async-fs 2.2.0, async-global-executor 2.4.1, async-io 2.6.0, async-lock 3.5.0, async-net 2.0.0, async-process 2.5.0, async-signal 0.2.14, async-std 1.13.2, async-task 4.7.1, atomic 0.5.3, atomic-waker 1.1.2, autocfg 1.5.1, backtrace 0.3.76, base64 0.22.1, bitflags 1.3.2, bitflags 2.13.2, bitstream-io 4.10.0, blocking 1.7.0, bstr 1.13.1, bumpalo 3.20.3, cc 1.11.1, cexpr 0.6.0, cfg-if 1.0.5, cgl 0.3.2, cocoa 0.26.0, cocoa-foundation 0.2.0, compression-codecs 0.4.47, compression-core 0.4.34, concurrent-queue 2.5.0, core-foundation 0.10.0, core-foundation 0.9.4, core-foundation-sys 0.8.7, core-graphics 0.24.0, core-graphics-types 0.1.3, core-graphics-types 0.2.0, core-graphics2 0.4.1, core-text 21.0.0, core-video 0.4.3, coreaudio-rs 0.13.0, crossbeam-deque 0.8.8, crossbeam-epoch 0.9.21, crossbeam-queue 0.3.14, crossbeam-utils 0.8.23, data-url 0.3.2, displaydoc 0.2.7, either 1.19.0, equivalent 1.0.3, errno 0.3.14, euclid 0.22.14, event-listener 2.5.3, event-listener 5.4.2, event-listener-strategy 0.5.4, fastrand 1.9.0, fastrand 2.5.0, filetime 0.2.29, find-msvc-tools 0.1.15, fixedbitset 0.5.9, flate2 1.1.11, fnv 1.0.7, form_urlencoded 1.2.2, futures-lite 1.13.0, futures-lite 2.6.1, gif 0.14.2, gimli 0.32.3, git2 0.20.4, glob 0.3.4, hashbrown 0.14.5, hashbrown 0.15.5, hashbrown 0.16.1, hashbrown 0.17.1, heck 0.4.1, heck 0.5.0, httparse 1.10.1, hyper-rustls 0.27.10, idna 1.1.0, idna_adapter 1.2.2, indexmap 2.14.2, intrusive-collections 0.10.3, io-surface 0.16.1, itertools 0.13.0, itertools 0.14.0, itertools 0.15.0, jobserver 0.1.35, lazy_static 1.5.1, libgit2-sys 0.18.4+1.9.3, libz-sys 1.1.28, lock_api 0.4.14, log 0.4.35, metal 0.29.0, mime 0.3.18, num-bigint 0.4.8, num-bigint 0.5.1, num-derive 0.4.2, num-integer 0.1.47, num-rational 0.4.2, num-traits 0.2.19, num_cpus 1.17.0, object 0.37.3, object 0.39.1, once_cell 1.21.4, parking 2.2.1, parking_lot 0.12.5, parking_lot_core 0.9.12, percent-encoding 2.3.2, piper 0.2.5, pkg-config 0.3.34, png 0.17.16, png 0.18.1, polling 3.11.0, pollster 0.2.5, rayon 1.12.0, rayon-core 1.13.0, regex 1.13.1, regex-automata 0.4.18, regex-syntax 0.8.11, roxmltree 0.20.0, rustc-demangle 0.1.28, rustc-hash 1.1.0, rustc_version 0.4.1, rustix 0.38.44, rustix 1.1.6, rustls 0.23.46, rustls-native-certs 0.8.5, rustls-pemfile 2.2.0, scopeguard 1.2.0, security-framework 3.7.0, security-framework-sys 2.17.0, serde_fmt 1.1.0, signal-hook-registry 1.4.8, simplecss 0.2.2, smallvec 1.16.5, smol 2.0.2, socket2 0.6.5, stable_deref_trait 1.2.1, stacker 0.1.25, sval 2.22.0, sval_buffer 2.22.0, sval_dynamic 2.22.0, sval_fmt 2.22.0, sval_json 2.22.0, sval_ref 2.22.0, sval_serde 2.22.0, svgtypes 0.15.3, syn 1.0.109, system-configuration 0.6.1, system-configuration-sys 0.6.0, tempfile 3.27.0, ttf-parser 0.25.1, unicase 2.10.0, unicode-bidi 0.3.18, unicode-bidi-mirroring 0.4.0, unicode-ccc 0.4.0, unicode-properties 0.1.5, unicode-vo 0.1.0, unicode-width 0.2.3, url 2.5.8, uuid 1.29.2, value-bag 1.14.1, value-bag-serde1 1.14.1, value-bag-sval2 1.14.1, vcpkg 0.2.15, version_check 0.9.5, waker-fn 1.2.0, wasm-bindgen 0.2.130, wasm-bindgen-macro 0.2.130, wasm-bindgen-macro-support 0.2.130, wasm-bindgen-shared 0.2.130, weezl 0.1.12, xattr 0.2.3, zed-async-tar 0.5.0-zed, zed-font-kit 0.14.1-zed
@@ -17195,3 +17196,31 @@ necessary.  Here is a sample; alter the names:
   Ty Coon, President of Vice
 
 That's all there is to it!
+
+==============================================================================
+dav1d 1.5.5 (https://code.videolan.org/videolan/dav1d), built into ffmpeg and ffprobe
+==============================================================================
+
+Copyright © 2018-2025, VideoLAN and dav1d authors
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.

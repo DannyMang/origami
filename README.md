@@ -91,7 +91,7 @@ What it sends, in short:
 
 - Apple silicon and macOS 15 or later only.
 - A project is a script file (`.js`). There is no import from other editors.
-- The included ffmpeg has no software AV1 decoder, so AV1 video is refused with a message on its script line: convert it to H.264 or HEVC first. SVG pictures are not read: export them as PNG. [Supported formats](docs/pages/07-supported-formats.md) lists what works.
+- SVG pictures are not read: export them as PNG first. [Supported formats](docs/pages/07-supported-formats.md) lists what works.
 
 ## Report a bug
 

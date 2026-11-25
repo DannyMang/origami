@@ -210,12 +210,11 @@ fn scan(path: &Path, prev: Option<&Media>, relock: bool, rel: &str) -> Result<Me
 }
 
 fn unread(name: Option<&str>, what: &str, said: &str) -> String {
-    let (kind, name) = (name, name.map_or("unrecognised".into(), str::to_uppercase));
-    match (kind, what) {
-        (Some("av1"), "video") => "this is AV1 video, which this Mac cannot decode: convert it to H.264 or HEVC first".into(),
+    let name = name.map_or("unrecognised".into(), str::to_uppercase);
+    match what {
         _ if !said.contains("no decoder found") => format!("this {name} {what} cannot be read: the file may be damaged"),
-        (_, "picture") => format!("{name} pictures are not supported: export it as PNG first"),
-        (_, "video") => format!("this is {name} video, which Origami cannot read: convert it to H.264, HEVC or ProRes first"),
+        "picture" => format!("{name} pictures are not supported: export it as PNG first"),
+        "video" => format!("this is {name} video, which Origami cannot read: convert it to H.264, HEVC or ProRes first"),
         _ => format!("this is {name} sound, which Origami cannot read: convert it to WAV, MP3 or AAC first"),
     }
 }
@@ -2106,18 +2105,8 @@ stack(text('b').for(2).pos(a.pos).rotate(a.rotate).opacity(a.opacity).shown(a.sc
             assert_eq!(fails(&dir, src), says);
         }
         assert_eq!(
-            [
-                unread(
-                    Some("av1"),
-                    "video",
-                    "Your platform doesn't support hardware accelerated AV1 decoding."
-                ),
-                unread(Some("h264"), "video", "Invalid NAL unit size"),
-            ],
-            [
-                "this is AV1 video, which this Mac cannot decode: convert it to H.264 or HEVC first",
-                "this H264 video cannot be read: the file may be damaged",
-            ]
+            unread(Some("h264"), "video", "Invalid NAL unit size"),
+            "this H264 video cannot be read: the file may be damaged"
         );
         let (png, src) = (dir.join("i.png"), "image('i.png').for(1)");
         run(&dir, src).unwrap();
