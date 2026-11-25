@@ -210,7 +210,11 @@ fn route<A: Action + Clone>(cx: &mut App, f: fn(&mut Origami, &A, &mut Window, &
 impl Origami {
     pub fn hoist(&self, cx: &mut Context<Self>) {
         let recent = self.recent.clone();
-        cx.spawn(async move |_, cx| cx.update(|cx| cx.set_menus(menus(&recent)))).detach();
+        cx.spawn(async move |_, cx| {
+            cx.background_executor().spawn(async {}).await;
+            cx.update(|cx| cx.set_menus(menus(&recent)))
+        })
+        .detach();
     }
 
     pub fn listen(&self, root: Div, cx: &mut Context<Self>) -> Div {

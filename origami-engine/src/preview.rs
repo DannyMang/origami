@@ -11,11 +11,13 @@ use lru::LruCache;
 use origami_lang::{Clip, Kind, Part, Timeline, Val, ffmpeg, ffprobe, literal, output, start, watch};
 use std::{
     collections::HashMap,
+    ffi::{c_char, c_void},
     fs,
     io::{BufReader, Read},
     num::NonZeroUsize,
     path::Path,
-    process::{Child, Command, Stdio},
+    process::{Child, Stdio},
+    ptr,
     sync::{
         Arc, LazyLock, Mutex,
         mpsc::{self, Receiver, Sender, TryRecvError},
@@ -44,12 +46,15 @@ type Info = (
 const AGAIN: u32 = 300;
 static KNOWN: LazyLock<Mutex<HashMap<String, (Info, u32)>>> = LazyLock::new(Mutex::default);
 static LANDS: LazyLock<Mutex<HashMap<(String, u64), (f64, u32)>>> = LazyLock::new(Mutex::default);
+static TURNS: LazyLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = LazyLock::new(Mutex::default);
+unsafe extern "C" {
+    fn sysctlbyname(name: *const c_char, old: *mut c_void, size: *mut usize, new: *const c_void, len: usize) -> i32;
+}
+
 static RAM: LazyLock<u64> = LazyLock::new(|| {
-    let told = output(Command::new("/usr/sbin/sysctl").args(["-n", "hw.memsize"])).map(|o| o.stdout);
-    String::from_utf8_lossy(&told.unwrap_or_default())
-        .trim()
-        .parse()
-        .unwrap_or(u64::MAX)
+    let (mut ram, mut size) = (u64::MAX, size_of::<u64>());
+    unsafe { sysctlbyname(c"hw.memsize".as_ptr(), (&raw mut ram).cast(), &mut size, ptr::null(), 0) };
+    ram
 });
 
 fn fit(ram: u64) -> (usize, usize) {
@@ -61,6 +66,10 @@ fn lean(path: &str) -> &'static [&'static str] {
         true => &["-probesize", "32768", "-analyzeduration", "0"],
         false => &[],
     }
+}
+
+fn turn(key: String) -> Arc<Mutex<()>> {
+    TURNS.lock().unwrap().entry(key).or_default().clone()
 }
 
 fn ask(path: &str, show: &str) -> String {
@@ -123,14 +132,20 @@ fn probe(path: &str) -> Info {
         let info = (lead, down, n, d, num(dur), tb, late, start, stamps.into(), ts);
         (info, if text.is_empty() { AGAIN } else { u32::MAX })
     };
-    let known = KNOWN.lock().unwrap().get_mut(path).and_then(|(info, left)| {
-        *left = left.checked_sub(1)?;
-        Some(info.clone())
-    });
-    known.unwrap_or_else(|| {
-        let made = make();
-        KNOWN.lock().unwrap().insert(path.into(), made.clone());
-        made.0
+    let known = || {
+        KNOWN.lock().unwrap().get_mut(path).and_then(|(info, left)| {
+            *left = left.checked_sub(1)?;
+            Some(info.clone())
+        })
+    };
+    known().unwrap_or_else(|| {
+        let turn = turn(path.into());
+        let _held = turn.lock();
+        known().unwrap_or_else(|| {
+            let made = make();
+            KNOWN.lock().unwrap().insert(path.into(), made.clone());
+            made.0
+        })
     })
 }
 
@@ -146,14 +161,20 @@ fn lands(src: &str, at: f64, start: f64) -> f64 {
         (at.max(start) + pts.unwrap_or(0.), if pts.is_none() { AGAIN } else { u32::MAX })
     };
     let key = (src.to_string(), at.to_bits());
-    let known = LANDS.lock().unwrap().get_mut(&key).and_then(|(found, left)| {
-        *left = left.checked_sub(1)?;
-        Some(*found)
-    });
-    known.unwrap_or_else(|| {
-        let made = make();
-        LANDS.lock().unwrap().insert(key, made);
-        made.0
+    let known = || {
+        LANDS.lock().unwrap().get_mut(&key).and_then(|(found, left)| {
+            *left = left.checked_sub(1)?;
+            Some(*found)
+        })
+    };
+    known().unwrap_or_else(|| {
+        let turn = turn(format!("{src}|{at}"));
+        let _held = turn.lock();
+        known().unwrap_or_else(|| {
+            let made = make();
+            LANDS.lock().unwrap().insert(key.clone(), made);
+            made.0
+        })
     })
 }
 
@@ -167,11 +188,12 @@ pub fn learn(tl: &Timeline, from: f64) {
 
 pub fn warm(tl: &Timeline, from: f64) {
     learn(tl, from);
-    let used = tl
-        .clips
-        .iter()
-        .filter(|c| c.end > from && c.kind == Kind::Video && Path::new(&c.src).is_file());
-    let mut seeks: Vec<(String, f64, f64)> = used
+    aim(tl.clips.iter().filter(|c| c.end > from));
+}
+
+fn aim<'a>(clips: impl Iterator<Item = &'a Clip>) {
+    let mut seeks: Vec<(String, f64, f64)> = clips
+        .filter(|c| c.kind == Kind::Video && Path::new(&c.src).is_file())
         .filter_map(|c| match probe(&c.src) {
             (.., late, start, _, false) if late > 0 => Some((c.src.clone(), c.src_in, start)),
             _ => None,
@@ -180,11 +202,21 @@ pub fn warm(tl: &Timeline, from: f64) {
         .collect();
     seeks.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
     seeks.dedup();
-    spread(&mut seeks, 1, |_, part| {
-        for (src, at, start) in part.iter() {
-            lands(src, *at, *start);
-        }
-    });
+    if !seeks.is_empty() {
+        spread(&mut seeks, 1, |_, part| {
+            for (src, at, start) in part.iter() {
+                lands(src, *at, *start);
+            }
+        });
+    }
+}
+
+pub fn near(tl: &Timeline, t: f64) {
+    let soon = |c: &&Clip| c.kind == Kind::Video && t < c.start && c.start < t + 1.;
+    let next = tl.clips.iter().filter(soon).map(|c| c.start).fold(f64::MAX, f64::min);
+    let used = |c: &&Clip| c.kind == Kind::Video && (c.video && live(c, t) || soon(c) && c.start == next);
+    study(tl.clips.iter().filter(used).map(|c| c.src.clone()).collect());
+    aim(tl.clips.iter().filter(used));
 }
 
 fn study(mut new: Vec<String>) {
@@ -425,12 +457,39 @@ impl Preview {
             .position(|(o, d)| o == key && d.next <= k && k <= d.next + reach(&key.0))
     }
 
+    fn gather(&mut self, tl: &Timeline, t: f64, (pw, ph): (usize, usize)) {
+        let k = pw as f64 / tl.size.0 as f64;
+        let key = |src: &str, tw: usize, th: usize| format!("{src}|{tw}x{th}");
+        let shown = |c: &&Clip| c.kind == Kind::Image && c.into == 0 && c.video && live(c, t) && c.scale.max() > 0.;
+        let mut new: Vec<(&str, usize, usize, Option<Px>)> = tl
+            .clips
+            .iter()
+            .filter(shown)
+            .map(|c| {
+                let (tw, th, ..) = place(c, (pw as f64, ph as f64), k);
+                (c.src.as_str(), tw as usize, th as usize, None)
+            })
+            .filter(|(src, tw, th, _)| !self.stills.keys().any(|k| k.starts_with(&key(src, *tw, *th))))
+            .collect();
+        new.sort();
+        new.dedup();
+        if !new.is_empty() {
+            spread(&mut new, 1, |_, part| {
+                for (src, tw, th, px) in part {
+                    *px = still(src, *tw, *th).map(Arc::new);
+                }
+            });
+            self.stills.extend(new.into_iter().map(|(src, tw, th, px)| (key(src, tw, th), px)));
+        }
+    }
+
     pub fn ready(&mut self, tl: &Timeline, t: f64, (pw, ph): (usize, usize)) -> bool {
         let (k, shown) = (pw as f64 / tl.size.0 as f64, |c: &&Clip| {
             c.kind == Kind::Video && c.video && live(c, t)
         });
         let lrf = |c: &Clip| Path::new(&c.src).with_extension("LRF").to_string_lossy().into_owned();
         study(tl.clips.iter().filter(shown).flat_map(|c| [c.src.clone(), lrf(c)]).collect());
+        near(tl, t);
         self.shown = tl.clips.iter().filter(shown).count() + 1;
         let mut all = true;
         for c in tl.clips.iter().filter(shown) {
@@ -868,6 +927,10 @@ impl Preview {
             self.decoders
                 .retain(|(_, d)| d.child.as_ref().is_none_or(|c| !primed.contains(&c.id())));
         }
+        if !self.fast {
+            near(tl, t);
+        }
+        self.gather(tl, t, (pw, ph));
         let mut out = [0, 0, 0, 255].repeat(pw * ph);
         (self.rough, self.back) = (false, !self.fast && t < self.at && self.at - t < 5. / tl.fps as f64);
         self.shown = tl.clips.iter().filter(|c| c.kind == Kind::Video && c.video && live(c, t)).count() + 1;
@@ -910,6 +973,7 @@ mod tests {
         export::hold,
         tests::{TIDY, clip, film, scratch, timeline},
     };
+    use std::process::Command;
 
     // While scrubbing, a sidecar that cannot be read, is a playlist or a named pipe, or ends before the
     // full file does should give way to the full file at once instead of leaving the clip out.
@@ -1289,6 +1353,60 @@ mod tests {
         assert!(probe(&path).6 > 0 && found(&tl) == 0);
         warm(&tl, 0.);
         assert_eq!(found(&tl), 6);
+    }
+
+    // Before a frame is drawn, the first frames of the footage with B-frames on screen and of the cut
+    // that starts next are worked out together, and those of later cuts are left for later.
+    #[test]
+    fn frames_find_their_first_frames_together() {
+        let file = scratch("near").join("a.mp4");
+        film(&file, "testsrc=s=64x36:r=30:d=2", &["-bf", "2"]);
+        let path = file.to_string_lossy().into_owned();
+        let cut = |i: usize, start: f64| Clip {
+            src: path.clone(),
+            w: 64,
+            h: 36,
+            start,
+            end: start + 0.2,
+            src_in: 0.1 + i as f64 * 0.13,
+            ..clip("video", "")
+        };
+        let tl = timeline(
+            30,
+            (64, 36),
+            0.8,
+            vec![cut(0, 0.), cut(1, 0.), cut(2, 0.2), cut(3, 0.2), cut(4, 0.4)],
+        );
+        near(&tl, 0.);
+        let lands = LANDS.lock().unwrap();
+        let found: Vec<bool> = tl
+            .clips
+            .iter()
+            .map(|c| lands.contains_key(&(path.clone(), c.src_in.to_bits())))
+            .collect();
+        assert_eq!(found, [true, true, true, true, false]);
+    }
+
+    // Several pictures that first appear in the same frame are read together, and each still lands in
+    // its own place and draws the same again from memory.
+    #[test]
+    fn pictures_in_one_frame_keep_their_places() {
+        let dir = scratch("pictures");
+        let at = |color: &str, x: f64| {
+            let file = dir.join(format!("{color}.png"));
+            film(&file, &format!("color={color}:s=40x20"), &["-frames:v", "1"]);
+            Clip {
+                src: file.to_string_lossy().into(),
+                pos: (Some(Val::Fixed(x)), Some(Val::Fixed(0.))),
+                ..clip("image", "")
+            }
+        };
+        let tl = timeline(30, (80, 20), 1., vec![at("red", 0.), at("blue", 0.5)]);
+        let mut pv = Preview::default();
+        let px = pv.frame(&tl, 0., (80, 20));
+        let bgr = |x: usize| (px[x * 4] > 200, px[x * 4 + 2] > 200);
+        assert_eq!((bgr(10), bgr(50)), ((false, true), (true, false)));
+        assert_eq!(pv.frame(&tl, 0., (80, 20)), px);
     }
 
     // A file ffprobe could not read should be asked about again after a few hundred lookups rather

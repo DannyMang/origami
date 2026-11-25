@@ -35,12 +35,14 @@ use gpui::{
 };
 use image::{Frame, RgbaImage};
 use mouse::Grab;
-use origami_engine::{Player, Preview, footprint, halt, peaks, thumb, warm};
+use origami_engine::{Player, Preview, footprint, halt, near, peaks, thumb, warm};
 use origami_lang::{Clip, Kind, Timeline};
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
-    env, fs, mem,
+    env,
+    ffi::c_void,
+    fs, mem,
     path::{Path, PathBuf},
     process::Command,
     rc::Rc,
@@ -295,15 +297,16 @@ impl Origami {
             Some(tl) => self.took(tl, cx),
             None => self.reading = true,
         }
-        let wait = self.reading;
+        let job = script.clone();
+        let eval = self.reading.then(|| {
+            cx.background_executor().spawn(async move {
+                let got = early.and_then(|e| e.2.recv().ok());
+                got.unwrap_or_else(|| origami_lang::eval(&job, true, footprint))
+            })
+        });
         cx.spawn(async move |this, cx| {
-            if wait {
-                let job = script.clone();
-                let eval = async move {
-                    let got = early.and_then(|e| e.2.recv().ok());
-                    got.unwrap_or_else(|| origami_lang::eval(&job, true, footprint))
-                };
-                let tl = cx.background_executor().spawn(eval).await;
+            if let Some(eval) = eval {
+                let tl = eval.await;
                 this.update(cx, |this, cx| {
                     if this.script == script {
                         this.took(tl, cx);
@@ -383,13 +386,13 @@ impl Origami {
         self.busy = true;
         let (scrub, hop) = (self.tl.proxy && self.scrubbing, self.tl.proxy && still && self.shown != Some(want));
         let (preview, tl, t) = (self.preview.clone(), self.tl.clone(), want.0 as f64 / self.fps());
+        let draw = cx.background_executor().spawn(async move {
+            let mut preview = preview.lock().unwrap();
+            preview.fast = scrub || hop && !preview.ready(&tl, t, (w, h));
+            (preview.frame(&tl, t, (w, h)), preview.rough)
+        });
         cx.spawn(async move |this, cx| {
-            let draw = async move {
-                let mut preview = preview.lock().unwrap();
-                preview.fast = scrub || hop && !preview.ready(&tl, t, (w, h));
-                (preview.frame(&tl, t, (w, h)), preview.rough)
-            };
-            let (px, rough) = cx.background_executor().spawn(draw).await;
+            let (px, rough) = draw.await;
             this.update(cx, |this, cx| {
                 if let Some(old) = this.image.replace(bitmap(px, w, h)) {
                     cx.drop_image(old, None);
@@ -660,9 +663,16 @@ fn fresh(focus: FocusHandle, recent: Vec<PathBuf>) -> Origami {
     }
 }
 
+unsafe extern "C" {
+    fn MTLCreateSystemDefaultDevice() -> *mut c_void;
+}
+
 fn main() {
     crash::guard();
     origami_lang::serve(footprint);
+    thread::spawn(|| unsafe {
+        MTLCreateSystemDefaultDevice();
+    });
     let Ok(script) = env::args_os().nth(1).map(fs::canonicalize).transpose() else {
         return eprintln!("usage: origami-app [script.js]");
     };
@@ -673,7 +683,12 @@ fn main() {
     if !script.as_os_str().is_empty() {
         let ((tell, heard), job) = (mpsc::channel(), script.clone());
         *EARLY.lock().unwrap() = Some((script.clone(), fs::metadata(&script).and_then(|m| m.modified()).ok(), heard));
-        thread::spawn(move || drop(tell.send(origami_lang::eval(&job, true, footprint))));
+        thread::spawn(move || {
+            let tl = origami_lang::eval(&job, true, footprint);
+            let first = tl.as_ref().ok().cloned();
+            drop(tell.send(tl));
+            first.inspect(|tl| near(tl, 0.));
+        });
     }
     thread::spawn(Player::warm);
     let app = Application::new();
