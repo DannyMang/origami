@@ -69,7 +69,7 @@ The later crates depend on the earlier ones by relative path.
 
 ## Build, run, test
 
-You need Rust (edition 2024), `ffmpeg` and `ffprobe` on your PATH, and macOS (GPUI, VideoToolbox, system fonts). Only the app that `./bundle.sh` builds carries its own ffmpeg: `cargo run` and the tests use the one on your PATH, such as Homebrew's, and pass with either.
+You need Rust (edition 2024), `ffmpeg` and `ffprobe` on your PATH, and macOS (GPUI, VideoToolbox, system fonts). Only the app that `./bundle.sh` builds carries its own ffmpeg: `cargo run` and the tests use the one on your PATH, such as Homebrew's, and pass with either. The AV1 films in `origami-engine/tests/av1` are kept in the repository because the included ffmpeg cannot make them: they were encoded once with Homebrew's ffmpeg (libsvtav1) and, for the 4:4:4 one, aomenc.
 
 ```
 cargo run --release --manifest-path origami-app/Cargo.toml -- path/to/edit.js
