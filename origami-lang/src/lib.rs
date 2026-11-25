@@ -2,6 +2,7 @@ mod disk;
 mod error;
 mod grade;
 mod ir;
+mod picture;
 mod tool;
 
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -13,6 +14,7 @@ pub use disk::{load, save};
 pub use error::Error;
 pub use grade::{Curves, Grade, Secondary, Vignette, Wheels};
 pub use ir::{Clip, Fx, Kind, Part, Timeline, Val};
+pub use picture::picture;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -146,6 +148,18 @@ fn scan(path: &Path, prev: Option<&Media>, relock: bool, rel: &str) -> Result<Me
     let sha = format!("{:x}", hash.finalize());
     if prev.is_some_and(|p| p.sha != sha) && !relock {
         bail!("{rel} changed since origami.lock (use --relock)");
+    }
+    if let Some((w, h)) = picture::size(path) {
+        return Ok(Media {
+            size,
+            mtime,
+            sha,
+            dur: 0.,
+            w,
+            h,
+            video: true,
+            audio: false,
+        });
     }
     let out = output(
         ffprobe()
@@ -577,6 +591,7 @@ fn frame(r: &mut impl Read) -> Option<Vec<u8>> {
 }
 
 pub fn serve(measure: Measure) {
+    picture::serve();
     if env::args_os().nth(1).is_none_or(|a| a != HELP) {
         FAR.store(true, Relaxed);
         BUILT.get_or_init(stamp);

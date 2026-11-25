@@ -9,7 +9,7 @@ use crate::{
     timing::{index, seam, stamp},
 };
 use lru::LruCache;
-use origami_lang::{Clip, Kind, Part, Timeline, Val, ffmpeg, ffprobe, literal, output, start, watch};
+use origami_lang::{Clip, Kind, Part, Timeline, Val, ffmpeg, ffprobe, literal, output, picture, start, watch};
 use std::{
     collections::HashMap,
     ffi::{c_char, c_void},
@@ -252,10 +252,8 @@ fn raw(args: &[&str], len: usize) -> Option<Vec<u8>> {
 }
 
 fn still(path: &str, w: usize, h: usize) -> Option<Vec<u8>> {
-    raw(
-        &[literal(path), &["-i", path, "-vf", &format!("scale={w}:{h}")]].concat(),
-        w * h * 4,
-    )
+    let scale = format!("scale={w}:{h}");
+    picture(path, w, h).or_else(|| raw(&[literal(path), &["-i", path, "-vf", &scale]].concat(), w * h * 4))
 }
 
 pub fn thumb(path: &str, t: f64, w: usize, h: usize) -> Option<Vec<u8>> {
@@ -270,7 +268,7 @@ pub fn thumb(path: &str, t: f64, w: usize, h: usize) -> Option<Vec<u8>> {
     };
     let lrf = Path::new(path).with_extension("LRF");
     let side = Some(lrf.to_string_lossy()).filter(|l| l != path && lrf.is_file());
-    side.and_then(|l| from(&l)).or_else(|| from(path))
+    picture(path, w, h).or_else(|| side.and_then(|l| from(&l))).or_else(|| from(path))
 }
 
 const DAY: &str = if cfg!(test) { "60" } else { "86400" };

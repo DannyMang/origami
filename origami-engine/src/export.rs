@@ -2,7 +2,7 @@ use crate::place::{place, plain};
 use crate::preview::{Preview, lead, learn, warm};
 use crate::{grade, lut::Lut, shape, text};
 use anyhow::{Result, bail};
-use origami_lang::{Kind, Timeline, Val, ffmpeg, literal, start, stop};
+use origami_lang::{Kind, Timeline, Val, ffmpeg, literal, picture, start, stop};
 use std::{
     env,
     fs::{self, DirBuilder},
@@ -168,18 +168,25 @@ fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path, (k, (w, h)): (f64, (
         let (tw, th, x, y) = place(c, size, k);
         let solid = c.kind == Kind::Color && text::rgba(&c.src)[3] == 255 && c.fade == (0., 0.);
         let (video, mut cut) = (video && tw >= 1. && th >= 1., String::new());
-        match c.kind {
-            Kind::Image if video => {
-                let lead = ["-loop", "1", "-t", &len.to_string(), "-protocol_whitelist", "file"];
-                ins.extend(own(&[&lead, literal(&c.src), &["-i", &c.src]].concat()))
-            }
+        let layer = match c.kind {
+            Kind::Image if video => picture(&c.src, tw as usize, th as usize).map(|px| ("image", px)),
             Kind::Text | Kind::Rect | Kind::Line | Kind::Path | Kind::Color if video && !solid => {
-                let file = dir.join(format!("text-{i}.bgra")).to_string_lossy().to_string();
-                let _ = fs::write(&file, shape::image(c, size, k, 0).0);
+                Some(("text", shape::image(c, size, k, 0).0))
+            }
+            _ => None,
+        };
+        match (layer, c.kind) {
+            (Some((name, px)), _) => {
+                let file = dir.join(format!("{name}-{i}.bgra")).to_string_lossy().to_string();
+                let _ = fs::write(&file, px);
                 ins.extend(own(&["-stream_loop", "-1", "-t", &len.to_string()]));
                 ins.extend(raw(&format!("{tw}x{th}"), &["-framerate", &tl.fps.to_string(), "-i", &file]));
             }
-            Kind::Video | Kind::Sound => {
+            (None, Kind::Image) if video => {
+                let lead = ["-loop", "1", "-t", &len.to_string(), "-protocol_whitelist", "file"];
+                ins.extend(own(&[&lead, literal(&c.src), &["-i", &c.src]].concat()))
+            }
+            (None, Kind::Video | Kind::Sound) => {
                 let (at, slack) = (c.src_in + skip * c.speed, lead(&c.src));
                 let lead = slack.min(at);
                 if slack > 0. {
