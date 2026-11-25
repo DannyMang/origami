@@ -44,6 +44,7 @@ type Info = (
 const AGAIN: u32 = 300;
 static KNOWN: LazyLock<Mutex<HashMap<String, (Info, u32)>>> = LazyLock::new(Mutex::default);
 static LANDS: LazyLock<Mutex<HashMap<(String, u64), (f64, u32)>>> = LazyLock::new(Mutex::default);
+static TURNS: LazyLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = LazyLock::new(Mutex::default);
 static RAM: LazyLock<u64> = LazyLock::new(|| {
     let told = output(Command::new("/usr/sbin/sysctl").args(["-n", "hw.memsize"])).map(|o| o.stdout);
     String::from_utf8_lossy(&told.unwrap_or_default())
@@ -61,6 +62,10 @@ fn lean(path: &str) -> &'static [&'static str] {
         true => &["-probesize", "32768", "-analyzeduration", "0"],
         false => &[],
     }
+}
+
+fn turn(key: String) -> Arc<Mutex<()>> {
+    TURNS.lock().unwrap().entry(key).or_default().clone()
 }
 
 fn ask(path: &str, show: &str) -> String {
@@ -123,14 +128,20 @@ fn probe(path: &str) -> Info {
         let info = (lead, down, n, d, num(dur), tb, late, start, stamps.into(), ts);
         (info, if text.is_empty() { AGAIN } else { u32::MAX })
     };
-    let known = KNOWN.lock().unwrap().get_mut(path).and_then(|(info, left)| {
-        *left = left.checked_sub(1)?;
-        Some(info.clone())
-    });
-    known.unwrap_or_else(|| {
-        let made = make();
-        KNOWN.lock().unwrap().insert(path.into(), made.clone());
-        made.0
+    let known = || {
+        KNOWN.lock().unwrap().get_mut(path).and_then(|(info, left)| {
+            *left = left.checked_sub(1)?;
+            Some(info.clone())
+        })
+    };
+    known().unwrap_or_else(|| {
+        let turn = turn(path.into());
+        let _held = turn.lock();
+        known().unwrap_or_else(|| {
+            let made = make();
+            KNOWN.lock().unwrap().insert(path.into(), made.clone());
+            made.0
+        })
     })
 }
 
@@ -146,14 +157,20 @@ fn lands(src: &str, at: f64, start: f64) -> f64 {
         (at.max(start) + pts.unwrap_or(0.), if pts.is_none() { AGAIN } else { u32::MAX })
     };
     let key = (src.to_string(), at.to_bits());
-    let known = LANDS.lock().unwrap().get_mut(&key).and_then(|(found, left)| {
-        *left = left.checked_sub(1)?;
-        Some(*found)
-    });
-    known.unwrap_or_else(|| {
-        let made = make();
-        LANDS.lock().unwrap().insert(key, made);
-        made.0
+    let known = || {
+        LANDS.lock().unwrap().get_mut(&key).and_then(|(found, left)| {
+            *left = left.checked_sub(1)?;
+            Some(*found)
+        })
+    };
+    known().unwrap_or_else(|| {
+        let turn = turn(format!("{src}|{at}"));
+        let _held = turn.lock();
+        known().unwrap_or_else(|| {
+            let made = make();
+            LANDS.lock().unwrap().insert(key.clone(), made);
+            made.0
+        })
     })
 }
 
@@ -190,7 +207,7 @@ fn aim<'a>(clips: impl Iterator<Item = &'a Clip>) {
     }
 }
 
-fn near(tl: &Timeline, t: f64) {
+pub fn near(tl: &Timeline, t: f64) {
     let soon = |c: &&Clip| c.kind == Kind::Video && t < c.start && c.start < t + 1.;
     let next = tl.clips.iter().filter(soon).map(|c| c.start).fold(f64::MAX, f64::min);
     let used = |c: &&Clip| c.kind == Kind::Video && (c.video && live(c, t) || soon(c) && c.start == next);
