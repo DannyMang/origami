@@ -11,11 +11,13 @@ use lru::LruCache;
 use origami_lang::{Clip, Kind, Part, Timeline, Val, ffmpeg, ffprobe, literal, output, start, watch};
 use std::{
     collections::HashMap,
+    ffi::{c_char, c_void},
     fs,
     io::{BufReader, Read},
     num::NonZeroUsize,
     path::Path,
-    process::{Child, Command, Stdio},
+    process::{Child, Stdio},
+    ptr,
     sync::{
         Arc, LazyLock, Mutex,
         mpsc::{self, Receiver, Sender, TryRecvError},
@@ -45,12 +47,14 @@ const AGAIN: u32 = 300;
 static KNOWN: LazyLock<Mutex<HashMap<String, (Info, u32)>>> = LazyLock::new(Mutex::default);
 static LANDS: LazyLock<Mutex<HashMap<(String, u64), (f64, u32)>>> = LazyLock::new(Mutex::default);
 static TURNS: LazyLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = LazyLock::new(Mutex::default);
+unsafe extern "C" {
+    fn sysctlbyname(name: *const c_char, old: *mut c_void, size: *mut usize, new: *const c_void, len: usize) -> i32;
+}
+
 static RAM: LazyLock<u64> = LazyLock::new(|| {
-    let told = output(Command::new("/usr/sbin/sysctl").args(["-n", "hw.memsize"])).map(|o| o.stdout);
-    String::from_utf8_lossy(&told.unwrap_or_default())
-        .trim()
-        .parse()
-        .unwrap_or(u64::MAX)
+    let (mut ram, mut size) = (u64::MAX, size_of::<u64>());
+    unsafe { sysctlbyname(c"hw.memsize".as_ptr(), (&raw mut ram).cast(), &mut size, ptr::null(), 0) };
+    ram
 });
 
 fn fit(ram: u64) -> (usize, usize) {
@@ -969,6 +973,7 @@ mod tests {
         export::hold,
         tests::{TIDY, clip, film, scratch, timeline},
     };
+    use std::process::Command;
 
     // While scrubbing, a sidecar that cannot be read, is a playlist or a named pipe, or ends before the
     // full file does should give way to the full file at once instead of leaving the clip out.
