@@ -20,7 +20,7 @@ The site is static and hosted on Cloudflare at https://origami.video. Build it o
 bun run deploy
 ```
 
-The build also copies `../latest.json` and, when it exists, `../dist/Origami.dmg` into `dist/`: the site is where people download Origami and where the app checks for a newer version. The deploy stops if `dist/Origami.dmg` is missing, so run `../bundle.sh` or `../release.sh` first.
+The site is where people download Origami and where the app checks for a newer version. The build copies `../latest.json` into `dist/`, and the deploy uploads `../dist/Origami.dmg` to the R2 bucket `origami-downloads`, because the dmg is larger than the 25 MiB a static file here may be; `worker.ts` serves any address that is not a file in `dist/` from that bucket. The deploy stops if `../dist/Origami.dmg` is missing, so run `../bundle.sh` or `../release.sh` first.
 
 ## Add a page
 
