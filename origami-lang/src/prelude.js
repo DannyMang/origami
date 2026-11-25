@@ -202,7 +202,7 @@
   const file = (kind, pick) => leaf(p => {
     const m = JSON.parse(__probe(p, kind, at))
     must(kind === 'sound' ? m.audio : kind === 'image' ? m.video && m.dur <= 0.04 : m.video || m.audio, `${kind}("${p}") cannot be read as ${kind === 'image' ? 'a still image' : kind}`)
-    return { kind, src: m.path, w: m.w, h: m.h, label: stem(p), ...pick(m) }
+    return { kind, src: m.path, w: m.w, h: m.h, native: m.native, label: stem(p), ...pick(m) }
   })
   const words = (size, pos) => leaf((s, o = {}) => {
     if (typeof o !== 'object') throw new Error(lined(`options are written { size: 72, color: "#ffffff" }`))
@@ -429,7 +429,7 @@
     radius: c.radius ?? 0, ends: c.ends ?? [0, 0, 0, 0], background: c.background ?? '', align: c.align ?? '',
     opacity: sample(c, c.opacity), rotate: sample(c, c.rotate), shown: sample(c, c.shown),
     parts: c.parts?.map(p => Object.fromEntries(Object.entries(p).map(([k, v]) => [k, sample(c, v)]))),
-    blend: c.blend ?? '', step: c.step ?? 0, matte: c.matte, points: c.points?.map(q => q.map(v => sample(c, v))), curve: c.curve,
+    blend: c.blend ?? '', step: c.step ?? 0, matte: c.matte, native: c.native, points: c.points?.map(q => q.map(v => sample(c, v))), curve: c.curve,
     fx: c.fx?.map(f => drawn(c, f)),
   })
   const read = (d, k) => {

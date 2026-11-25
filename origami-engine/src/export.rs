@@ -2,7 +2,7 @@ use crate::place::{place, plain};
 use crate::preview::{Preview, lead, learn, warm};
 use crate::{grade, lut::Lut, shape, text};
 use anyhow::{Result, bail};
-use origami_lang::{Kind, Timeline, Val, ffmpeg, literal, start, stop};
+use origami_lang::{Kind, Timeline, Val, ffmpeg, literal, picture, start, stop};
 use std::{
     env,
     fs::{self, DirBuilder},
@@ -168,18 +168,25 @@ fn graph(tl: &Timeline, video: bool, from: f64, dir: &Path, (k, (w, h)): (f64, (
         let (tw, th, x, y) = place(c, size, k);
         let solid = c.kind == Kind::Color && text::rgba(&c.src)[3] == 255 && c.fade == (0., 0.);
         let (video, mut cut) = (video && tw >= 1. && th >= 1., String::new());
-        match c.kind {
-            Kind::Image if video => {
-                let lead = ["-loop", "1", "-t", &len.to_string(), "-protocol_whitelist", "file"];
-                ins.extend(own(&[&lead, literal(&c.src), &["-i", &c.src]].concat()))
-            }
+        let layer = match c.kind {
+            Kind::Image if video && c.native => picture(&c.src, tw as usize, th as usize).map(|px| ("image", px)),
             Kind::Text | Kind::Rect | Kind::Line | Kind::Path | Kind::Color if video && !solid => {
-                let file = dir.join(format!("text-{i}.bgra")).to_string_lossy().to_string();
-                let _ = fs::write(&file, shape::image(c, size, k, 0).0);
+                Some(("text", shape::image(c, size, k, 0).0))
+            }
+            _ => None,
+        };
+        match (layer, c.kind) {
+            (Some((name, px)), _) => {
+                let file = dir.join(format!("{name}-{i}.bgra")).to_string_lossy().to_string();
+                let _ = fs::write(&file, px);
                 ins.extend(own(&["-stream_loop", "-1", "-t", &len.to_string()]));
                 ins.extend(raw(&format!("{tw}x{th}"), &["-framerate", &tl.fps.to_string(), "-i", &file]));
             }
-            Kind::Video | Kind::Sound => {
+            (None, Kind::Image) if video => {
+                let lead = ["-loop", "1", "-t", &len.to_string(), "-protocol_whitelist", "file"];
+                ins.extend(own(&[&lead, literal(&c.src), &["-i", &c.src]].concat()))
+            }
+            (None, Kind::Video | Kind::Sound) => {
                 let (at, slack) = (c.src_in + skip * c.speed, lead(&c.src));
                 let lead = slack.min(at);
                 if slack > 0. {
@@ -722,6 +729,36 @@ mod tests {
         assert!((late / whole - 1.).abs() < 0.1, "{whole} {late}");
     }
 
+    // AV1 films, 8 and 10-bit, in Matroska and 4:4:4, export whole and in part, each frame as bright
+    // as the preview shows it.
+    #[test]
+    fn av1_exports_match_the_preview() {
+        let _tidy = TIDY.read();
+        let dir = scratch("av1-out");
+        let out = dir.join("out.mp4").to_string_lossy().to_string();
+        for name in ["8.mp4", "10.mp4", "8.mkv", "444.mp4"] {
+            fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/av1").join(name), dir.join(name)).unwrap();
+            let (tl, mut pv) = (
+                script(&dir, &format!("settings({{ size: [64, 80] }})\nvideo('{name}')")),
+                Preview::default(),
+            );
+            let n = (tl.duration * 30.).round() as usize;
+            let shown: Vec<u8> = (0..n).map(|k| pv.frame(&tl, k as f64 / 30., (64, 80))[(40 * 64 + 8) * 4]).collect();
+            for (range, part) in [(None, &shown[..]), (Some((0.5, 1.)), &shown[15..30])] {
+                let opts = Opts { range, ..Opts::default() };
+                render(&tl, &out, &opts, |_| {}).unwrap();
+                let args = ["-v", "error", "-i", &out, "-f", "rawvideo", "-pix_fmt", "gray", "-"];
+                let px = origami_lang::output(ffmpeg().args(args)).unwrap().stdout;
+                let made: Vec<u8> = px.chunks(64 * 80).map(|f| f[40 * 64 + 8]).collect();
+                assert_eq!(made.len(), part.len(), "{name}");
+                assert!(
+                    part.iter().zip(&made).all(|(a, b)| a.abs_diff(*b) < 24),
+                    "{name}: {part:?} {made:?}"
+                );
+            }
+        }
+    }
+
     // An export onto a file the script reads, spelled another way (different case, a detour through ..,
     // a symlink), is refused and leaves the file whole, and a link or a named pipe planted at the
     // destination is replaced, not written through.
@@ -903,8 +940,8 @@ mod tests {
         assert_eq!((dir != taken, mode, kept), (true, 0o700, (true, 0)));
     }
 
-    // A video whose every frame is unreadable floods ffmpeg's error output, and its export should end at
-    // once with ffmpeg's own error instead of waiting forever on a full pipe.
+    // A video whose every frame became unreadable after the script was read floods ffmpeg's error output,
+    // and its export should end at once with ffmpeg's own error instead of waiting forever on a full pipe.
     #[test]
     fn unreadable_video_fails_at_once() {
         let _tidy = TIDY.read();
@@ -918,8 +955,8 @@ mod tests {
         let at = data.windows(4).position(|w| w == b"mdat").unwrap() + 4;
         data[at..].fill(0xff);
         fs::write(dir.join("bad.mp4"), data).unwrap();
-        fs::write(dir.join("edit.js"), "settings({ size: [64, 36], fps: 60 })\nvideo('bad.mp4')").unwrap();
-        let tl = origami_lang::eval(&dir.join("edit.js"), true, footprint).unwrap();
+        let mut tl = script(&dir, "settings({ size: [64, 36], fps: 60 })\nvideo('good.mp4')");
+        tl.clips[0].src = dir.join("bad.mp4").to_string_lossy().to_string();
         let out = dir.join("out.mp4").to_string_lossy().to_string();
         let ((done, ended), job) = (mpsc::channel(), (tl, out.clone()));
         thread::spawn(move || done.send(render(&job.0, &job.1, &Opts::default(), |_| {}).unwrap_err().to_string()));
@@ -955,7 +992,7 @@ mod tests {
         ];
         let made = origami_lang::output(ffmpeg().args(args)).unwrap().stdout;
         let shown = Preview::default().frame(&tl, 0.5, (16, 16));
-        let thumb = crate::thumb(&src, 0., 16, 16).unwrap();
+        let thumb = crate::thumb(&src, 0., 16, 16, false).unwrap();
         let white = [made[8 * 16 + 8], shown[(8 * 16 + 8) * 4], thumb[(8 * 16 + 8) * 4]].map(|v| v > 200);
         assert_eq!((tl.clips[0].w, white), (16, [true; 3]));
     }

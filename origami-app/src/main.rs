@@ -518,11 +518,12 @@ impl Origami {
             && let Some(i) = self.jobs.iter().rposition(|j| j.2.is_some()).or(self.jobs.len().checked_sub(1))
         {
             let (key, path, t) = self.jobs.remove(i);
+            let native = self.tl.clips.iter().any(|c| c.native && c.src == path);
             self.loading += 1;
             cx.spawn(async move |this, cx| {
                 let load = async move {
                     match t {
-                        Some(t) => thumb(&path, t, 176, 100).map(|px| Asset::Thumb(bitmap(px, 176, 100))),
+                        Some(t) => thumb(&path, t, 176, 100, native).map(|px| Asset::Thumb(bitmap(px, 176, 100))),
                         None => Some(Asset::Wave(peaks(&path))),
                     }
                 };

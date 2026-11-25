@@ -4,10 +4,18 @@ Origami is made of the three crates in this repository and the open-source Rust 
 
 The list covers every crate compiled into the app and the `origami` command-line tool for Apple silicon, build-time tools included, and leaves out crates used only by tests. It comes from `cargo metadata` and changes when a `Cargo.lock` changes.
 
-The app also carries `ffmpeg` and `ffprobe` from FFmpeg 8.1.2 (https://ffmpeg.org), which Origami runs as separate programs to read and export video and sound. They are built by `ffmpeg.sh` from the unchanged release `ffmpeg-8.1.2.tar.xz` (SHA-256 `464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c`), with no outside libraries, and are used under the GNU Lesser General Public License, version 2.1 or later, whose text is in THIRD-PARTY-LICENSES.txt. That source file is attached to each release at https://github.com/DannyMang/origami/releases next to the app, and is also at https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz. You may replace the two programs in `Origami.app/Contents/MacOS` with your own build. They were configured with:
+The app also carries `ffmpeg` and `ffprobe` from FFmpeg 8.1.2 (https://ffmpeg.org), which Origami runs as separate programs to read and export video and sound. They are built by `ffmpeg.sh` from the unchanged release `ffmpeg-8.1.2.tar.xz` (SHA-256 `464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c`), with one outside library built into them, the dav1d AV1 decoder described below, and are used under the GNU Lesser General Public License, version 2.1 or later, whose text is in THIRD-PARTY-LICENSES.txt. That source file is attached to each release at https://github.com/DannyMang/origami/releases next to the app, and is also at https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz. You may replace the two programs in `Origami.app/Contents/MacOS` with your own build. They were configured with:
 
 ```
-./configure --arch=arm64 --cc=clang --extra-cflags=-mmacosx-version-min=15.0 --extra-ldflags=-mmacosx-version-min=15.0 --extra-libs=-liconv --pkg-config=/usr/bin/false --disable-autodetect --enable-videotoolbox --enable-audiotoolbox --enable-zlib --enable-bzlib --enable-iconv --disable-network --disable-ffplay --disable-doc --disable-debug
+./configure --arch=arm64 --cc=clang --extra-cflags=-mmacosx-version-min=15.0 --extra-ldflags=-mmacosx-version-min=15.0 --extra-libs=-liconv --pkg-config=../dav1d/pkg-config --disable-autodetect --enable-videotoolbox --enable-audiotoolbox --enable-zlib --enable-bzlib --enable-iconv --enable-libdav1d --disable-network --disable-ffplay --disable-doc --disable-debug
+```
+
+The `../dav1d/pkg-config` in that line is a few lines of shell that `ffmpeg.sh` writes: it tells configure where the dav1d built by the same script is and hides every other library on the build machine.
+
+Built into both programs is dav1d 1.5.5 (https://code.videolan.org/videolan/dav1d), copyright 2018-2025 VideoLAN and dav1d authors, which decodes AV1 video where the Mac's own hardware does not. It is used under the BSD 2-Clause licence, whose text is in THIRD-PARTY-LICENSES.txt. `ffmpeg.sh` builds it from the unchanged release `dav1d-1.5.5.tar.xz` (SHA-256 `ca96b1d0ba3f01f55de7231d775892b64994ba061aaeeaaa4f662a390b3abf9e`), which is attached to each release next to FFmpeg's source and is also at https://downloads.videolan.org/pub/videolan/dav1d/1.5.5/dav1d-1.5.5.tar.xz, by compiling the files that its `src/meson.build` lists for Apple silicon, with the `config.h` written out in the script, using:
+
+```
+clang -arch arm64 -mmacosx-version-min=15.0 -std=c99 -O3 -DNDEBUG -fvisibility=hidden -fomit-frame-pointer -ffast-math -fno-align-functions
 ```
 
 The app's own text and the docs site are set in Paper Mono, copyright 2025 The Paper-Mono.Git Project Authors (https://github.com/paper-design/paper-mono), included in both under the SIL Open Font License 1.1.

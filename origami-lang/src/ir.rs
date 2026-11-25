@@ -189,6 +189,8 @@ pub struct Clip {
     pub points: Vec<(Val, Val)>,
     #[serde(default)]
     pub curve: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub native: bool,
 }
 
 impl Clip {

@@ -16,9 +16,12 @@ app=dist/Origami.app
 bin=$app/Contents/MacOS
 
 ./ffmpeg.sh
-line=$(cut -d' ' -f2- ffmpeg/configure.txt)
-source=$(cut -d: -f1 ffmpeg/configure.txt)
-grep -qF "$line" THIRD-PARTY.md && grep -qF "$source.tar.xz" THIRD-PARTY.md || { echo "THIRD-PARTY.md does not name $source and its configure line" >&2; exit 1; }
+sources=()
+while IFS= read -r built; do
+  source=${built%%:*}
+  grep -qF "${built#*: }" THIRD-PARTY.md && grep -qF "$source.tar.xz" THIRD-PARTY.md || { echo "THIRD-PARTY.md does not name $source and how it was built" >&2; exit 1; }
+  sources+=("ffmpeg/$source.tar.xz")
+done < ffmpeg/configure.txt
 cargo build --release --manifest-path origami-app/Cargo.toml
 cargo build --release --manifest-path origami-engine/Cargo.toml
 
@@ -91,7 +94,7 @@ ditto "$app" dist/dmg/Origami.app
 ln -s /Applications dist/dmg/Applications
 hdiutil create -volname Origami -srcfolder dist/dmg -format UDZO dist/Origami.dmg
 rm -rf dist/dmg
-cp "ffmpeg/$source.tar.xz" dist/
+cp "${sources[@]}" dist/
 
 if [ -n "${SIGN_ID:-}" ]; then
   codesign --force --timestamp --sign "$SIGN_ID" dist/Origami.dmg

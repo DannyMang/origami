@@ -9,7 +9,7 @@ use crate::{
     timing::{index, seam, stamp},
 };
 use lru::LruCache;
-use origami_lang::{Clip, Kind, Part, Timeline, Val, ffmpeg, ffprobe, literal, output, start, watch};
+use origami_lang::{Clip, Kind, Part, Timeline, Val, ffmpeg, ffprobe, literal, output, picture, start, watch};
 use std::{
     collections::HashMap,
     ffi::{c_char, c_void},
@@ -52,6 +52,13 @@ unsafe extern "C" {
     fn sysctlbyname(name: *const c_char, old: *mut c_void, size: *mut usize, new: *const c_void, len: usize) -> i32;
 }
 
+#[link(name = "VideoToolbox", kind = "framework")]
+unsafe extern "C" {
+    fn VTIsHardwareDecodeSupported(codec: u32) -> u8;
+}
+
+static AV1: LazyLock<bool> = LazyLock::new(|| unsafe { VTIsHardwareDecodeSupported(u32::from_be_bytes(*b"av01")) } != 0);
+
 static RAM: LazyLock<u64> = LazyLock::new(|| {
     let (mut ram, mut size) = (u64::MAX, size_of::<u64>());
     unsafe { sysctlbyname(c"hw.memsize".as_ptr(), (&raw mut ram).cast(), &mut size, ptr::null(), 0) };
@@ -80,6 +87,38 @@ fn ask(path: &str, show: &str) -> String {
     memo(key(&cmd, path), || {
         let (text, ok) = output(&mut cmd).map_or_else(|_| (vec![], false), |o| (o.stdout, o.status.success()));
         (String::from_utf8_lossy(&text).into(), ok && !text.is_empty())
+    })
+}
+
+fn flags(codec: &str, pix: &str, av1: bool) -> (&'static [&'static str], &'static str) {
+    match (codec, pix) {
+        ("h264", _) => (&[], ""),
+        ("hevc", "yuv420p10le") if cfg!(target_arch = "aarch64") => (
+            &[
+                "-hwaccel",
+                "videotoolbox",
+                "-hwaccel_output_format",
+                "videotoolbox_vld",
+                "-threads",
+                "1",
+            ],
+            "hwdownload,format=p010le,",
+        ),
+        ("hevc", _) => (&["-hwaccel", "videotoolbox", "-threads", "1"], ""),
+        ("av1", "yuv420p") if av1 => (&["-hwaccel", "videotoolbox", "-c:v", "av1"], "format=yuv420p,"),
+        ("av1", "yuv420p10le") if av1 => (&["-hwaccel", "videotoolbox", "-c:v", "av1"], ""),
+        ("av1", _) => (&[], ""),
+        _ => (&["-hwaccel", "videotoolbox"], ""),
+    }
+}
+
+fn soft(path: &str) -> bool {
+    KNOWN.lock().unwrap().get_mut(path).is_some_and(|(info, _)| {
+        let hard = info.0.contains(&"av1");
+        if hard {
+            (info.0, info.1) = (&[], "");
+        }
+        hard
     })
 }
 
@@ -117,22 +156,7 @@ fn probe(path: &str) -> Info {
             (false, true) => 16,
             _ => 0,
         };
-        let (lead, down): (&[&str], &str) = match (codec, pix) {
-            ("h264", _) => (&[], ""),
-            ("hevc", "yuv420p10le") if cfg!(target_arch = "aarch64") => (
-                &[
-                    "-hwaccel",
-                    "videotoolbox",
-                    "-hwaccel_output_format",
-                    "videotoolbox_vld",
-                    "-threads",
-                    "1",
-                ],
-                "hwdownload,format=p010le,",
-            ),
-            ("hevc", _) => (&["-hwaccel", "videotoolbox", "-threads", "1"], ""),
-            _ => (&["-hwaccel", "videotoolbox"], ""),
-        };
+        let (lead, down) = flags(codec, pix, codec == "av1" && *AV1);
         let start = first.parse().ok().filter(|f: &f64| f.is_finite()).map_or(0., |f| f - zero);
         let stamps = if ts { vec![] } else { stamps };
         let info = (lead, down, n, d, num(dur), tb, late, start, stamps.into(), ts);
@@ -251,14 +275,13 @@ fn raw(args: &[&str], len: usize) -> Option<Vec<u8>> {
     (out.stdout.len() == len).then_some(out.stdout)
 }
 
-fn still(path: &str, w: usize, h: usize) -> Option<Vec<u8>> {
-    raw(
-        &[literal(path), &["-i", path, "-vf", &format!("scale={w}:{h}")]].concat(),
-        w * h * 4,
-    )
+fn still(path: &str, w: usize, h: usize, native: bool) -> Option<Vec<u8>> {
+    let scale = format!("scale={w}:{h}");
+    let read = native.then(|| picture(path, w, h)).flatten();
+    read.or_else(|| raw(&[literal(path), &["-i", path, "-vf", &scale]].concat(), w * h * 4))
 }
 
-pub fn thumb(path: &str, t: f64, w: usize, h: usize) -> Option<Vec<u8>> {
+pub fn thumb(path: &str, t: f64, w: usize, h: usize, native: bool) -> Option<Vec<u8>> {
     let from = |path: &str| {
         let ((lead, down, ..), at) = (probe(path), t.to_string());
         let vf = format!("{down}scale={w}:{h}");
@@ -268,9 +291,11 @@ pub fn thumb(path: &str, t: f64, w: usize, h: usize) -> Option<Vec<u8>> {
             false => grab(&[]),
         }
     };
+    let from = |path: &str| from(path).or_else(|| soft(path).then(|| from(path)).flatten());
     let lrf = Path::new(path).with_extension("LRF");
     let side = Some(lrf.to_string_lossy()).filter(|l| l != path && lrf.is_file());
-    side.and_then(|l| from(&l)).or_else(|| from(path))
+    let read = native.then(|| picture(path, w, h)).flatten();
+    read.or_else(|| side.and_then(|l| from(&l))).or_else(|| from(path))
 }
 
 const DAY: &str = if cfg!(test) { "60" } else { "86400" };
@@ -471,25 +496,26 @@ impl Preview {
         let k = pw as f64 / tl.size.0 as f64;
         let key = |src: &str, tw: usize, th: usize| format!("{src}|{tw}x{th}");
         let shown = |c: &&Clip| c.kind == Kind::Image && c.into == 0 && c.video && live(c, t) && c.scale.max() > 0.;
-        let mut new: Vec<(&str, usize, usize, Option<Px>)> = tl
+        let mut new: Vec<(&str, usize, usize, bool, Option<Px>)> = tl
             .clips
             .iter()
             .filter(shown)
             .map(|c| {
                 let (tw, th, ..) = place(c, (pw as f64, ph as f64), k);
-                (c.src.as_str(), tw as usize, th as usize, None)
+                (c.src.as_str(), tw as usize, th as usize, c.native, None)
             })
-            .filter(|(src, tw, th, _)| !self.stills.keys().any(|k| k.starts_with(&key(src, *tw, *th))))
+            .filter(|(src, tw, th, ..)| !self.stills.keys().any(|k| k.starts_with(&key(src, *tw, *th))))
             .collect();
         new.sort();
         new.dedup();
         if !new.is_empty() {
             spread(&mut new, 1, |_, part| {
-                for (src, tw, th, px) in part {
-                    *px = still(src, *tw, *th).map(Arc::new);
+                for (src, tw, th, native, px) in part {
+                    *px = still(src, *tw, *th, *native).map(Arc::new);
                 }
             });
-            self.stills.extend(new.into_iter().map(|(src, tw, th, px)| (key(src, tw, th), px)));
+            self.stills
+                .extend(new.into_iter().map(|(src, tw, th, _, px)| (key(src, tw, th), px)));
         }
     }
 
@@ -670,6 +696,9 @@ impl Preview {
             }
             let Some(px) = d.feed.as_ref().and_then(|f| f.0.recv().ok()) else {
                 let died = d.feed.as_ref().is_some_and(|f| f.2) || d.child.take().is_some_and(|mut c| c.wait().is_ok_and(|s| !s.success()));
+                if died && soft(&key.0) {
+                    self.decoders.retain(|(o, _)| o.0 != key.0);
+                }
                 if died && again && self.decoder(key, k, d.next, rate).is_some() {
                     (again, d) = (false, self.decoders.pop()?.1);
                     continue;
@@ -738,7 +767,7 @@ impl Preview {
                     return (px.len() >= tw * th * 4).then_some((px, (tw, th), (x as i64, y as i64)));
                 }
                 let make = || match c.kind {
-                    Kind::Image => still(&c.src, tw, th).map(Arc::new),
+                    Kind::Image => still(&c.src, tw, th, c.native).map(Arc::new),
                     _ => Some(Arc::new(shape::image(c, (size.0 as f64, size.1 as f64), k, i).0)),
                 };
                 (kept(&mut self.stills, &mut self.was.0, base.clone(), make)?, base)
@@ -1036,7 +1065,7 @@ mod tests {
         film(&dir.join("short.LRF"), "color=blue:s=64x36:r=30:d=1", &["-g", "15", "-f", "mp4"]);
         fs::write(dir.join("text.LRF"), "not a video").unwrap();
         let blue = |name: &str, t: f64| {
-            let px = thumb(&dir.join(name).to_string_lossy(), t, 16, 9).unwrap();
+            let px = thumb(&dir.join(name).to_string_lossy(), t, 16, 9, false).unwrap();
             (px[(4 * 16 + 8) * 4] > 128, px[(4 * 16 + 8) * 4 + 2] > 128)
         };
         assert_eq!(
@@ -1058,7 +1087,7 @@ mod tests {
         let fade = "color=black:s=64x36:r=30:d=4,geq=lum='64*floor(T)':cb=128:cr=128";
         let sparse = ["-c:v", "mpeg4", "-g", "9999", "-sc_threshold", "1000000000", "-pix_fmt", "yuv420p"];
         film(&file, fade, &sparse);
-        let grey = |t: f64| thumb(&file.to_string_lossy(), t, 16, 9).map(|px| px[(4 * 16 + 8) * 4]);
+        let grey = |t: f64| thumb(&file.to_string_lossy(), t, 16, 9, false).map(|px| px[(4 * 16 + 8) * 4]);
         let seen = [0.5, 1.5, 2.5, 3.5].map(grey);
         assert!(seen[0].is_some() && seen.windows(2).all(|w| w[0] < w[1]), "{seen:?}");
     }
@@ -1070,7 +1099,7 @@ mod tests {
         let file = scratch("jpeg").join("bars.jpg");
         film(&file, "testsrc=s=640x360", &["-frames:v", "1"]);
         let path = file.to_string_lossy();
-        assert!(still(&path, 16, 9).is_some() && thumb(&path, 0., 16, 9).is_some());
+        assert!(still(&path, 16, 9, false).is_some() && thumb(&path, 0., 16, 9, false).is_some());
     }
 
     // In a montage of many short clips the preview should warm up a decoder for the next clip only,
@@ -1273,6 +1302,79 @@ mod tests {
         }
         seen.extend((40..90).map(|k| shown(&mut cut, k)));
         assert!(seen == (0..90).map(|k| shown(&mut played, k)).collect::<Vec<_>>());
+    }
+
+    // AV1 takes the Mac's hardware decoder only where there is one and only for 8 and 10-bit 4:2:0
+    // pictures, handing 8-bit frames on in the layout the software decoder gives, and takes ffmpeg's
+    // own software decoder everywhere else, while other codecs keep their flags.
+    #[test]
+    fn av1_takes_hardware_only_where_it_works() {
+        let (hard, none): (&[&str], &[&str]) = (&["-hwaccel", "videotoolbox", "-c:v", "av1"], &[]);
+        assert_eq!(flags("av1", "yuv420p", true), (hard, "format=yuv420p,"));
+        assert_eq!(flags("av1", "yuv420p10le", true), (hard, ""));
+        for pix in ["yuv444p", "yuv422p", "yuv420p12le", "gray", ""] {
+            assert_eq!(flags("av1", pix, true), (none, ""), "{pix}");
+        }
+        for pix in ["yuv420p", "yuv420p10le", "yuv444p"] {
+            assert_eq!(flags("av1", pix, false), (none, ""), "{pix}");
+        }
+        assert_eq!(flags("vp9", "yuv420p", false), (&hard[..2], ""));
+        assert_eq!(flags("h264", "yuv420p", true), (none, ""));
+    }
+
+    // AV1 films, 8 and 10-bit, in Matroska, 4:4:4 and one too small for the hardware decoder, show every
+    // frame exactly as ffmpeg's software decoder gives it when played across a cut, jumped into and as
+    // a thumbnail, the same through the Mac's AV1 hardware, which keeps the films it takes, as without it.
+    #[test]
+    fn av1_draws_with_and_without_hardware() {
+        let dir = scratch("av1");
+        let copy = |name: &str, to: &str| {
+            fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/av1").join(name), dir.join(to)).unwrap();
+            dir.join(to).to_string_lossy().to_string()
+        };
+        for (name, h, hard) in [
+            ("8.mp4", 80, true),
+            ("10.mp4", 80, true),
+            ("8.mkv", 80, true),
+            ("low.mp4", 36, false),
+            ("444.mp4", 80, false),
+        ] {
+            let src = copy(name, name);
+            let args = ["-v", "error", "-i", &src, "-f", "rawvideo", "-pix_fmt", "bgra", "-"];
+            let all = output(ffmpeg().args(args)).unwrap().stdout;
+            let plain: Vec<&[u8]> = all.chunks(64 * h * 4).collect();
+            let grey = |k: usize| (k as f64 * 3. * 255. / 219.).round() as u8;
+            assert!(
+                plain.len() >= 30 && (0..30).all(|k| plain[k][(h / 2 * 64 + 8) * 4].abs_diff(grey(k)) < 3),
+                "{name}"
+            );
+            let part = |start: f64, src_in: f64| Clip {
+                src: src.clone(),
+                w: 64,
+                h: h as u32,
+                start,
+                end: start + 0.5,
+                src_in,
+                ..clip("video", "")
+            };
+            let tl = timeline(30, (64, h as u32), 1., vec![part(0., 0.5), part(0.5, 0.1)]);
+            let want = |k: usize| plain[if k < 15 { k + 15 } else { k - 12 }];
+            let shown = |pv: &mut Preview, k: usize| pv.frame(&tl, k as f64 / 30., (64, h));
+            for round in ["first", "software"] {
+                let mut played = Preview::default();
+                let wrong: Vec<usize> = (0..30).filter(|k| shown(&mut played, *k) != want(*k)).collect();
+                assert!(wrong.is_empty(), "{name} {round} {wrong:?}");
+                assert!(shown(&mut Preview::default(), 22) == want(22), "{name} {round}");
+                assert!(thumb(&src, 0., 64, h, false).as_deref() == Some(plain[0]), "{name} {round}");
+                assert!(round == "software" || !hard || probe(&src).0.is_empty() != *AV1, "{name}");
+                soft(&src);
+                assert!(probe(&src).0.is_empty(), "{name}");
+            }
+        }
+        let twin = copy("low.mp4", "twin.mp4");
+        assert!(
+            thumb(&twin, 0., 64, 36, false).is_some_and(|px| Some(px) == thumb(&dir.join("low.mp4").to_string_lossy(), 0., 64, 36, false))
+        );
     }
 
     // Playing forwards should read each video's next frame from ffmpeg while the current one is drawn, so
