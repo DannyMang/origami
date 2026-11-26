@@ -69,6 +69,7 @@ marked.use({
 
 mkdirSync(videos, { recursive: true })
 cpSync(join(root, "fonts"), join(dist, "fonts"), { recursive: true })
+cpSync(join(root, "favicon.svg"), join(dist, "favicon.svg"))
 cpSync(join(root, "../latest.json"), join(dist, "latest.json"))
 const site = readdirSync(pages).sort().map((f, i) => {
   page = { file: i ? f.replace(/^\d+-|\.md$/g, "") + ".html" : "index.html", title: "", name: "", links: [], body: "" }
@@ -83,7 +84,8 @@ for (const p of site) {
     q === p ? `<a href="${q.file}" aria-current="page">${q.title}</a><div>${q.links.join("")}</div>` : `<a href="${q.file}">${q.title}</a>`)
   writeFileSync(
     join(dist, p.file),
-    template.replace("{{title}}", () => escape(p.name))
+    template.replaceAll("{{title}}", () => escape(p.name))
+      .replace("{{path}}", () => p.file === "index.html" ? "" : p.file)
       .replace("{{nav}}", () => nav.join(""))
       .replace("{{toc}}", () => p.links.join("")).replace("{{main}}", () => p.body),
   )
