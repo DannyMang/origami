@@ -63,9 +63,9 @@ The app also contains the `origami` command-line tool, which renders a script wi
 
 ## Docs
 
-The guide and language reference are in [`docs/pages`](docs/pages): [Intro](docs/pages/00-intro.md), [Basics](docs/pages/01-basics.md), [Video](docs/pages/02-video.md), [Arranging](docs/pages/03-arranging.md), [Methods](docs/pages/04-methods.md), [Color](docs/pages/05-color.md), [Editor](docs/pages/06-editor.md), [Motion](docs/pages/07-motion.md), [Supported formats](docs/pages/07-supported-formats.md) and the [Changelog](docs/pages/08-changelog.md).
+Read the guide and language reference at https://origami.video, where every example is rendered and the links between pages work.
 
-Read them online, with every example rendered, at https://origami.video.
+Their source is in [`docs/pages`](docs/pages), one Markdown file per page: [Intro](docs/pages/00-intro.md), [Get started](docs/pages/00-start.md), [Basics](docs/pages/01-basics.md), [Video](docs/pages/02-video.md), [Arranging](docs/pages/03-arranging.md), [Methods](docs/pages/04-methods.md), [Color](docs/pages/05-color.md), [Editor](docs/pages/06-editor.md), [Motion](docs/pages/07-motion.md), [Supported formats](docs/pages/07-supported-formats.md) and the [Changelog](docs/pages/08-changelog.md).
 
 `CONTRIBUTING.md` maps the code and `docs/README.md` explains how to build the docs.
 
@@ -101,8 +101,8 @@ Report security problems privately, as [SECURITY.md](SECURITY.md) describes, not
 
 ## Uninstall
 
-Quit Origami and drag it from Applications to the Trash. To remove what it keeps, also delete `~/Library/Application Support/Origami` (saved versions, recovered code, export choices, Open Recent and your answer about reports) , `~/Library/Logs/Origami` and `~/Library/Caches/Origami`. Your scripts, the `origami.lock` beside each one, your footage and your exports stay where they are.
+Quit Origami and drag it from Applications to the Trash. To remove what it keeps, also delete `~/Library/Application Support/Origami` (saved versions, recovered code, export choices, Open Recent and your answer about reports), `~/Library/Logs/Origami` and `~/Library/Caches/Origami`. Your scripts, the `origami.lock` beside each one, your footage and your exports stay where they are.
 
 ## Licence
 
-[GPL-3.0](LICENSE), copyright 2026 Daniel Ung: use, change and share Origami for any purpose. If you share it or a changed version, share the source under the same licence. Videos you make with Origami are yours and the licence does not cover them. The open-source crates Origami is built with are listed in [THIRD-PARTY.md](THIRD-PARTY.md), with their licence texts in [THIRD-PARTY-LICENSES.txt](THIRD-PARTY-LICENSES.txt).
+[GPL-3.0-only](LICENSE) (version 3 of the GNU General Public License, and no later version), copyright 2026 Daniel Ung: use, change and share Origami for any purpose. If you share it or a changed version, share the source under the same licence. Videos you make with Origami are yours and the licence does not cover them. The open-source crates Origami is built with are listed in [THIRD-PARTY.md](THIRD-PARTY.md), with their licence texts in [THIRD-PARTY-LICENSES.txt](THIRD-PARTY-LICENSES.txt).
