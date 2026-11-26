@@ -4,6 +4,7 @@ Preview frames, audio playback and ffmpeg export for an Origami timeline. Needs 
 
 ```
 cargo run --release -- render edit.js out.mp4 [--dry-run] [--relock]
+cargo run --release -- frame edit.js <seconds> out.png
 cargo run --release -- ir edit.js
 ```
 

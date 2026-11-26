@@ -1,9 +1,9 @@
 # origami-app
 
-The Origami desktop app (GPUI). Edit the script in your own editor; the app reloads on save.
+The Origami desktop app (GPUI). Edit the script in the app's code pane or in your own editor; the app reloads the file when it changes on disk.
 
 ```
-cargo run --release -- ../demo/edit.js
+cargo run --release -- path/to/edit.js
 ```
 
 With no argument it opens the launch screen (New project, Open…, Docs). cmd+o opens a script from anywhere, and so does opening a .js file with Origami from Finder.
@@ -14,7 +14,7 @@ Click a clip to select it and press delete to remove it. Click the script to typ
 
 Timeline toolbar: undo, redo, delete on the left; step and play centred under the video; playback rate (1x, 2x, 0.5x, preview only), a + menu (text, caption) and a ... menu (zoom, full screen, export) on the right.
 cmd+shift+z redoes. f toggles full screen.
-The launch screen lists recent projects from `~/.origami/recent`.
+The launch screen lists recent projects from `~/Library/Application Support/Origami/recent`.
 Drag the pane edges to resize the code pane and the timeline. cmd+= and cmd+- change the code font size.
 The code pane supports selection: drag, shift+arrows, cmd+a, cmd+c, cmd+x, cmd+v, and cmd+arrows for line and document ends.
 Code folds from the gutter arrows, cmd+opt+[ and cmd+opt+], or za/zM/zR in vim mode; long runs of definitions start folded. cmd+0 or ctrl+0 resets pane sizes, code size and timeline zoom.
