@@ -36,7 +36,7 @@ A `js` fence is shown as code only.
 
 ## Add a runnable example
 
-An `origami` fence is shown as code, rendered with the CLI, and its video is placed under the code. It must be a complete script. Paths resolve from `media/`.
+An `origami` fence is shown as code, rendered with the CLI, and its video is placed under the code. It must be a complete script. Paths resolve from `media/`. Everything in `media/` was generated with ffmpeg or made by the author, and is under the repository's licence.
 
     ```origami
     video("clips/intro.mp4").trim(0, 2)
