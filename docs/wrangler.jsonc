@@ -8,7 +8,7 @@
     "enabled": true
   },
   "assets": {
-    "directory": "dist"
+    "directory": "../origami-site/out"
   },
   "r2_buckets": [{ "binding": "DOWNLOADS", "bucket_name": "origami-downloads" }]
 }

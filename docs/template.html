@@ -6,7 +6,7 @@
 <meta property="og:title" content="{{title}} · Origami Docs">
 <meta property="og:description" content="Origami is a video editor for the Mac where the edit is a short JavaScript file.">
 <meta property="og:type" content="website">
-<meta property="og:url" content="https://origami.video/{{path}}">
+<meta property="og:url" content="https://origami.video/docs/{{path}}">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <style>
 :root {
@@ -21,6 +21,7 @@ html { scroll-padding-top: 72px }
 body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 var(--font) }
 header { position: sticky; top: 0; z-index: 5; height: 56px; display: flex; align-items: baseline; gap: 8px; background: var(--bar); padding: 14px 16px }
 header b { font-size: 20px }
+header b a { color: inherit; font-size: inherit }
 header span { font-size: 14px; font-weight: 500 }
 header a { margin-left: auto; color: var(--dim); font-size: 14px }
 header a + a { margin-left: 8px; color: var(--accent); font-weight: 600 }
@@ -58,7 +59,7 @@ th { background: var(--code); color: var(--fg) }
 @media (max-width: 720px) { nav { display: none } }
 @media (max-width: 420px) { header span { display: none } }
 </style>
-<header><b>origami</b><span>DOCS</span><a href="https://github.com/DannyMang/origami">Source</a><a href="Origami.dmg">Download for Mac</a></header>
+<header><b><a href="../">origami</a></b><span>DOCS</span><a href="https://github.com/DannyMang/origami">Source</a><a href="../Origami.dmg">Download for Mac</a></header>
 <div class="wrap"><nav>{{nav}}</nav><aside><b>On this page</b>{{toc}}</aside><main>{{main}}</main></div>
 <script>
 const lists = ["aside a", "nav div a"].map(q => [...document.querySelectorAll(q)])
