@@ -2,6 +2,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{title}} · Origami Docs</title>
+<meta name="description" content="Origami is a video editor for the Mac where the edit is a short JavaScript file.">
+<meta property="og:title" content="{{title}} · Origami Docs">
+<meta property="og:description" content="Origami is a video editor for the Mac where the edit is a short JavaScript file.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://origami.video/{{path}}">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
 <style>
 :root {
   color-scheme: dark;
@@ -16,7 +22,8 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 var(--
 header { position: sticky; top: 0; z-index: 5; height: 56px; display: flex; align-items: baseline; gap: 8px; background: var(--bar); padding: 14px 16px }
 header b { font-size: 20px }
 header span { font-size: 14px; font-weight: 500 }
-header a { margin-left: auto; color: var(--accent); font-size: 14px; font-weight: 600 }
+header a { margin-left: auto; color: var(--dim); font-size: 14px }
+header a + a { margin-left: 8px; color: var(--accent); font-weight: 600 }
 .wrap { display: flex; gap: 48px; max-width: 1280px; padding: 24px 16px 96px }
 nav, aside { flex: none; position: sticky; top: 72px; align-self: flex-start; max-height: calc(100vh - 88px); overflow-y: auto; display: flex; flex-direction: column }
 nav { width: 200px; gap: 2px }
@@ -49,8 +56,9 @@ th, td { text-align: left; vertical-align: top; padding: 6px 12px; border: 1px s
 th { background: var(--code); color: var(--fg) }
 @media (max-width: 1000px) { aside { display: none } }
 @media (max-width: 720px) { nav { display: none } }
+@media (max-width: 420px) { header span { display: none } }
 </style>
-<header><b>origami</b><span>DOCS</span><a href="Origami.dmg">Download for Mac</a></header>
+<header><b>origami</b><span>DOCS</span><a href="https://github.com/DannyMang/origami">Source</a><a href="Origami.dmg">Download for Mac</a></header>
 <div class="wrap"><nav>{{nav}}</nav><aside><b>On this page</b>{{toc}}</aside><main>{{main}}</main></div>
 <script>
 const lists = ["aside a", "nav div a"].map(q => [...document.querySelectorAll(q)])

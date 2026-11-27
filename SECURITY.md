@@ -16,7 +16,7 @@ A script is code you run, so Origami keeps it inside limits. Any way around them
 
 - A script can read a file your account can read only by naming it, and cannot reach the network, run programs or write files other than its own `origami.lock`.
 - A script that runs too long or uses too much memory is stopped without taking Origami down with it.
-- The update check downloads one small file from this repository and only ever offers a page of this repository to open.
+- The update check downloads one small file, `https://origami.video/latest.json`, and only ever offers an address under `https://origami.video/` to open.
 - Usage and crash reports are sent only after a yes, and carry only what the README lists: never script contents, file names, paths or your user name.
 - Origami never deletes, truncates or writes over footage, and writes a script only when it is saved.
 

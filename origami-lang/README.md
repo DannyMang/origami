@@ -8,8 +8,9 @@ cargo test
 ```
 
 - `src/prelude.js`: clip library and flattening to a global timeline.
-- `src/lib.rs`: Boa host, ffprobe, `origami.lock`, IR types (`Timeline`, `Clip`).
+- `src/lib.rs`: Boa host, ffprobe, `origami.lock`.
+- `src/ir.rs`: IR types (`Timeline`, `Clip`).
 
-Language reference: `../docs/index.html`.
+Language reference: https://origami.video.
 
 Errors a script author can fix are typed in `src/error.rs`. Today: `Missing`, a media path that does not exist; the app marks its line in red.

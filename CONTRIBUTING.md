@@ -3,6 +3,10 @@
 Origami is a programmatic video editor: you describe an edit in a small JavaScript script, and the app previews and exports it.
 This file is the map of the project for people and coding agents.
 
+## Sending changes
+
+Report a bug with the [issue form](https://github.com/DannyMang/origami/issues/new/choose). Pull requests are welcome. For anything larger than a small fix, open an issue first so the change can be agreed on before you write it. What you contribute is licensed under GPL-3.0-only, the same as the project.
+
 ## Layout
 
 Three Rust crates sit side by side. Each has its own `Cargo.toml` and `Cargo.lock`; there is no workspace.
@@ -47,7 +51,12 @@ The later crates depend on the earlier ones by relative path.
 | `timing.rs` | Which source frame a timeline frame shows, and where a clip can be split without changing any |
 | `grade.rs`, `lut.rs` | Colour pipeline baked to a 3D LUT, `.cube` reading and writing, vignette mask |
 | `text.rs` | Text rasterising |
-| `main.rs` | `origami render` and `origami ir` commands |
+| `shape.rs` | Rasterising `rect`, `line` and `path`, and a path's outline |
+| `fx.rs` | Effects on a layer's pixels: `lens`, `blur`, `levels`, `noise`, `fractal`, `roughen`, `displace` |
+| `memo.rs` | What ffmpeg said about each media file, kept between launches in `~/Library/Caches/Origami/media.json` |
+| `mic.rs` | `Mic`: records an input device to a WAV file through cpal |
+| `lib.rs` | The names the crate exports and helpers shared by its tests |
+| `main.rs` | `origami render`, `origami frame` and `origami ir` commands |
 
 ### origami-app/src
 
@@ -66,6 +75,22 @@ The later crates depend on the earlier ones by relative path.
 | `shelf.rs` | History store: a version of the script on every save, written off the main thread to `~/Library/Application Support/Origami/history` under a name made from the script's path, thinning and the line diff |
 | `saves.rs` | History panel: the list, the diff against the code on screen and restore |
 | `pulse.rs` | Opt-in anonymous usage and crash reports: the question, the stored answer and install id, the events, the crash scrubber |
+| `begin.rs` | New project dialog: the name, the folder list and the starter `edit.js` |
+| `clip.rs` | Clip actions that rewrite the script: split, cut, copy, paste, duplicate, and the right-click menu |
+| `stage.rs` | The picture in the preview: where it sits, which clip is under the pointer, dragging a clip to move it, the selection box and motion path |
+| `full.rs` | Full-screen preview and its bar |
+| `pen.rs` | Type tool: a click on the picture adds a `text` |
+| `quill.rs` | Pen tool: clicks on the picture write a `path`; outlining a named shape |
+| `words.rs` | Editing the words of a text or caption on the picture |
+| `motion.rs` | Reading and rewriting keys, eases and connections in the script, and the property rows built from them |
+| `scene.rs` | Motion tab: clip and property rows, key diamonds, the font list, connecting by drag |
+| `graph.rs` | Graph Editor: a clip's animated properties as curves, and the box for one key |
+| `web.rs` | Graph tab: a box per clip and a line from each source to its follower |
+| `peek.rs` | The small player opened by a triple-click on a line that uses a video or sound |
+| `voice.rs` | Voiceover: recording a take, picking the input, adding the take to the script |
+| `tune.rs` | The preview quality row, which rewrites `preview` in `settings(...)` |
+| `ship.rs` | Export dialog: where to save, resolution, format, quality, range, and starting the export |
+| `release.rs` | Update check: fetches `https://origami.video/latest.json` and compares versions |
 | `crash.rs` | Panic hook: saves unsaved code to `~/Library/Application Support/Origami/recovered`, under a name made from the script's path, and logs to `~/Library/Logs/Origami/origami.log`; a quit that could not ask saves it there too |
 
 ## Build, run, test

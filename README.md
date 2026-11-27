@@ -63,9 +63,9 @@ The app also contains the `origami` command-line tool, which renders a script wi
 
 ## Docs
 
-The guide and language reference are in [`docs/pages`](docs/pages): [Intro](docs/pages/00-intro.md), [Basics](docs/pages/01-basics.md), [Video](docs/pages/02-video.md), [Arranging](docs/pages/03-arranging.md), [Methods](docs/pages/04-methods.md), [Color](docs/pages/05-color.md), [Editor](docs/pages/06-editor.md), [Motion](docs/pages/07-motion.md), [Supported formats](docs/pages/07-supported-formats.md) and the [Changelog](docs/pages/08-changelog.md).
+Read the guide and language reference at https://origami.video, where every example is rendered and the links between pages work.
 
-Read them online, with every example rendered, at https://origami.video.
+Their source is in [`docs/pages`](docs/pages), one Markdown file per page: [Intro](docs/pages/00-intro.md), [Get started](docs/pages/00-start.md), [Basics](docs/pages/01-basics.md), [Video](docs/pages/02-video.md), [Arranging](docs/pages/03-arranging.md), [Methods](docs/pages/04-methods.md), [Color](docs/pages/05-color.md), [Editor](docs/pages/06-editor.md), [Motion](docs/pages/07-motion.md), [Supported formats](docs/pages/07-supported-formats.md) and the [Changelog](docs/pages/08-changelog.md).
 
 `CONTRIBUTING.md` maps the code and `docs/README.md` explains how to build the docs.
 
@@ -80,7 +80,7 @@ Your scripts, footage and exports stay on your Mac. Origami keeps:
 
 What it sends, in short:
 
-- **Update check.** Each time it opens, Origami downloads one small file from origami.video to see if a newer version is out. It sends nothing about you or your project; GitHub sees the request come from your internet address, as with any download. Start it with `ORIGAMI_NO_UPDATE_CHECK=1` to turn this off.
+- **Update check.** Each time it opens, Origami downloads one small file from origami.video to see if a newer version is out. It sends nothing about you or your project; Cloudflare, which hosts the site, sees the request come from your internet address, as with any download. Start it with `ORIGAMI_NO_UPDATE_CHECK=1` to turn this off.
 - **Usage and crash reports, only if you say yes.** The launch screen asks once. Nothing is sent before you click Yes or after you click No thanks. After a yes, a few anonymous events go to PostHog, such as "app opened" and "exported", with a random install id and no script contents, file names, paths or user name. Each carries the Origami and macOS versions and the kind of chip; "exported" adds the format, size, length and whether it worked, and a crash report only the kind of error and the file and line in Origami's own code where it happened. Origami › Share Usage and Crash Reports turns them off, and `ORIGAMI_NO_TELEMETRY=1` sends nothing and never asks.
 - `ORIGAMI_NO_TELEMETRY` and `ORIGAMI_NO_UPDATE_CHECK` only apply when Origami is started from a terminal that sets them, such as `ORIGAMI_NO_TELEMETRY=1 /Applications/Origami.app/Contents/MacOS/origami-app`; opening it from the Dock or Finder does not read them.
 - **Built from source:** a copy you build yourself never asks and never sends reports, unless you add your own PostHog key. It still checks for updates unless you turn that off.
@@ -101,8 +101,8 @@ Report security problems privately, as [SECURITY.md](SECURITY.md) describes, not
 
 ## Uninstall
 
-Quit Origami and drag it from Applications to the Trash. To remove what it keeps, also delete `~/Library/Application Support/Origami` (saved versions, recovered code, export choices, Open Recent and your answer about reports) , `~/Library/Logs/Origami` and `~/Library/Caches/Origami`. Your scripts, the `origami.lock` beside each one, your footage and your exports stay where they are.
+Quit Origami and drag it from Applications to the Trash. To remove what it keeps, also delete `~/Library/Application Support/Origami` (saved versions, recovered code, export choices, Open Recent and your answer about reports), `~/Library/Logs/Origami` and `~/Library/Caches/Origami`. Your scripts, the `origami.lock` beside each one, your footage and your exports stay where they are.
 
 ## Licence
 
-[GPL-3.0](LICENSE), copyright 2026 Daniel Ung: use, change and share Origami for any purpose. If you share it or a changed version, share the source under the same licence. Videos you make with Origami are yours and the licence does not cover them. The open-source crates Origami is built with are listed in [THIRD-PARTY.md](THIRD-PARTY.md), with their licence texts in [THIRD-PARTY-LICENSES.txt](THIRD-PARTY-LICENSES.txt).
+[GPL-3.0-only](LICENSE) (version 3 of the GNU General Public License, and no later version), copyright 2026 Daniel Ung: use, change and share Origami for any purpose. If you share it or a changed version, share the source under the same licence. Videos you make with Origami are yours and the licence does not cover them. The open-source crates Origami is built with are listed in [THIRD-PARTY.md](THIRD-PARTY.md), with their licence texts in [THIRD-PARTY-LICENSES.txt](THIRD-PARTY-LICENSES.txt).

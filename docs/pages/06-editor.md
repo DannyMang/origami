@@ -136,6 +136,8 @@ Drag the edge between panes to resize. cmd+= and cmd+- change the code size. cmd
 
 The ⋯ menu in the timeline bar has the same as buttons: zoom in, zoom out, full screen, bigger code, smaller code, reset layout, export, and the preview row.
 
+When the left pane is too narrow for the whole timeline bar, the bar leaves out what does not fit, in this order: the timecode (the status bar still shows it), then undo, redo, delete and the microphone, then the speed, T, ✎ and +. The tabs, the transport buttons, the record button and ⋯ always stay, and everything comes back when the pane is wide enough.
+
 ## Timeline
 
 The Timeline tab shows every clip as a bar: pictures in the lanes above, sound below. A video with sound has a bar in both.
@@ -249,8 +251,6 @@ Click in the code to type. What you type is not saved, and the picture does not 
 - Opening another script, closing the window or quitting with unsaved changes asks first: Save, Discard or Cancel.
 - You can edit the script in another editor while Origami is open. When the file changes on disk, Origami loads it and the picture follows. If you also have unsaved changes in Origami, a bar above the code asks: keep mine or use disk.
 - Unsaved code survives a crash, a force quit and a power cut. The next time you open the script, it comes back with the same keep mine / use disk bar.
-
-When the left pane is too narrow for the whole timeline bar, the bar leaves out what does not fit, in this order: the timecode (the status bar still shows it), then undo, redo, delete and the microphone, then the speed, T, ✎ and +. The tabs, the transport buttons, the record button and ⋯ always stay, and everything comes back when the pane is wide enough.
 
 ## History
 
