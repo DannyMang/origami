@@ -2,7 +2,8 @@
   "private": true,
   "scripts": {
     "build": "bun build.ts",
-    "deploy": "bun build.ts && wrangler r2 object put origami-downloads/Origami.dmg --file ../dist/Origami.dmg --content-type application/x-apple-diskimage --remote && wrangler deploy",
+    "site": "bun build.ts && bun install --cwd ../origami-site --frozen-lockfile && bun run --cwd ../origami-site build && cp -R dist ../origami-site/out/docs && cp ../latest.json _redirects ../origami-site/out/",
+    "deploy": "bun run site && wrangler r2 object put origami-downloads/Origami.dmg --file ../dist/Origami.dmg --content-type application/x-apple-diskimage --remote && wrangler deploy",
     "preview": "wrangler dev"
   },
   "dependencies": {

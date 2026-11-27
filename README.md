@@ -63,7 +63,7 @@ The app also contains the `origami` command-line tool, which renders a script wi
 
 ## Docs
 
-Read the guide and language reference at https://origami.video, where every example is rendered and the links between pages work.
+Read the guide and language reference at https://origami.video/docs/, where every example is rendered and the links between pages work.
 
 Their source is in [`docs/pages`](docs/pages), one Markdown file per page: [Intro](docs/pages/00-intro.md), [Get started](docs/pages/00-start.md), [Basics](docs/pages/01-basics.md), [Video](docs/pages/02-video.md), [Arranging](docs/pages/03-arranging.md), [Methods](docs/pages/04-methods.md), [Color](docs/pages/05-color.md), [Editor](docs/pages/06-editor.md), [Motion](docs/pages/07-motion.md), [Supported formats](docs/pages/07-supported-formats.md) and the [Changelog](docs/pages/08-changelog.md).
 

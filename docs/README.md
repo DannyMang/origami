@@ -14,13 +14,15 @@ Open `dist/index.html`. Needs ffmpeg.
 
 ## Deploy
 
-The site is static and hosted on Cloudflare at https://origami.video. Build it on a Mac, because the examples are rendered with the CLI and ffmpeg, then upload `dist/`:
+The site at https://origami.video is static and hosted on Cloudflare. The landing page in `../origami-site` is its front page and these docs are under `/docs/`. Build it on a Mac, because the examples are rendered with the CLI and ffmpeg, then upload it:
 
 ```
 bun run deploy
 ```
 
-The site is where people download Origami and where the app checks for a newer version. The build copies `../latest.json` into `dist/`, and the deploy uploads `../dist/Origami.dmg` to the R2 bucket `origami-downloads`, because the dmg is larger than the 25 MiB a static file here may be; `worker.ts` serves any address that is not a file in `dist/` from that bucket. The deploy stops if `../dist/Origami.dmg` is missing, so run `../bundle.sh` or `../release.sh` first.
+The deploy builds the docs into `dist/`, builds the landing page into `../origami-site/out`, copies `dist/` there as `docs/` beside `../latest.json` and `_redirects`, and uploads `../origami-site/out`. `_redirects` sends the addresses the docs had before they moved under `/docs/` to the new ones.
+
+The site is where people download Origami and where the app checks for a newer version, by reading `latest.json`. The deploy uploads `../dist/Origami.dmg` to the R2 bucket `origami-downloads`, because the dmg is larger than the 25 MiB a static file here may be; `worker.ts` serves any address that is not a file of the site from that bucket. The deploy stops if `../dist/Origami.dmg` is missing, so run `../bundle.sh` or `../release.sh` first.
 
 ## Add a page
 

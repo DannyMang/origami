@@ -18,6 +18,8 @@ The later crates depend on the earlier ones by relative path.
 | `origami-engine` | Preview frames, audio playback, ffmpeg export, the `origami` CLI | `origami-lang` |
 | `origami-app` | The desktop app (GPUI) | both |
 
+`docs` holds the guide and language reference and `origami-site` the landing page (Next.js); together they are the site at https://origami.video, and `docs/README.md` explains how to build and deploy it.
+
 ## How data flows
 
 1. `origami_lang::eval(script)` runs the user's script in Boa with `prelude.js` loaded and returns a `Timeline`: fps, size, duration and a flat list of `Clip`s with absolute start and end times.
